@@ -2,6 +2,7 @@
 
 mod app;
 mod attached_status_hooks;
+pub(crate) mod clipboard;
 #[cfg(feature = "serve")]
 pub(crate) mod cockpit_view;
 mod components;

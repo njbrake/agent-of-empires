@@ -19,8 +19,8 @@ const LINKS: LinkRow[] = [
   },
   {
     label: "GitHub",
-    href: "https://github.com/njbrake/agent-of-empires",
-    display: "github.com/njbrake/agent-of-empires",
+    href: "https://github.com/agent-of-empires/agent-of-empires",
+    display: "github.com/agent-of-empires/agent-of-empires",
   },
   {
     label: "Twitter",
@@ -50,7 +50,7 @@ function buildFeedbackUrl(version: string | null): string {
     body,
     labels: "web,feedback",
   });
-  return `https://github.com/njbrake/agent-of-empires/issues/new?${params.toString()}`;
+  return `https://github.com/agent-of-empires/agent-of-empires/issues/new?${params.toString()}`;
 }
 
 export function AboutModal({ onClose }: Props) {

@@ -24,10 +24,33 @@ jobs:
           script: |
             const body = context.payload.pull_request.body || '';
 
-            // Check for the checklist section with at least the required item
-            // Match both checked and unchecked boxes: - [ ] or - [x] or - [X]
-            const hasChecklist = body.includes('## Checklist') &&
-                                 body.includes('I understand the code I am submitting');
+            // Check that the three required template sections are all
+            // present. This catches wholesale template stripping without
+            // depending on a single literal checklist line that may be
+            // renamed or removed when the template is updated. The
+            // previous check looked for "I understand the code I am
+            // submitting", which was removed from the template in
+            // #1421 but left in this workflow, so every subsequent PR
+            // was flagged.
+            const hasAllTemplateSections =
+              body.includes('## Checklist') &&
+              body.includes('## Test Coverage Analysis') &&
+              body.includes('## AI Usage');
+
+            // Escape hatch for trusted internal automation: the
+            // nix-npm-hash bot (`.github/workflows/nix-npm-hash.yml`)
+            // emits a body with only `## Checklist` plus a
+            // `<!-- nix-npm-hash: -->` marker. Gate this on actor
+            // login = github-actions[bot] so a human PR cannot opt
+            // out of template enforcement by dropping the marker
+            // into its body.
+            const actor = context.payload.pull_request.user?.login;
+            const isNixNpmHashBotPr =
+              actor === 'github-actions[bot]' &&
+              body.includes('<!-- nix-npm-hash:') &&
+              body.includes('## Checklist');
+
+            const hasChecklist = hasAllTemplateSections || isNixNpmHashBotPr;
 
             const prNumber = context.payload.pull_request.number;
             const labelName = 'missing-template';

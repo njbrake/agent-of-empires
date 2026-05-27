@@ -254,6 +254,18 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_tag: Option<super::config::RowTagMode>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_send_exit_chord: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_session_attach_mode: Option<super::config::NewSessionAttachMode>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_attach_mode: Option<super::config::NewSessionAttachMode>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub click_action: Option<super::config::ClickAction>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -483,6 +495,18 @@ pub fn apply_session_overrides(
     }
     if let Some(row_tag) = source.row_tag {
         target.row_tag = row_tag;
+    }
+    if let Some(ref live_send_exit_chord) = source.live_send_exit_chord {
+        target.live_send_exit_chord = live_send_exit_chord.clone();
+    }
+    if let Some(new_session_attach_mode) = source.new_session_attach_mode {
+        target.new_session_attach_mode = new_session_attach_mode;
+    }
+    if let Some(default_attach_mode) = source.default_attach_mode {
+        target.default_attach_mode = default_attach_mode;
+    }
+    if let Some(click_action) = source.click_action {
+        target.click_action = click_action;
     }
 }
 

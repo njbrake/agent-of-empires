@@ -401,6 +401,24 @@ impl Session {
         Ok(())
     }
 
+    /// Restore automatic window sizing after live-send forced a manual
+    /// size. tmux's `resize-window -x -y` silently switches the window-
+    /// size option to `manual`, so without this call a later
+    /// `attach-session` from a full-size terminal would keep the window
+    /// at the small preview dimensions live-send left behind. Re-setting
+    /// the option to `latest` is the documented escape hatch and matches
+    /// the policy `append_window_size_args` installs at session create.
+    /// Best-effort: failures (session gone, tmux ENOENT) are swallowed
+    /// so a stuck pane never blocks the user's exit from live mode.
+    pub fn reset_size_to_latest_client(&self) {
+        if !self.exists() {
+            return;
+        }
+        let _ = Command::new("tmux")
+            .args(["set-option", "-t", &self.name, "window-size", "latest"])
+            .output();
+    }
+
     /// Deliver `text` to `target` via tmux's load-buffer + paste-buffer.
     /// Buffer names are scoped by pid + a per-call counter so concurrent
     /// senders (and retries) cannot clobber each other. `-p` enables

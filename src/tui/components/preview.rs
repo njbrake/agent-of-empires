@@ -9,6 +9,50 @@ use ratatui::widgets::*;
 use crate::session::Instance;
 use crate::tui::styles::Theme;
 
+/// Light value type the renderers consume in place of a raw `&str`.
+/// The caller is expected to hand over the cached parse from
+/// `PreviewCache::ensure_parsed`; we then read it directly for the
+/// actual render.
+///
+/// Passing a pre-parsed `Text` is the whole point of the
+/// optimisation: it lets the cache update once per content change
+/// rather than re-running the full `ansi-to-tui` pipeline on every
+/// frame. See `PreviewCache::ensure_parsed` for the parse-and-cache
+/// contract.
+pub struct CachedPreview<'a> {
+    /// `None` means the source `content` was empty (no pane bytes
+    /// yet, or just cleared); callers render their own placeholder.
+    pub text: Option<&'a Text<'static>>,
+}
+
+impl<'a> CachedPreview<'a> {
+    pub fn from_text(text: Option<&'a Text<'static>>) -> Self {
+        Self { text }
+    }
+}
+
+/// Row count of the Agent-view info header (profile/tool, path, status,
+/// optional sandbox line, optional worktree block) for `instance`.
+///
+/// Exposed at the module level so callers outside `Preview::render_with_cache`
+/// can compute the same split. In particular, the live-send sync resize
+/// in `HomeView::finalize_live_send_resize` needs to size the tmux pane
+/// to the OUTPUT portion (inner minus this header), not the full inner.
+/// If the agent renders into the full inner while the output portion is
+/// shorter by `agent_info_height` rows, the top of the agent's output
+/// gets clipped on every frame and the user sees content shifted up.
+pub fn agent_info_height(instance: &Instance) -> u16 {
+    let base: u16 = 3; // profile+tool / path / status
+    let sandbox_lines: u16 = if instance.is_sandboxed() { 1 } else { 0 };
+    if let Some(wt) = instance.worktree_info.as_ref() {
+        // blank + header + branch + main (+ optional base)
+        let base_branch_line: u16 = if wt.base_branch.is_some() { 1 } else { 0 };
+        base + sandbox_lines + 4 + base_branch_line
+    } else {
+        base + sandbox_lines
+    }
+}
+
 pub struct Preview;
 
 impl Preview {
@@ -18,7 +62,7 @@ impl Preview {
         area: Rect,
         instance: &Instance,
         terminal_running: bool,
-        cached_output: &str,
+        cached_output: CachedPreview<'_>,
         scroll_offset: u16,
         theme: &Theme,
         compact: bool,
@@ -86,12 +130,15 @@ impl Preview {
 
         // Output section
         let visible_height = output_area.height.saturating_sub(1) as usize;
-        let parsed_output = if terminal_running && !cached_output.is_empty() {
-            Some(parse_output_text(cached_output))
+        // Use the pre-parsed cache when the terminal is up; suppress
+        // it otherwise so the "press Enter to start terminal" hint
+        // can take the inner area instead of a stale capture.
+        let parsed_output = if terminal_running {
+            cached_output.text
         } else {
             None
         };
-        let line_count = parsed_output.as_ref().map_or(0, |t| t.lines.len());
+        let line_count = parsed_output.map_or(0, |t| t.lines.len());
 
         // Compact mode: no inner separator/title; the outer block already
         // names the session. Scroll indicator is dropped to save a row.
@@ -125,7 +172,13 @@ impl Preview {
         } else if let Some(output_text) = parsed_output {
             let paragraph_scroll = compute_scroll(line_count, visible_height, scroll_offset);
 
-            let paragraph = Paragraph::new(output_text)
+            // ratatui's `Paragraph::new` takes ownership of the
+            // `Text`, so we clone the cached parse here. The clone
+            // walks the parsed `Vec<Line<'static>>` (one allocation
+            // per Span's `Cow`) but is still much cheaper than
+            // re-running `ansi-to-tui` on the raw pane bytes, which
+            // is what this whole caching dance avoids.
+            let paragraph = Paragraph::new(output_text.clone())
                 .style(Style::default().fg(theme.text))
                 .scroll((paragraph_scroll, 0));
 
@@ -143,7 +196,7 @@ impl Preview {
         frame: &mut Frame,
         area: Rect,
         instance: &Instance,
-        cached_output: &str,
+        cached_output: CachedPreview<'_>,
         scroll_offset: u16,
         theme: &Theme,
         idle_decay_window: Duration,
@@ -167,15 +220,7 @@ impl Preview {
             return;
         }
 
-        // 3 base lines (profile+tool / path / status) + optional sandbox + optional worktree block
-        let base = 3;
-        let sandbox_lines = if instance.is_sandboxed() { 1 } else { 0 };
-        let info_height = if let Some(wt) = instance.worktree_info.as_ref() {
-            let base_branch_line = if wt.base_branch.is_some() { 1 } else { 0 };
-            base + sandbox_lines + 4 + base_branch_line // blank + header + branch + main (+ optional base)
-        } else {
-            base + sandbox_lines
-        };
+        let info_height = agent_info_height(instance);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -297,18 +342,18 @@ impl Preview {
         frame: &mut Frame,
         area: Rect,
         instance: &Instance,
-        cached_output: &str,
+        cached_output: CachedPreview<'_>,
         scroll_offset: u16,
         theme: &Theme,
         compact: bool,
     ) {
         let visible_height = area.height.saturating_sub(1) as usize;
-        let parsed_output = if instance.last_error.is_none() && !cached_output.is_empty() {
-            Some(parse_output_text(cached_output))
-        } else {
-            None
-        };
-        let line_count = parsed_output.as_ref().map_or(0, |t| t.lines.len());
+        // The error path below returns early, so by the time we use
+        // `parsed_output` for the output Paragraph the error case has
+        // been handled. Until then `parsed_output` is just the cached
+        // parse passed in by the caller (renamed for readability).
+        let parsed_output = cached_output.text;
+        let line_count = parsed_output.map_or(0, |t| t.lines.len());
 
         // Compact mode skips the inner separator/title; the outer block
         // already names the session and scroll indicator is omitted to
@@ -357,7 +402,16 @@ impl Preview {
         if let Some(output_text) = parsed_output {
             let paragraph_scroll = compute_scroll(line_count, visible_height, scroll_offset);
 
-            let paragraph = Paragraph::new(output_text)
+            // ratatui's `Paragraph::new` takes ownership of the
+            // `Text`, so we clone the cached parse here. The clone
+            // walks the parsed `Vec<Line<'static>>` (one allocation
+            // per Span's Cow), which is a few-millisecond operation
+            // but well under the cost of re-running `ansi-to-tui` on
+            // the raw bytes; the latter is what this whole caching
+            // dance avoids. If a cheaper "render Paragraph by
+            // reference" path appears in a future ratatui release,
+            // we can revisit.
+            let paragraph = Paragraph::new(output_text.clone())
                 .style(Style::default().fg(theme.text))
                 .scroll((paragraph_scroll, 0));
 
@@ -397,7 +451,11 @@ pub fn format_scroll_indicator(
     Some(format!(" [{}/{}] ", clamped, max_offset))
 }
 
-fn parse_output_text(content: &str) -> Text<'static> {
+/// Parse a captured ANSI string into a ratatui `Text`.
+///
+/// Visible at the module level so `PreviewCache::ensure_parsed` can
+/// call it from `src/tui/home/mod.rs` to drive the cache.
+pub fn parse_output_text(content: &str) -> Text<'static> {
     let cleaned = crate::tmux::utils::strip_osc_st(content);
     cleaned.into_text().unwrap_or_else(|_| Text::from(cleaned))
 }
@@ -540,5 +598,81 @@ mod tests {
             format_scroll_indicator(100, 20, 500),
             Some(" [80/80] ".to_string())
         );
+    }
+
+    // `agent_info_height` drives both the preview layout split in
+    // `render_with_cache` and the live-send sync resize in
+    // `HomeView::finalize_live_send_resize`. A one-row drift here brings
+    // the shifted-preview bug right back, so each branch of the formula
+    // gets a dedicated case.
+    mod agent_info_height {
+        use super::super::agent_info_height;
+        use crate::session::{Instance, SandboxInfo, WorktreeInfo};
+        use chrono::Utc;
+
+        fn worktree(base_branch: Option<&str>) -> WorktreeInfo {
+            WorktreeInfo {
+                branch: "feature/x".into(),
+                main_repo_path: "/repo".into(),
+                managed_by_aoe: true,
+                created_at: Utc::now(),
+                base_branch: base_branch.map(str::to_string),
+            }
+        }
+
+        fn enabled_sandbox() -> SandboxInfo {
+            SandboxInfo {
+                enabled: true,
+                container_id: None,
+                image: "img".into(),
+                container_name: "ctr".into(),
+                extra_env: None,
+                custom_instruction: None,
+            }
+        }
+
+        #[test]
+        fn plain_session_is_three_rows() {
+            let inst = Instance::new("plain", "/tmp/plain");
+            assert_eq!(agent_info_height(&inst), 3);
+        }
+
+        #[test]
+        fn sandboxed_adds_one_row() {
+            let mut inst = Instance::new("sandboxed", "/tmp/sandboxed");
+            inst.sandbox_info = Some(enabled_sandbox());
+            assert_eq!(agent_info_height(&inst), 4);
+        }
+
+        #[test]
+        fn worktree_without_base_branch_adds_four_rows() {
+            let mut inst = Instance::new("wt", "/tmp/wt");
+            inst.worktree_info = Some(worktree(None));
+            assert_eq!(agent_info_height(&inst), 3 + 4);
+        }
+
+        #[test]
+        fn worktree_with_base_branch_adds_five_rows() {
+            let mut inst = Instance::new("wt-base", "/tmp/wt-base");
+            inst.worktree_info = Some(worktree(Some("main")));
+            assert_eq!(agent_info_height(&inst), 3 + 4 + 1);
+        }
+
+        #[test]
+        fn sandboxed_plus_worktree_with_base_branch_is_max() {
+            let mut inst = Instance::new("both", "/tmp/both");
+            inst.sandbox_info = Some(enabled_sandbox());
+            inst.worktree_info = Some(worktree(Some("main")));
+            assert_eq!(agent_info_height(&inst), 3 + 1 + 4 + 1);
+        }
+
+        #[test]
+        fn disabled_sandbox_does_not_count() {
+            let mut inst = Instance::new("disabled", "/tmp/disabled");
+            let mut sandbox = enabled_sandbox();
+            sandbox.enabled = false;
+            inst.sandbox_info = Some(sandbox);
+            assert_eq!(agent_info_height(&inst), 3);
+        }
     }
 }

@@ -6,7 +6,9 @@
       "id": "dashboard.golden-path",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/golden-path.spec.ts"],
+      "specs": [
+        "tests/live/golden-path.spec.ts"
+      ],
       "components": [
         "web/src/components/Dashboard.tsx",
         "web/src/components/TerminalView.tsx",
@@ -14,38 +16,66 @@
       ]
     },
     {
+      "id": "terminal.live-output-resize",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/hooks/useTerminal.lifecycle.test.ts"
+      ],
+      "components": [
+        "web/src/hooks/useTerminal.ts"
+      ]
+    },
+    {
       "id": "auth.no-auth",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/auth-no-auth.spec.ts"],
+      "specs": [
+        "tests/live/auth-no-auth.spec.ts"
+      ],
       "components": []
     },
     {
       "id": "auth.passphrase-login",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/auth-login-passphrase.spec.ts"],
-      "components": ["web/src/components/LoginPage.tsx"]
+      "specs": [
+        "tests/live/auth-login-passphrase.spec.ts"
+      ],
+      "components": [
+        "web/src/components/LoginPage.tsx"
+      ]
     },
     {
       "id": "auth.token-entry",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/auth-token-entry.spec.ts"],
-      "components": ["web/src/components/TokenEntryPage.tsx", "web/src/lib/token.ts"]
+      "specs": [
+        "tests/live/auth-token-entry.spec.ts"
+      ],
+      "components": [
+        "web/src/components/TokenEntryPage.tsx",
+        "web/src/lib/token.ts"
+      ]
     },
     {
       "id": "auth.token-rotation",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/auth-token-rotation.spec.ts"],
-      "components": ["src/server/mod.rs"]
+      "specs": [
+        "tests/live/auth-token-rotation.spec.ts"
+      ],
+      "components": [
+        "src/server/mod.rs"
+      ]
     },
     {
       "id": "settings.theme-persistence",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/settings-persistence-theme.spec.ts"],
+      "specs": [
+        "tests/live/settings-persistence-theme.spec.ts"
+      ],
       "components": [
         "web/src/components/SettingsView.tsx",
         "web/src/components/settings/ThemeSettings.tsx"
@@ -55,42 +85,60 @@
       "id": "settings.sound-payload",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/settings/__tests__/SoundSettings.test.tsx"],
-      "components": ["web/src/components/settings/SoundSettings.tsx"]
+      "specs": [
+        "src/components/settings/__tests__/SoundSettings.test.tsx"
+      ],
+      "components": [
+        "web/src/components/settings/SoundSettings.tsx"
+      ]
     },
     {
       "id": "settings.update-payload",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/settings/__tests__/UpdateSettings.test.tsx"],
-      "components": ["web/src/components/settings/UpdateSettings.tsx"]
+      "specs": [
+        "src/components/settings/__tests__/UpdateSettings.test.tsx"
+      ],
+      "components": [
+        "web/src/components/settings/UpdateSettings.tsx"
+      ]
     },
     {
       "id": "settings.tmux-payload",
       "kind": "vitest",
       "risk": "low",
-      "specs": ["src/components/settings/__tests__/TmuxSettings.test.tsx"],
-      "components": ["web/src/components/settings/TmuxSettings.tsx"]
+      "specs": [
+        "src/components/settings/__tests__/TmuxSettings.test.tsx"
+      ],
+      "components": [
+        "web/src/components/settings/TmuxSettings.tsx"
+      ]
     },
     {
       "id": "settings.tmux-persistence",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/settings-persistence-tmux.spec.ts"],
+      "specs": [
+        "tests/live/settings-persistence-tmux.spec.ts"
+      ],
       "components": []
     },
     {
       "id": "settings.theme-payload",
       "kind": "vitest",
       "risk": "low",
-      "specs": ["src/components/settings/__tests__/ThemeSettings.test.tsx"],
+      "specs": [
+        "src/components/settings/__tests__/ThemeSettings.test.tsx"
+      ],
       "components": []
     },
     {
       "id": "settings.logging-payload",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/settings/__tests__/LoggingSettings.test.tsx"],
+      "specs": [
+        "src/components/settings/__tests__/LoggingSettings.test.tsx"
+      ],
       "components": [
         "web/src/components/settings/LoggingSettings.tsx",
         "web/src/components/settings/FormFields.tsx"
@@ -100,21 +148,31 @@
       "id": "settings.notifications",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/__tests__/NotificationSettings.test.tsx"],
-      "components": ["web/src/components/NotificationSettings.tsx"]
+      "specs": [
+        "src/components/__tests__/NotificationSettings.test.tsx"
+      ],
+      "components": [
+        "web/src/components/NotificationSettings.tsx"
+      ]
     },
     {
       "id": "settings.security-readonly",
       "kind": "vitest",
       "risk": "low",
-      "specs": ["src/components/__tests__/SecuritySettings.test.tsx"],
-      "components": ["web/src/components/SecuritySettings.tsx"]
+      "specs": [
+        "src/components/__tests__/SecuritySettings.test.tsx"
+      ],
+      "components": [
+        "web/src/components/SecuritySettings.tsx"
+      ]
     },
     {
       "id": "settings.terminal-localstorage",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/__tests__/TerminalSettings.test.tsx"],
+      "specs": [
+        "src/components/__tests__/TerminalSettings.test.tsx"
+      ],
       "components": [
         "web/src/components/TerminalSettings.tsx",
         "web/src/components/TerminalSessionStack.tsx"
@@ -124,49 +182,67 @@
       "id": "app-shell.topbar-dev-badge",
       "kind": "vitest",
       "risk": "low",
-      "specs": ["src/components/__tests__/TopBar.test.tsx"],
-      "components": ["web/src/components/TopBar.tsx"]
+      "specs": [
+        "src/components/__tests__/TopBar.test.tsx"
+      ],
+      "components": [
+        "web/src/components/TopBar.tsx"
+      ]
     },
     {
       "id": "app-shell.routing",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/routing.spec.ts"],
+      "specs": [
+        "tests/routing.spec.ts"
+      ],
       "components": []
     },
     {
       "id": "app-shell.sessions-loaded-sentinel",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/hooks/useSessions.test.ts"],
+      "specs": [
+        "src/hooks/useSessions.test.ts"
+      ],
       "components": []
     },
     {
       "id": "profiles.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/profile-lifecycle.spec.ts"],
-      "components": ["web/src/components/settings/ProfileSelector.tsx"]
+      "specs": [
+        "tests/live/profile-lifecycle.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
     },
     {
       "id": "profiles.override",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/profile-override.spec.ts"],
+      "specs": [
+        "tests/live/profile-override.spec.ts"
+      ],
       "components": []
     },
     {
       "id": "profiles.name-validation",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/settings/__tests__/ProfileSelector.test.tsx"],
+      "specs": [
+        "src/components/settings/__tests__/ProfileSelector.test.tsx"
+      ],
       "components": []
     },
     {
       "id": "profiles.selection-resolve",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/__tests__/SettingsView.test.tsx"],
+      "specs": [
+        "src/components/__tests__/SettingsView.test.tsx"
+      ],
       "components": []
     },
     {
@@ -198,49 +274,110 @@
       "id": "wizard.profile-description",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/wizard-agent-step.spec.ts"],
-      "components": ["web/src/components/session-wizard/steps/AgentStep.tsx"]
+      "specs": [
+        "tests/wizard-agent-step.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/AgentStep.tsx"
+      ]
     },
     {
       "id": "directory-browser",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/directory-browser.spec.ts"],
-      "components": ["web/src/components/DirectoryBrowser.tsx"]
+      "specs": [
+        "tests/live/directory-browser.spec.ts"
+      ],
+      "components": [
+        "web/src/components/DirectoryBrowser.tsx"
+      ]
     },
     {
       "id": "sidebar.groups",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/sidebar-groups.spec.ts"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "specs": [
+        "tests/live/sidebar-groups.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
     },
     {
       "id": "sidebar.repo-appearance",
       "kind": "mocked-playwright",
       "risk": "low",
-      "specs": ["tests/sidebar-multi-session.spec.ts"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "specs": [
+        "tests/sidebar-multi-session.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
     },
     {
       "id": "sidebar.workspace-ordering",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/workspace-ordering.spec.ts"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "specs": [
+        "tests/live/workspace-ordering.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
     },
     {
       "id": "sidebar.client-side-navigation",
       "kind": "mocked-playwright",
       "risk": "medium",
-      "specs": ["tests/sidebar-multi-session.spec.ts"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "specs": [
+        "tests/sidebar-multi-session.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
     },
     {
       "id": "sidebar.favorite-indicator",
       "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
+      "issue": "https://github.com/agent-of-empires/agent-of-empires/issues/986",
       "risk": "low",
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.sort-pure",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/__tests__/sidebarSort.test.ts"],
+      "components": []
+    },
+    {
+      "id": "sidebar.sort-hook",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/hooks/useSidebarSortMode.test.ts"],
+      "components": []
+    },
+    {
+      "id": "sidebar.repo-groups-hook",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/hooks/useRepoGroups.test.ts"],
+      "components": []
+    },
+    {
+      "id": "sidebar.sort-toggle-ui",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": ["tests/sidebar-sort-mode.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "sidebar.sort-live",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/sidebar-sort-mode.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
@@ -260,8 +397,12 @@
       "id": "session.delete-dialog-keyboard",
       "kind": "vitest",
       "risk": "low",
-      "specs": ["src/components/__tests__/DeleteSessionDialog.test.tsx"],
-      "components": ["web/src/components/DeleteSessionDialog.tsx"]
+      "specs": [
+        "src/components/__tests__/DeleteSessionDialog.test.tsx"
+      ],
+      "components": [
+        "web/src/components/DeleteSessionDialog.tsx"
+      ]
     },
     {
       "id": "storage.quota-crash-regression",
@@ -320,28 +461,42 @@
       "id": "devices",
       "kind": "live-playwright",
       "risk": "low",
-      "specs": ["tests/live/devices.spec.ts"],
-      "components": ["web/src/components/ConnectedDevices.tsx"]
+      "specs": [
+        "tests/live/devices.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ConnectedDevices.tsx"
+      ]
     },
     {
       "id": "connectivity.disconnect-banner",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/disconnect-banner.spec.ts"],
-      "components": ["web/src/components/DisconnectBanner.tsx"]
+      "specs": [
+        "tests/live/disconnect-banner.spec.ts"
+      ],
+      "components": [
+        "web/src/components/DisconnectBanner.tsx"
+      ]
     },
     {
       "id": "git-clone",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/git-clone.spec.ts"],
-      "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
+      "specs": [
+        "tests/live/git-clone.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ProjectStep.tsx"
+      ]
     },
     {
       "id": "cockpit.spawn-prompt",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/cockpit-spawn-prompt.spec.ts"],
+      "specs": [
+        "tests/live/cockpit-spawn-prompt.spec.ts"
+      ],
       "components": [
         "web/src/components/cockpit/CockpitView.tsx",
         "web/src/components/cockpit/CockpitRuntime.tsx",
@@ -355,35 +510,66 @@
       "id": "cockpit.approval",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/cockpit-approval.spec.ts"],
-      "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
+      "specs": [
+        "tests/live/cockpit-approval.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/ApprovalCard.tsx"
+      ]
     },
     {
       "id": "cockpit.force-end-turn-gate",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/cockpit/__tests__/WorkingSpinner.test.tsx"],
+      "specs": [
+        "src/components/cockpit/__tests__/WorkingSpinner.test.tsx"
+      ],
       "components": []
     },
     {
       "id": "cockpit.escape-no-cancel",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/cockpit-escape-no-cancel.spec.ts"],
+      "specs": [
+        "tests/live/cockpit-escape-no-cancel.spec.ts"
+      ],
       "components": []
     },
     {
       "id": "cockpit.escape-no-cancel-contract",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/cockpit/Composer.escape.test.tsx"],
+      "specs": [
+        "src/components/cockpit/Composer.escape.test.tsx"
+      ],
       "components": []
+    },
+    {
+      "id": "cockpit.config-pickers",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-config-pickers.spec.ts",
+        "tests/live/cockpit-config-pickers-ui.spec.ts",
+        "src/components/cockpit/SessionConfigControls.test.tsx",
+        "src/hooks/useCockpit.configOption.test.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/SessionConfigControls.tsx",
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/CockpitRuntime.tsx",
+        "web/src/hooks/useCockpit.ts",
+        "web/src/lib/cockpitTypes.ts"
+      ]
     },
     {
       "id": "cockpit.mode-switch",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/cockpit-mode-switch.spec.ts"],
+      "specs": [
+        "tests/live/cockpit-mode-switch.spec.ts"
+      ],
       "components": [
         "web/src/components/cockpit/SwitchSubstrateAction.tsx",
         "web/src/components/cockpit/ContextPrimerBanner.tsx"
@@ -416,7 +602,9 @@
         "src/lib/cockpitTypes.test.ts",
         "src/components/cockpit/RateLimitRecoveryModal.test.tsx"
       ],
-      "components": ["web/src/components/cockpit/RateLimitRecoveryModal.tsx"]
+      "components": [
+        "web/src/components/cockpit/RateLimitRecoveryModal.tsx"
+      ]
     },
     {
       "id": "cockpit.silent-orphan-watchdog",
@@ -432,15 +620,23 @@
       "id": "cockpit.usage-baseline",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/cockpitTypes.test.ts"],
-      "components": ["web/src/lib/cockpitTypes.ts"]
+      "specs": [
+        "src/lib/cockpitTypes.test.ts"
+      ],
+      "components": [
+        "web/src/lib/cockpitTypes.ts"
+      ]
     },
     {
       "id": "cockpit.drafts",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/cockpitDrafts.test.ts"],
-      "components": ["web/src/lib/cockpitDrafts.ts"]
+      "specs": [
+        "src/lib/cockpitDrafts.test.ts"
+      ],
+      "components": [
+        "web/src/lib/cockpitDrafts.ts"
+      ]
     },
     {
       "id": "cockpit.queue-drain-clear-split",
@@ -460,90 +656,136 @@
       "id": "cockpit.files-index",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/cockpit/useFilesIndex.test.tsx"],
-      "components": ["web/src/components/cockpit/useFilesIndex.ts"]
+      "specs": [
+        "src/components/cockpit/useFilesIndex.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/useFilesIndex.ts"
+      ]
     },
     {
       "id": "cockpit.rattle",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/cockpitRattle.test.ts"],
-      "components": ["web/src/lib/cockpitRattle.ts"]
+      "specs": [
+        "src/lib/cockpitRattle.test.ts"
+      ],
+      "components": [
+        "web/src/lib/cockpitRattle.ts"
+      ]
     },
     {
       "id": "cockpit.args",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/cockpitArgs.test.ts"],
-      "components": ["web/src/lib/cockpitArgs.ts"]
+      "specs": [
+        "src/lib/cockpitArgs.test.ts"
+      ],
+      "components": [
+        "web/src/lib/cockpitArgs.ts"
+      ]
     },
     {
       "id": "cockpit.approval-card",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/cockpit/ApprovalCard.test.tsx"],
-      "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
+      "specs": [
+        "src/components/cockpit/ApprovalCard.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/ApprovalCard.tsx"
+      ]
     },
     {
       "id": "cockpit.markdown",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/cockpit/Markdown.test.tsx"],
-      "components": ["web/src/components/cockpit/Markdown.tsx"]
+      "specs": [
+        "src/components/cockpit/Markdown.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/Markdown.tsx"
+      ]
     },
     {
       "id": "cockpit.tool-cards",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/cockpit/ToolCards.render.test.tsx"],
-      "components": ["web/src/components/cockpit/ToolCards.tsx"]
+      "specs": [
+        "src/components/cockpit/ToolCards.render.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/ToolCards.tsx"
+      ]
     },
     {
       "id": "cockpit.context-primer-banner",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/cockpit/ContextPrimerBanner.test.tsx"],
-      "components": ["web/src/components/cockpit/ContextPrimerBanner.tsx"]
+      "specs": [
+        "src/components/cockpit/ContextPrimerBanner.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/ContextPrimerBanner.tsx"
+      ]
     },
     {
       "id": "cockpit.switch-substrate-action",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/cockpit/SwitchSubstrateAction.test.tsx"],
-      "components": ["web/src/components/cockpit/SwitchSubstrateAction.tsx"]
+      "specs": [
+        "src/components/cockpit/SwitchSubstrateAction.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/SwitchSubstrateAction.tsx"
+      ]
     },
     {
       "id": "cockpit.tool-error-body",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/components/cockpit/ToolErrorBody.test.tsx"],
-      "components": ["web/src/components/cockpit/ToolErrorBody.tsx"]
+      "specs": [
+        "src/components/cockpit/ToolErrorBody.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/ToolErrorBody.tsx"
+      ]
     },
     {
       "id": "cockpit.startup-error-screen",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/components/cockpit/__tests__/StartupErrorScreen.test.tsx"],
-      "components": ["web/src/components/cockpit/StartupErrorScreen.tsx"]
+      "specs": [
+        "src/components/cockpit/__tests__/StartupErrorScreen.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/StartupErrorScreen.tsx"
+      ]
     },
     {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/read-only-mode.spec.ts"],
-      "components": ["web/src/components/MobileTerminalToolbar.tsx"]
+      "specs": [
+        "tests/live/read-only-mode.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
     },
     {
       "id": "ensure-session-restart",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/ensure-session-restart.spec.ts"],
+      "specs": [
+        "tests/live/ensure-session-restart.spec.ts"
+      ],
       "components": []
     },
     {
       "id": "modals",
       "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
+      "issue": "https://github.com/agent-of-empires/agent-of-empires/issues/986",
       "risk": "low",
       "components": [
         "web/src/components/AboutModal.tsx",
@@ -554,9 +796,949 @@
     {
       "id": "projects-view",
       "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
+      "issue": "https://github.com/agent-of-empires/agent-of-empires/issues/986",
       "risk": "low",
-      "components": ["web/src/components/ProjectsView.tsx"]
+      "components": [
+        "web/src/components/ProjectsView.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-tmux-select",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/settings-tmux-select.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/TmuxSettings.tsx",
+        "web/src/components/settings/FormFields.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-tmux-mouse",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/settings-tmux-mouse.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/TmuxSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.profile-settings-isolation",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/profile-settings-isolation.spec.ts"
+      ],
+      "components": [
+        "web/src/components/SettingsView.tsx",
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "story.shortcut-palette",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-palette.spec.ts"
+      ],
+      "components": [
+        "web/src/components/command-palette/CommandPalette.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-toggle-sidebar",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-toggle-sidebar.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-help-key",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-help-key.spec.ts"
+      ],
+      "components": [
+        "web/src/components/HelpOverlay.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-settings-key",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-settings-key.spec.ts"
+      ],
+      "components": [
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-new-session-key",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-new-session-key.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-toggle-diff",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-toggle-diff.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ContentSplit.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-escape-closes-palette",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-escape-closes-palette.spec.ts"
+      ],
+      "components": [
+        "web/src/components/command-palette/CommandPalette.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.sidebar-filter",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-filter.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.sidebar-fold-group",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-fold-group.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.sidebar-topbar-toggle",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-topbar-toggle.spec.ts"
+      ],
+      "components": [
+        "web/src/components/TopBar.tsx"
+      ]
+    },
+    {
+      "id": "story.shortcut-toggle-right-panel",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-toggle-right-panel.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ContentSplit.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.palette-session-switch",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/palette-session-switch.spec.ts"
+      ],
+      "components": [
+        "web/src/components/command-palette/CommandPalette.tsx",
+        "web/src/hooks/useCommandActions.ts"
+      ]
+    },
+    {
+      "id": "story.sidebar-resize-persist",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-resize-persist.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.topbar-go-to-dashboard",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/topbar-go-to-dashboard.spec.ts"
+      ],
+      "components": [
+        "web/src/components/TopBar.tsx"
+      ]
+    },
+    {
+      "id": "story.shortcut-terminal-focus",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-terminal-focus.spec.ts"
+      ],
+      "components": [
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.sidebar-row-click-navigate",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-row-click-navigate.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.sidebar-plan-progress",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-plan-progress.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.substrate-switch-to-cockpit",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/substrate-switch-to-cockpit.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/SwitchSubstrateAction.tsx"
+      ]
+    },
+    {
+      "id": "story.auth-sign-out",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/auth-sign-out.spec.ts"
+      ],
+      "components": [
+        "web/src/components/OverflowMenu.tsx",
+        "web/src/components/TopBar.tsx"
+      ]
+    },
+    {
+      "id": "story.modal-about",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/modal-about.spec.ts"
+      ],
+      "components": [
+        "web/src/components/AboutModal.tsx"
+      ]
+    },
+    {
+      "id": "story.modal-help",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/modal-help.spec.ts"
+      ],
+      "components": [
+        "web/src/components/HelpOverlay.tsx"
+      ]
+    },
+    {
+      "id": "story.projects-open",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/projects-open.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ProjectsView.tsx"
+      ]
+    },
+    {
+      "id": "story.profile-create",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/profile-create.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "story.profile-rename",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/profile-rename.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "story.projects-add",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/projects-add.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ProjectsView.tsx"
+      ]
+    },
+    {
+      "id": "story.projects-remove",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/projects-remove.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ProjectsView.tsx"
+      ]
+    },
+    {
+      "id": "story.right-panel-resize-persist",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/right-panel-resize-persist.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ContentSplit.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-theme-select",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/settings-theme-select.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ThemeSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-logging-level",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/settings-logging-level.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/LoggingSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-update-interval",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/settings-update-interval.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/UpdateSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-sound-toggle",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/settings-sound-toggle.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/SoundSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.profile-delete",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/profile-delete.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "story.profile-switch-view",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/profile-switch-view.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "story.modal-about-escape",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/modal-about-escape.spec.ts"
+      ],
+      "components": [
+        "web/src/components/AboutModal.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.approval-allow",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/approval-allow.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/ApprovalCard.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.approval-deny",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/approval-deny.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/ApprovalCard.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.mode-picker",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/cockpit-mode-picker.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "story.diff-base-picker",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/diff-base-picker.spec.ts"
+      ],
+      "components": [
+        "web/src/components/diff/DiffFileList.tsx"
+      ]
+    },
+    {
+      "id": "story.delete-session-with-worktree",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/delete-session-with-worktree.spec.ts"
+      ],
+      "components": [
+        "web/src/components/DeleteSessionDialog.tsx"
+      ]
+    },
+    {
+      "id": "story.delete-active-session",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/delete-active-session.spec.ts"
+      ],
+      "components": [
+        "web/src/components/DeleteSessionDialog.tsx",
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-arrow-up",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-arrow-up.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-tab",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-tab.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-escape",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-escape.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-ctrl-modifier",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-ctrl-modifier.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-ctrl-c",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-ctrl-c.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-hidden-on-desktop",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-hidden-on-desktop.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.plan-strip",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/cockpit-plan-strip.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
+      "id": "story.diff-viewer-shows-files",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/diff-viewer-shows-files.spec.ts"
+      ],
+      "components": [
+        "web/src/components/diff/DiffFileList.tsx"
+      ]
+    },
+    {
+      "id": "story.diff-hunk-comment",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/diff-hunk-comment.spec.ts"
+      ],
+      "components": [
+        "web/src/components/diff/DiffFileViewer.tsx",
+        "web/src/components/diff/DiffLine.tsx",
+        "web/src/components/diff/comments/CommentForm.tsx",
+        "web/src/components/diff/comments/CommentsBanner.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-send-enter",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-send-enter.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-mobile-enter-newline",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-mobile-enter-newline.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-streamed-response",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-streamed-response.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/Markdown.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-stop-mid-turn",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-stop-mid-turn.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-queue-follow-up",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-queue-follow-up.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-draft-reload",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-draft-reload.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/lib/cockpitDrafts.ts"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-draft-session-switch",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-draft-session-switch.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/lib/cockpitDrafts.ts"
+      ]
+    },
+    {
+      "id": "cockpit.story.queue-edit-message",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/queue-edit-message.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.queue-delete-message",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/queue-delete-message.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-toolbar-insert",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/composer-toolbar-insert.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.queue-fold-unfold",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/queue-fold-unfold.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.stop-during-thinking",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-stop-during-thinking.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.stop-during-tool-call",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-stop-during-tool-call.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/components/cockpit/ToolCards.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.queue-follow-up-with-nav",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/queue-follow-up-with-nav.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/hooks/useCockpit.ts"
+      ]
+    },
+    {
+      "id": "cockpit.story.stop-during-sub-agent",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-stop-during-sub-agent.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/components/cockpit/ToolCards.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-open-close",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-open-close.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-tabs-visible",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-tabs-visible.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ProjectStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-clone-url-input",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-clone-url-input.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ProjectStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-browse-disk",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-browse-disk.spec.ts"
+      ],
+      "components": [
+        "web/src/components/DirectoryBrowser.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-recent-project",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-recent-project.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ProjectStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-close-via-escape",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-close-via-escape.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-prefill-from-group",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-prefill-from-group.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx",
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-session-title-edit",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-session-title-edit.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/SessionStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-worktree-toggle",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-worktree-toggle.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/SessionStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-group-field",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-group-field.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/SessionStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-extra-repos",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-extra-repos.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ExtraReposPicker.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-launch-cmd-enter",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-launch-cmd-enter.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx",
+        "web/src/components/session-wizard/steps/ReviewStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-creating-banner",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-creating-banner.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ReviewStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-last-tool-persists",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-last-tool-persists.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-launch-button",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-launch-button.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ReviewStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-branch-from-title",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-branch-from-title.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/sessionNames.ts",
+        "web/src/components/session-wizard/steps/ReviewStep.tsx"
+      ]
     }
   ]
 }

@@ -12,6 +12,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
+import { waitForReplayContains } from "../helpers/cockpit";
 
 test("cockpit/force_end_turn publishes a synthetic Stopped event", async ({}, testInfo) => {
   const serve = await spawnAoeServe({
@@ -41,19 +42,7 @@ test("cockpit/force_end_turn publishes a synthetic Stopped event", async ({}, te
     );
     expect(forceRes.status).toBe(202);
 
-    let sawUserForced = false;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const replay = await fetch(
-        `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-      ).then((r) => r.json());
-      const json = JSON.stringify(replay);
-      if (json.includes("user_forced")) {
-        sawUserForced = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    expect(sawUserForced).toBe(true);
+    await waitForReplayContains(serve.baseUrl, sessionId, "user_forced");
   } finally {
     await serve.stop();
   }

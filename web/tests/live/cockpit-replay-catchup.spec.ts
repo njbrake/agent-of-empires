@@ -59,16 +59,21 @@ test("cockpit/replay surfaces seeded events and signals lost frames", async ({},
       highest_seq: number | null;
       lowest_seq: number | null;
     } | null = null;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const res = await fetch(
-        `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-      );
-      expect(res.ok).toBeTruthy();
-      body = await res.json();
-      const userForcedCount = JSON.stringify(body!.frames).split('"user_forced"').length - 1;
-      if (userForcedCount >= SEED_EVENTS) break;
-      await new Promise((r) => setTimeout(r, 200));
-    }
+    await expect
+      .poll(
+        async () => {
+          const res = await fetch(
+            `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
+          );
+          if (!res.ok) return -1;
+          body = await res.json();
+          return (
+            JSON.stringify(body!.frames).split('"user_forced"').length - 1
+          );
+        },
+        { timeout: 15_000, intervals: [100, 200, 500, 1000] },
+      )
+      .toBeGreaterThanOrEqual(SEED_EVENTS);
     expect(body).not.toBeNull();
     expect(body!.frames.length).toBeGreaterThanOrEqual(SEED_EVENTS);
     expect(body!.lowest_seq).not.toBeNull();

@@ -20,6 +20,8 @@ pub enum SettingsCategory {
     Sandbox,
     Tmux,
     Session,
+    Agents,
+    Interaction,
     Sound,
     StatusHooks,
     Hooks,
@@ -37,9 +39,11 @@ impl SettingsCategory {
             Self::Sandbox => "Sandbox",
             Self::Tmux => "Tmux",
             Self::Session => "Session",
+            Self::Agents => "Agents",
+            Self::Interaction => "Interaction",
             Self::Sound => "Sound",
             Self::StatusHooks => "Status Hooks",
-            Self::Hooks => "Hooks",
+            Self::Hooks => "Lifecycle Hooks",
             Self::Web => "Web",
             Self::Cockpit => "Cockpit",
             Self::Logging => "Logging",
@@ -101,6 +105,10 @@ pub enum FieldKey {
     AgentDetectAs,
     HostEnvironment,
     SessionIdPollerMaxThreads,
+    LiveSendExitChord,
+    NewSessionAttachMode,
+    DefaultAttachMode,
+    ClickAction,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -157,6 +165,12 @@ pub enum FieldKey {
     LoggingMaxSizeMib,
     LoggingKeepCount,
     LoggingShowSpans,
+    /// Pseudo-key for `FieldValue::SectionHeader` rows so apply/clear
+    /// match arms have a defined-but-no-op variant rather than falling
+    /// through to a panic-on-missing-arm wildcard. Carries no payload;
+    /// multiple section markers in one category are disambiguated by
+    /// the label string on the parent `SettingField`.
+    SectionMarker,
 }
 
 /// Map `UpdateCheckMode` to the Select index used by the settings TUI.
@@ -224,6 +238,7 @@ fn value_display_string(value: &FieldValue) -> String {
         }
         FieldValue::List(items) => format!("[{} items]", items.len()),
         FieldValue::OptionalText(v) => v.clone().unwrap_or_else(|| "(empty)".to_string()),
+        FieldValue::SectionHeader => String::new(),
     }
 }
 
@@ -270,6 +285,12 @@ pub enum FieldValue {
     },
     List(Vec<String>),
     OptionalText(Option<String>),
+    /// Non-interactive section divider rendered as a styled heading.
+    /// The `SettingField::label` carries the heading text and
+    /// `description` carries the (optional) subtitle below it. Input
+    /// handlers skip cursor navigation past entries carrying this
+    /// variant; apply / clear pathways no-op for them.
+    SectionHeader,
 }
 
 /// A setting field with metadata
@@ -284,6 +305,15 @@ pub struct SettingField {
     pub has_override: bool,
     /// Human-readable display of the inherited (global/base) value, set when has_override is true
     pub inherited_display: Option<String>,
+}
+
+impl SettingField {
+    /// True when this entry is a non-interactive section divider
+    /// (`FieldValue::SectionHeader`). The renderer paints it as a
+    /// styled heading and the input handler skips navigation past it.
+    pub fn is_section_header(&self) -> bool {
+        matches!(self.value, FieldValue::SectionHeader)
+    }
 }
 
 impl SettingField {
@@ -338,6 +368,8 @@ pub fn build_fields_for_category(
         SettingsCategory::Sandbox => build_sandbox_fields(scope, global, profile),
         SettingsCategory::Tmux => build_tmux_fields(scope, global, profile),
         SettingsCategory::Session => build_session_fields(scope, global, profile),
+        SettingsCategory::Agents => build_agents_fields(scope, global, profile),
+        SettingsCategory::Interaction => build_interaction_fields(scope, global, profile),
         SettingsCategory::Sound => build_sound_fields(scope, global, profile),
         SettingsCategory::StatusHooks => build_status_hook_fields(scope, global, profile),
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
@@ -377,6 +409,49 @@ fn index_to_row_tag(idx: usize) -> crate::session::config::RowTagMode {
         3 => Sandbox,
         4 => Branch,
         _ => None,
+    }
+}
+
+/// Display labels for `NewSessionAttachMode`. Order must match
+/// `new_session_attach_mode_to_index` / `index_to_new_session_attach_mode`.
+/// `Tmux` is first so it is the default selection.
+const NEW_SESSION_ATTACH_MODE_OPTIONS: &[&str] = &["Tmux", "Live mode"];
+
+fn new_session_attach_mode_to_index(mode: crate::session::NewSessionAttachMode) -> usize {
+    use crate::session::NewSessionAttachMode::*;
+    match mode {
+        Tmux => 0,
+        LiveSend => 1,
+    }
+}
+
+fn index_to_new_session_attach_mode(idx: usize) -> crate::session::NewSessionAttachMode {
+    use crate::session::NewSessionAttachMode::*;
+    match idx {
+        1 => LiveSend,
+        _ => Tmux,
+    }
+}
+
+/// Display labels for `ClickAction`. Order must match
+/// `click_action_to_index` / `index_to_click_action`. `LiveSend` is
+/// first so it is the default selection (matches the historical
+/// single-click-enters-live behavior).
+const CLICK_ACTION_OPTIONS: &[&str] = &["Live mode", "Select only"];
+
+fn click_action_to_index(mode: crate::session::ClickAction) -> usize {
+    use crate::session::ClickAction::*;
+    match mode {
+        LiveSend => 0,
+        SelectOnly => 1,
+    }
+}
+
+fn index_to_click_action(idx: usize) -> crate::session::ClickAction {
+    use crate::session::ClickAction::*;
+    match idx {
+        1 => SelectOnly,
+        _ => LiveSend,
     }
 }
 
@@ -615,30 +690,12 @@ fn build_cockpit_fields(
             inherited_display: None,
         },
         SettingField {
-            key: FieldKey::CockpitMaxConcurrentWorkers,
-            label: "Max concurrent workers",
-            description: "Hard cap on simultaneously running cockpit agent subprocesses; additional sessions queue.",
-            value: FieldValue::Number(u64::from(max_workers)),
-            category: SettingsCategory::Cockpit,
-            has_override: mw_override,
-            inherited_display: None,
-        },
-        SettingField {
             key: FieldKey::CockpitReplayEvents,
             label: "History cap (events)",
             description: "Per-session retention cap on cockpit events. 0 = unlimited (default); set a non-zero value to bound disk usage on long-running sessions.",
             value: FieldValue::Number(u64::from(replay_events)),
             category: SettingsCategory::Cockpit,
             has_override: re_override,
-            inherited_display: None,
-        },
-        SettingField {
-            key: FieldKey::CockpitReplayBytes,
-            label: "Replay buffer bytes",
-            description: "Maximum bytes of cockpit events kept in the per-session replay buffer.",
-            value: FieldValue::Number(replay_bytes),
-            category: SettingsCategory::Cockpit,
-            has_override: rb_override,
             inherited_display: None,
         },
         SettingField {
@@ -657,6 +714,24 @@ fn build_cockpit_fields(
             value: FieldValue::Bool(show_tool_durations),
             category: SettingsCategory::Cockpit,
             has_override: std_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::SectionMarker,
+            label: "Advanced",
+            description: "Operational tuning, rarely needed after first setup. Adjust only if you've read the description and know what you're changing.",
+            value: FieldValue::SectionHeader,
+            category: SettingsCategory::Cockpit,
+            has_override: false,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitMaxConcurrentWorkers,
+            label: "Max concurrent workers",
+            description: "Hard cap on simultaneously running cockpit agent subprocesses; additional sessions queue.",
+            value: FieldValue::Number(u64::from(max_workers)),
+            category: SettingsCategory::Cockpit,
+            has_override: mw_override,
             inherited_display: None,
         },
         SettingField {
@@ -681,6 +756,15 @@ fn build_cockpit_fields(
             },
             category: SettingsCategory::Cockpit,
             has_override: qdm_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitReplayBytes,
+            label: "Replay buffer bytes",
+            description: "Maximum bytes of cockpit events kept in the per-session replay buffer.",
+            value: FieldValue::Number(replay_bytes),
+            category: SettingsCategory::Cockpit,
+            has_override: rb_override,
             inherited_display: None,
         },
         SettingField {
@@ -1477,18 +1561,6 @@ fn build_session_fields(
 ) -> Vec<SettingField> {
     let session = profile.session.as_ref();
 
-    let (default_tool, has_override) = resolve_optional(
-        scope,
-        global.session.default_tool.clone(),
-        session.and_then(|s| s.default_tool.clone()),
-        session.map(|s| s.default_tool.is_some()).unwrap_or(false),
-    );
-
-    let selected = crate::agents::settings_index_from_name(default_tool.as_deref());
-
-    let mut options = vec!["Auto (first available)".to_string()];
-    options.extend(crate::agents::agent_names().iter().map(|n| n.to_string()));
-
     let (yolo_mode_default, yolo_override) = resolve_value(
         scope,
         global.session.yolo_mode_default,
@@ -1521,141 +1593,13 @@ fn build_session_fields(
         session.and_then(|s| s.row_tag),
     );
 
-    let (agent_status_hooks, status_hooks_override) = resolve_value(
-        scope,
-        global.session.agent_status_hooks,
-        session.and_then(|s| s.agent_status_hooks),
-    );
-
     let (host_environment, host_env_override) = resolve_value(
         scope,
         global.environment.clone(),
         profile.environment.clone(),
     );
 
-    // Agent extra args: HashMap -> Vec<String> of "key=value" items for List field
-    let (extra_args_map, extra_args_override) = resolve_value(
-        scope,
-        global.session.agent_extra_args.clone(),
-        session.and_then(|s| s.agent_extra_args.clone()),
-    );
-    let extra_args_list: Vec<String> = {
-        let mut items: Vec<_> = extra_args_map
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        items.sort();
-        items
-    };
-
-    // Agent command override: HashMap -> Vec<String> of "key=value" items
-    let (cmd_override_map, cmd_override_override) = resolve_value(
-        scope,
-        global.session.agent_command_override.clone(),
-        session.and_then(|s| s.agent_command_override.clone()),
-    );
-    let cmd_override_list: Vec<String> = {
-        let mut items: Vec<_> = cmd_override_map
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        items.sort();
-        items
-    };
-
-    let global_tool_selected =
-        crate::agents::settings_index_from_name(global.session.default_tool.as_deref());
-
-    let global_extra_args_list: Vec<String> = {
-        let mut items: Vec<_> = global
-            .session
-            .agent_extra_args
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        items.sort();
-        items
-    };
-    let global_cmd_override_list: Vec<String> = {
-        let mut items: Vec<_> = global
-            .session
-            .agent_command_override
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        items.sort();
-        items
-    };
-
-    // Custom agents: HashMap -> Vec<String> of "name=command" items
-    let (custom_agents_map, custom_agents_override) = resolve_value(
-        scope,
-        global.session.custom_agents.clone(),
-        session.and_then(|s| s.custom_agents.clone()),
-    );
-    let custom_agents_list: Vec<String> = {
-        let mut items: Vec<_> = custom_agents_map
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        items.sort();
-        items
-    };
-    let global_custom_agents_list: Vec<String> = {
-        let mut items: Vec<_> = global
-            .session
-            .custom_agents
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        items.sort();
-        items
-    };
-
-    // Agent detect_as: HashMap -> Vec<String> of "name=builtin" items
-    let (detect_as_map, detect_as_override) = resolve_value(
-        scope,
-        global.session.agent_detect_as.clone(),
-        session.and_then(|s| s.agent_detect_as.clone()),
-    );
-    let detect_as_list: Vec<String> = {
-        let mut items: Vec<_> = detect_as_map
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        items.sort();
-        items
-    };
-    let global_detect_as_list: Vec<String> = {
-        let mut items: Vec<_> = global
-            .session
-            .agent_detect_as
-            .iter()
-            .map(|(k, v)| format!("{}={}", k, v))
-            .collect();
-        items.sort();
-        items
-    };
-
     let mut fields = vec![
-        SettingField {
-            key: FieldKey::DefaultTool,
-            label: "Default Tool",
-            description: "Default coding tool for new sessions",
-            value: FieldValue::Select {
-                selected,
-                options: options.clone(),
-            },
-            category: SettingsCategory::Session,
-            has_override,
-            inherited_display: inherited_if(
-                has_override,
-                FieldValue::Select {
-                    selected: global_tool_selected,
-                    options,
-                },
-            ),
-        },
         SettingField {
             key: FieldKey::YoloModeDefault,
             label: "YOLO Mode Default",
@@ -1726,68 +1670,6 @@ fn build_session_fields(
             ),
         },
         SettingField {
-            key: FieldKey::AgentExtraArgs,
-            label: "Agent Extra Args",
-            description:
-                "Per-agent extra arguments appended after the binary (e.g. opencode=--port 8080)",
-            value: FieldValue::List(extra_args_list),
-            category: SettingsCategory::Session,
-            has_override: extra_args_override,
-            inherited_display: inherited_if(
-                extra_args_override,
-                FieldValue::List(global_extra_args_list),
-            ),
-        },
-        SettingField {
-            key: FieldKey::AgentCommandOverride,
-            label: "Agent Command Override",
-            description: "Per-agent command override replacing the binary (e.g. claude=my-wrapper)",
-            value: FieldValue::List(cmd_override_list),
-            category: SettingsCategory::Session,
-            has_override: cmd_override_override,
-            inherited_display: inherited_if(
-                cmd_override_override,
-                FieldValue::List(global_cmd_override_list),
-            ),
-        },
-        SettingField {
-            key: FieldKey::CustomAgents,
-            label: "Custom Agents",
-            description:
-                "User-defined agents: name=command (e.g. lenovo-claude=ssh -t lenovo claude)",
-            value: FieldValue::List(custom_agents_list),
-            category: SettingsCategory::Session,
-            has_override: custom_agents_override,
-            inherited_display: inherited_if(
-                custom_agents_override,
-                FieldValue::List(global_custom_agents_list),
-            ),
-        },
-        SettingField {
-            key: FieldKey::AgentDetectAs,
-            label: "Agent Detect As",
-            description: "Status detection mapping: agent=builtin (e.g. lenovo-claude=claude)",
-            value: FieldValue::List(detect_as_list),
-            category: SettingsCategory::Session,
-            has_override: detect_as_override,
-            inherited_display: inherited_if(
-                detect_as_override,
-                FieldValue::List(global_detect_as_list),
-            ),
-        },
-        SettingField {
-            key: FieldKey::AgentStatusHooks,
-            label: "Agent Status Hooks",
-            description: "Install status-detection hooks into the agent's config file",
-            value: FieldValue::Bool(agent_status_hooks),
-            category: SettingsCategory::Session,
-            has_override: status_hooks_override,
-            inherited_display: inherited_if(
-                status_hooks_override,
-                FieldValue::Bool(global.session.agent_status_hooks),
-            ),
-        },
-        SettingField {
             key: FieldKey::HostEnvironment,
             label: "Host Environment",
             description: "Env vars injected into the host command line: KEY=value (literal), KEY=$VAR (passthrough from host), KEY=$$literal (escape a leading $), or bare KEY (passthrough). All forms resolve to a literal `KEY=value` arg in the spawned process, visible in `ps`; for secrets you want hidden from argv, configure Sandbox > Sandbox Environment instead. Profile value replaces the global list.",
@@ -1817,6 +1699,352 @@ fn build_session_fields(
     }
 
     fields
+}
+
+/// Per-agent / per-tool configuration. Split out of Session because
+/// the bucket was a grab-bag and DefaultTool + the agent_* maps are a
+/// coherent mental model on their own.
+fn build_agents_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let session = profile.session.as_ref();
+
+    let (default_tool, has_override) = resolve_optional(
+        scope,
+        global.session.default_tool.clone(),
+        session.and_then(|s| s.default_tool.clone()),
+        session.map(|s| s.default_tool.is_some()).unwrap_or(false),
+    );
+
+    let selected = crate::agents::settings_index_from_name(default_tool.as_deref());
+
+    let mut options = vec!["Auto (first available)".to_string()];
+    options.extend(crate::agents::agent_names().iter().map(|n| n.to_string()));
+
+    let global_tool_selected =
+        crate::agents::settings_index_from_name(global.session.default_tool.as_deref());
+
+    let (agent_status_hooks, status_hooks_override) = resolve_value(
+        scope,
+        global.session.agent_status_hooks,
+        session.and_then(|s| s.agent_status_hooks),
+    );
+
+    let (extra_args_map, extra_args_override) = resolve_value(
+        scope,
+        global.session.agent_extra_args.clone(),
+        session.and_then(|s| s.agent_extra_args.clone()),
+    );
+    let extra_args_list: Vec<String> = {
+        let mut items: Vec<_> = extra_args_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_extra_args_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_extra_args
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
+    let (cmd_override_map, cmd_override_override) = resolve_value(
+        scope,
+        global.session.agent_command_override.clone(),
+        session.and_then(|s| s.agent_command_override.clone()),
+    );
+    let cmd_override_list: Vec<String> = {
+        let mut items: Vec<_> = cmd_override_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_cmd_override_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_command_override
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
+    let (custom_agents_map, custom_agents_override) = resolve_value(
+        scope,
+        global.session.custom_agents.clone(),
+        session.and_then(|s| s.custom_agents.clone()),
+    );
+    let custom_agents_list: Vec<String> = {
+        let mut items: Vec<_> = custom_agents_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_custom_agents_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .custom_agents
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
+    let (detect_as_map, detect_as_override) = resolve_value(
+        scope,
+        global.session.agent_detect_as.clone(),
+        session.and_then(|s| s.agent_detect_as.clone()),
+    );
+    let detect_as_list: Vec<String> = {
+        let mut items: Vec<_> = detect_as_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_detect_as_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_detect_as
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
+    vec![
+        SettingField {
+            key: FieldKey::DefaultTool,
+            label: "Default Tool",
+            description: "Default coding tool for new sessions",
+            value: FieldValue::Select {
+                selected,
+                options: options.clone(),
+            },
+            category: SettingsCategory::Agents,
+            has_override,
+            inherited_display: inherited_if(
+                has_override,
+                FieldValue::Select {
+                    selected: global_tool_selected,
+                    options,
+                },
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentExtraArgs,
+            label: "Agent Extra Args",
+            description:
+                "Per-agent extra arguments appended after the binary (e.g. opencode=--port 8080)",
+            value: FieldValue::List(extra_args_list),
+            category: SettingsCategory::Agents,
+            has_override: extra_args_override,
+            inherited_display: inherited_if(
+                extra_args_override,
+                FieldValue::List(global_extra_args_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentCommandOverride,
+            label: "Agent Command Override",
+            description: "Per-agent command override replacing the binary (e.g. claude=my-wrapper)",
+            value: FieldValue::List(cmd_override_list),
+            category: SettingsCategory::Agents,
+            has_override: cmd_override_override,
+            inherited_display: inherited_if(
+                cmd_override_override,
+                FieldValue::List(global_cmd_override_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::CustomAgents,
+            label: "Custom Agents",
+            description:
+                "User-defined agents: name=command (e.g. lenovo-claude=ssh -t lenovo claude)",
+            value: FieldValue::List(custom_agents_list),
+            category: SettingsCategory::Agents,
+            has_override: custom_agents_override,
+            inherited_display: inherited_if(
+                custom_agents_override,
+                FieldValue::List(global_custom_agents_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentDetectAs,
+            label: "Agent Detect As",
+            description: "Status detection mapping: agent=builtin (e.g. lenovo-claude=claude)",
+            value: FieldValue::List(detect_as_list),
+            category: SettingsCategory::Agents,
+            has_override: detect_as_override,
+            inherited_display: inherited_if(
+                detect_as_override,
+                FieldValue::List(global_detect_as_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentStatusHooks,
+            label: "Agent Status Hooks",
+            description: "Install status-detection hooks into the agent's config file",
+            value: FieldValue::Bool(agent_status_hooks),
+            category: SettingsCategory::Agents,
+            has_override: status_hooks_override,
+            inherited_display: inherited_if(
+                status_hooks_override,
+                FieldValue::Bool(global.session.agent_status_hooks),
+            ),
+        },
+    ]
+}
+
+/// "How do I get into a session" configuration. The attach-mode trio
+/// (Tab vs Enter vs new-session) is a coherent decision the user
+/// thinks about together; pulling it out of the Session grab-bag puts
+/// the related knobs next to each other.
+fn build_interaction_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let session = profile.session.as_ref();
+
+    let (live_send_exit_chord, live_send_exit_chord_override) = resolve_value(
+        scope,
+        global.session.live_send_exit_chord.clone(),
+        session.and_then(|s| s.live_send_exit_chord.clone()),
+    );
+
+    let (new_session_attach_mode, new_session_attach_mode_override) = resolve_value(
+        scope,
+        global.session.new_session_attach_mode,
+        session.and_then(|s| s.new_session_attach_mode),
+    );
+
+    let (default_attach_mode, default_attach_mode_override) = resolve_value(
+        scope,
+        global.session.default_attach_mode,
+        session.and_then(|s| s.default_attach_mode),
+    );
+
+    let (click_action, click_action_override) = resolve_value(
+        scope,
+        global.session.click_action,
+        session.and_then(|s| s.click_action),
+    );
+
+    vec![
+        SettingField {
+            key: FieldKey::DefaultAttachMode,
+            label: "Default Attach Mode",
+            description: "What Enter (and double-click) does on a session row in \
+                 the Agent view: attach to tmux (default, historical \
+                 behavior) or enter live-send mode so the home list stays \
+                 visible and keystrokes pipe through to the agent. \
+                 Terminal/Tool views and cockpit sessions ignore this \
+                 setting.",
+            value: FieldValue::Select {
+                selected: new_session_attach_mode_to_index(default_attach_mode),
+                options: NEW_SESSION_ATTACH_MODE_OPTIONS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            },
+            category: SettingsCategory::Interaction,
+            has_override: default_attach_mode_override,
+            inherited_display: inherited_if(
+                default_attach_mode_override,
+                FieldValue::Select {
+                    selected: new_session_attach_mode_to_index(global.session.default_attach_mode),
+                    options: NEW_SESSION_ATTACH_MODE_OPTIONS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                },
+            ),
+        },
+        SettingField {
+            key: FieldKey::NewSessionAttachMode,
+            label: "New Session Attach Mode",
+            description: "What to do after creating a new session: drop into tmux \
+                 (default, historical behavior) or enter live-send mode so \
+                 you never have to be inside tmux. Cockpit sessions ignore \
+                 this setting.",
+            value: FieldValue::Select {
+                selected: new_session_attach_mode_to_index(new_session_attach_mode),
+                options: NEW_SESSION_ATTACH_MODE_OPTIONS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            },
+            category: SettingsCategory::Interaction,
+            has_override: new_session_attach_mode_override,
+            inherited_display: inherited_if(
+                new_session_attach_mode_override,
+                FieldValue::Select {
+                    selected: new_session_attach_mode_to_index(
+                        global.session.new_session_attach_mode,
+                    ),
+                    options: NEW_SESSION_ATTACH_MODE_OPTIONS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                },
+            ),
+        },
+        SettingField {
+            key: FieldKey::ClickAction,
+            label: "Mouse Click Action",
+            description: "What a single mouse click on a session row does in the \
+                 Agent view. `Live mode` (default) enters live-send for the \
+                 clicked row, the historical behavior. `Select only` just \
+                 moves the cursor so you can read the preview without ever \
+                 entering live-send. Double-click still activates via Default \
+                 Attach Mode regardless of this setting.",
+            value: FieldValue::Select {
+                selected: click_action_to_index(click_action),
+                options: CLICK_ACTION_OPTIONS.iter().map(|s| s.to_string()).collect(),
+            },
+            category: SettingsCategory::Interaction,
+            has_override: click_action_override,
+            inherited_display: inherited_if(
+                click_action_override,
+                FieldValue::Select {
+                    selected: click_action_to_index(global.session.click_action),
+                    options: CLICK_ACTION_OPTIONS.iter().map(|s| s.to_string()).collect(),
+                },
+            ),
+        },
+        SettingField {
+            key: FieldKey::LiveSendExitChord,
+            label: "Live-Send Exit Chord",
+            description: "Comma-separated chord specs that exit live-send mode. \
+                 Tmux-style: C-q, M-x, F12. Default `C-q` works in \
+                 every terminal we ship to; add entries for additional \
+                 exits if you need to send C-q through to the agent.",
+            value: FieldValue::Text(live_send_exit_chord),
+            category: SettingsCategory::Interaction,
+            has_override: live_send_exit_chord_override,
+            inherited_display: inherited_if(
+                live_send_exit_chord_override,
+                FieldValue::Text(global.session.live_send_exit_chord.clone()),
+            ),
+        },
+    ]
 }
 
 fn build_sound_fields(
@@ -2293,6 +2521,18 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::RestartWakeMessage, FieldValue::Text(v)) => {
             config.session.restart_wake_message = v.clone();
         }
+        (FieldKey::LiveSendExitChord, FieldValue::Text(v)) => {
+            config.session.live_send_exit_chord = v.clone();
+        }
+        (FieldKey::NewSessionAttachMode, FieldValue::Select { selected, .. }) => {
+            config.session.new_session_attach_mode = index_to_new_session_attach_mode(*selected);
+        }
+        (FieldKey::DefaultAttachMode, FieldValue::Select { selected, .. }) => {
+            config.session.default_attach_mode = index_to_new_session_attach_mode(*selected);
+        }
+        (FieldKey::ClickAction, FieldValue::Select { selected, .. }) => {
+            config.session.click_action = index_to_click_action(*selected);
+        }
         (FieldKey::RowTag, FieldValue::Select { selected, .. }) => {
             config.session.row_tag = index_to_row_tag(*selected);
         }
@@ -2763,6 +3003,32 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 s.restart_wake_message = val
             });
         }
+        (FieldKey::LiveSendExitChord, FieldValue::Text(v)) => {
+            set_profile_override(v.clone(), &mut config.session, |s, val| {
+                s.live_send_exit_chord = val
+            });
+        }
+        (FieldKey::NewSessionAttachMode, FieldValue::Select { selected, .. }) => {
+            set_profile_override(
+                index_to_new_session_attach_mode(*selected),
+                &mut config.session,
+                |s, val| s.new_session_attach_mode = val,
+            );
+        }
+        (FieldKey::DefaultAttachMode, FieldValue::Select { selected, .. }) => {
+            set_profile_override(
+                index_to_new_session_attach_mode(*selected),
+                &mut config.session,
+                |s, val| s.default_attach_mode = val,
+            );
+        }
+        (FieldKey::ClickAction, FieldValue::Select { selected, .. }) => {
+            set_profile_override(
+                index_to_click_action(*selected),
+                &mut config.session,
+                |s, val| s.click_action = val,
+            );
+        }
         (FieldKey::RowTag, FieldValue::Select { selected, .. }) => {
             set_profile_override(
                 index_to_row_tag(*selected),
@@ -3093,7 +3359,7 @@ mod tests {
         let profile = ProfileConfig::default();
 
         let fields = build_fields_for_category(
-            SettingsCategory::Session,
+            SettingsCategory::Agents,
             SettingsScope::Global,
             &global,
             &profile,
@@ -3334,5 +3600,158 @@ mod tests {
             profile.status_hooks.as_ref().and_then(|s| s.debounce_ms),
             Some(250)
         );
+    }
+
+    /// The Cockpit tab inserts a "Advanced" section header between
+    /// common settings and operational tuning fields. This test pins
+    /// (1) the header is present, (2) the common keys are before it,
+    /// and (3) the tuning keys are after it. The exact ordering
+    /// matters because the renderer puts the visual divider at the
+    /// header's position; if the split drifts, users see headings in
+    /// the wrong place rather than a clean common-then-advanced split.
+    #[test]
+    fn cockpit_fields_have_advanced_section_marker() {
+        let global = Config::default();
+        let profile = ProfileConfig::default();
+        let fields = build_fields_for_category(
+            SettingsCategory::Cockpit,
+            SettingsScope::Global,
+            &global,
+            &profile,
+        );
+        let header_idx = fields
+            .iter()
+            .position(|f| matches!(f.value, FieldValue::SectionHeader))
+            .expect("Cockpit should contain an 'Advanced' section header");
+        let header = &fields[header_idx];
+        assert_eq!(header.label, "Advanced");
+        assert_eq!(header.key, FieldKey::SectionMarker);
+        // Common settings (user-facing) live before the header.
+        let common_keys = [
+            FieldKey::CockpitEnabled,
+            FieldKey::CockpitDefaultForClaude,
+            FieldKey::CockpitDefaultAgent,
+            FieldKey::CockpitReplayEvents,
+            FieldKey::CockpitNodePath,
+            FieldKey::CockpitShowToolDurations,
+        ];
+        for k in common_keys {
+            let pos = fields.iter().position(|f| f.key == k).unwrap();
+            assert!(
+                pos < header_idx,
+                "common cockpit field {:?} must precede the Advanced header (pos={}, header={})",
+                k,
+                pos,
+                header_idx
+            );
+        }
+        // Advanced tuning lives after.
+        let advanced_keys = [
+            FieldKey::CockpitMaxConcurrentWorkers,
+            FieldKey::CockpitMaxConcurrentResumes,
+            FieldKey::CockpitQueueDrainMode,
+            FieldKey::CockpitReplayBytes,
+            FieldKey::CockpitForceEndTurnThresholdSecs,
+            FieldKey::CockpitSilentOrphanGraceSecs,
+            FieldKey::CockpitSilentOrphanFastGraceSecs,
+        ];
+        for k in advanced_keys {
+            let pos = fields.iter().position(|f| f.key == k).unwrap();
+            assert!(
+                pos > header_idx,
+                "advanced cockpit field {:?} must follow the Advanced header (pos={}, header={})",
+                k,
+                pos,
+                header_idx
+            );
+        }
+    }
+
+    /// Splitting Session moved DefaultTool, agent maps, and attach-mode
+    /// settings out into dedicated Agents / Interaction tabs. Pin the
+    /// new homes so a future refactor doesn't silently re-merge them
+    /// without re-evaluating the UX justification.
+    #[test]
+    fn session_split_moved_fields_to_their_new_tabs() {
+        let global = Config::default();
+        let profile = ProfileConfig::default();
+
+        let agents_keys: Vec<FieldKey> = build_fields_for_category(
+            SettingsCategory::Agents,
+            SettingsScope::Global,
+            &global,
+            &profile,
+        )
+        .iter()
+        .map(|f| f.key)
+        .collect();
+        for k in [
+            FieldKey::DefaultTool,
+            FieldKey::AgentExtraArgs,
+            FieldKey::AgentCommandOverride,
+            FieldKey::CustomAgents,
+            FieldKey::AgentDetectAs,
+            FieldKey::AgentStatusHooks,
+        ] {
+            assert!(
+                agents_keys.contains(&k),
+                "expected {:?} in Agents tab, got {:?}",
+                k,
+                agents_keys
+            );
+        }
+
+        let interaction_keys: Vec<FieldKey> = build_fields_for_category(
+            SettingsCategory::Interaction,
+            SettingsScope::Global,
+            &global,
+            &profile,
+        )
+        .iter()
+        .map(|f| f.key)
+        .collect();
+        for k in [
+            FieldKey::DefaultAttachMode,
+            FieldKey::NewSessionAttachMode,
+            FieldKey::ClickAction,
+            FieldKey::LiveSendExitChord,
+        ] {
+            assert!(
+                interaction_keys.contains(&k),
+                "expected {:?} in Interaction tab, got {:?}",
+                k,
+                interaction_keys
+            );
+        }
+
+        let session_keys: Vec<FieldKey> = build_fields_for_category(
+            SettingsCategory::Session,
+            SettingsScope::Global,
+            &global,
+            &profile,
+        )
+        .iter()
+        .map(|f| f.key)
+        .collect();
+        // None of the moved fields should remain in Session.
+        for k in [
+            FieldKey::DefaultTool,
+            FieldKey::AgentExtraArgs,
+            FieldKey::AgentCommandOverride,
+            FieldKey::CustomAgents,
+            FieldKey::AgentDetectAs,
+            FieldKey::AgentStatusHooks,
+            FieldKey::DefaultAttachMode,
+            FieldKey::NewSessionAttachMode,
+            FieldKey::ClickAction,
+            FieldKey::LiveSendExitChord,
+        ] {
+            assert!(
+                !session_keys.contains(&k),
+                "{:?} should have moved out of the Session tab, but it's still there: {:?}",
+                k,
+                session_keys
+            );
+        }
     }
 }

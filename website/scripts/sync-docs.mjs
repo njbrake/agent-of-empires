@@ -261,7 +261,7 @@ const URL_MAP = {
 };
 
 const GITHUB_BASE =
-  "https://github.com/njbrake/agent-of-empires/blob/main/";
+  "https://github.com/agent-of-empires/agent-of-empires/blob/main/";
 
 function rewriteLinks(content, sourceDir) {
   // Rewrite markdown links to .md files: [text](target.md) or [text](target.md#anchor)

@@ -28,21 +28,7 @@ use agent_of_empires::cockpit::state::{CockpitSessionId, Event};
 use tokio::net::UnixListener;
 use tokio::process::Command;
 
-fn node_available() -> bool {
-    std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-fn shim_path() -> PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    PathBuf::from(manifest)
-        .join("cockpit-worker")
-        .join("test-shim")
-        .join("shim.mjs")
-}
+use crate::common::{shim_path, shim_ready};
 
 /// Spawn the shim and bridge its stdio to a UNIX listener. Mimics what
 /// `aoe __cockpit-runner` does in production: byte-proxy, no protocol
@@ -116,12 +102,8 @@ async fn drain_for_stopped_reason(client: &mut AcpClient, deadline: Instant) -> 
 
 #[tokio::test]
 async fn attach_in_flight_synthesizes_reattach_idle_stopped() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
-        return;
-    }
-    if !shim_path().exists() {
-        eprintln!("skipping: shim missing");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
 
@@ -158,12 +140,8 @@ async fn attach_in_flight_synthesizes_reattach_idle_stopped() {
 
 #[tokio::test]
 async fn attach_idle_session_does_not_synthesize_stopped() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
-        return;
-    }
-    if !shim_path().exists() {
-        eprintln!("skipping: shim missing");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
 
@@ -207,12 +185,8 @@ async fn attach_idle_session_does_not_synthesize_stopped() {
 /// `session/prompt` round-trip, and event mapping.
 #[tokio::test]
 async fn socket_transport_round_trips_prompt_via_attach() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
-        return;
-    }
-    if !shim_path().exists() {
-        eprintln!("skipping: shim missing");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
 

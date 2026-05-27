@@ -16,7 +16,6 @@ export function safeSetItem(key: string, value: string): boolean {
   const storage = getStorage();
   if (!storage) return false;
   try {
-    // eslint-disable-next-line no-restricted-syntax -- the canonical safe wrapper
     storage.setItem(key, value);
     return true;
   } catch {

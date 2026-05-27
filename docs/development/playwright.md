@@ -109,6 +109,61 @@ Script file shape:
 
 Specs that need a custom script call `spawnAoeServe({ cockpit: true, fakeAcpScript: "/tmp/script.json", ... })` directly instead of using the `serveCockpit` fixture.
 
+## Cockpit user-story specs
+
+`web/tests/live/cockpit-stories/` holds UI-driven cockpit specs that
+drive the React surface end-to-end (clicks, keystrokes, navigation) and
+assert on rendered DOM. They complement the REST-contract specs at
+`web/tests/live/cockpit-*.spec.ts`, which assert against
+`/api/sessions/:id/cockpit/replay`. The story specs catch reducer-to-render
+plumbing breakage that the REST tracers cannot see.
+
+Pattern:
+
+```ts
+import { test as base, expect } from "@playwright/test";
+import { spawnAoeServe, listSessions, seedSessionViaAoeAdd } from "../../helpers/aoeServe";
+import { enableCockpitAndWait, waitForCockpitView } from "../../helpers/cockpit";
+
+base("send message via Enter renders agent chunk", async ({ page }, testInfo) => {
+  const serve = await spawnAoeServe({
+    authMode: "none",
+    cockpit: true,
+    workerIndex: testInfo.workerIndex,
+    parallelIndex: testInfo.parallelIndex,
+    seedFn: seedSessionViaAoeAdd({ title: "story" }),
+  });
+  try {
+    const sessions = await listSessions(serve.baseUrl);
+    const seeded = sessions.find((s) => s.title === "story");
+    if (!seeded) throw new Error("seeded session 'story' missing");
+    const sessionId = seeded.id;
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
+    await page.goto(`${serve.baseUrl}/session/${sessionId}`);
+    await waitForCockpitView(page);
+    const composer = page.getByRole("textbox", { name: /Send a message/i });
+    await composer.fill("hello");
+    await composer.press("Enter");
+    await expect(page.getByText(/Hello from fake ACP agent/)).toBeVisible();
+  } finally {
+    await serve.stop();
+  }
+});
+```
+
+`enableCockpitAndWait` posts to `/cockpit/enable`, asserts the response
+was 2xx (so a 4xx/5xx surfaces immediately rather than as a noisy
+readiness timeout), and then waits for the supervisor handshake.
+`waitForCockpitView` waits for the React tree to mount the composer.
+Together they ensure both sides are ready before any click or keystroke.
+Look up the seeded session by `title` rather than `sessions[0]` so the
+spec stays deterministic if seeding adds more rows later.
+
+Custom per-spec scripts go through a temp file (see
+`cockpit-stories/approval-allow.spec.ts` or `cockpit-approval.spec.ts`
+for the canonical setup); the `serveCockpit` fixture is for stories
+happy with the default chunk-then-stop script.
+
 ## Coverage matrix
 
 `web/tests/coverage-matrix.json` is the source of truth for "what does each spec cover". Every entry has:

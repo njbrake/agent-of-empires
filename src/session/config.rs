@@ -509,6 +509,15 @@ pub struct AppStateConfig {
     /// Restored on subsequent opens so users don't re-navigate every time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_browse_dir: Option<PathBuf>,
+
+    /// Collapsed state for the synthetic "Archived" sidebar section.
+    /// Defaults to collapsed when absent. Archived sessions are pulled out
+    /// of the natural sort and grouped under this section at the bottom
+    /// across every sort mode, so they stop interleaving with active rows
+    /// without users in non-Attention modes losing the ability to find a
+    /// shelved session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_section_collapsed: Option<bool>,
 }
 
 /// Session-related configuration defaults
@@ -592,6 +601,80 @@ pub struct SessionConfig {
     /// to pick up immediately.
     #[serde(default = "default_session_id_poller_max_threads")]
     pub session_id_poller_max_threads: u32,
+
+    /// Comma-separated list of chord specs that exit live-send mode.
+    /// Each chord is a tmux-style spec like `C-q`, `M-x`, `F12`; the
+    /// first chord in the list that matches an event ends live mode.
+    /// Default is `C-q` alone: mobile-friendly, passes through Termius,
+    /// well-known as a quit chord, and verified to survive every common
+    /// macOS terminal config (unlike `C-]` and `C-\`, both of which
+    /// fail silently on at least one combination). Customize when the
+    /// default conflicts with a workflow (vim quoted-insert needs `C-q`
+    /// passthrough, so swap to `F12,M-q` or any chord that's free).
+    #[serde(default = "default_live_send_exit_chord")]
+    pub live_send_exit_chord: String,
+
+    /// What the TUI does immediately after a new session finishes
+    /// creating. `Tmux` (default) drops into the tmux attach view, the
+    /// historical behavior. `LiveSend` enters live-send mode against
+    /// the new session's pane instead, so users who never want to be
+    /// inside tmux directly can create-and-type without an extra
+    /// keystroke. Cockpit-mode sessions ignore this setting because
+    /// neither tmux nor live-send applies to them.
+    #[serde(default)]
+    pub new_session_attach_mode: NewSessionAttachMode,
+
+    /// What `Enter` (and double-click) does on an existing session
+    /// row in the Agent view. `Tmux` (default) attaches to the tmux
+    /// pane, the historical behavior. `LiveSend` enters live-send
+    /// mode instead so the TUI keeps the home list visible and pipes
+    /// keystrokes through to the agent. Terminal/Tool views and
+    /// cockpit-mode sessions ignore this setting; they keep their
+    /// existing activation paths (terminal attach, cockpit open).
+    #[serde(default)]
+    pub default_attach_mode: NewSessionAttachMode,
+
+    /// What a single mouse click on a session row does in the Agent
+    /// view. `LiveSend` (default) enters live-send mode for that row,
+    /// the historical behavior. `SelectOnly` just moves the cursor
+    /// to the row so the user can read the preview without ever
+    /// entering live-send. Double-click still activates via
+    /// `default_attach_mode` regardless of this setting.
+    #[serde(default)]
+    pub click_action: ClickAction,
+}
+
+/// What a single mouse click on a session row does in the Agent view.
+/// See `SessionConfig::click_action`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClickAction {
+    /// Single-click enters live-send mode for the clicked session
+    /// (the historical behavior on `main` before this setting landed).
+    #[default]
+    LiveSend,
+    /// Single-click only moves the cursor to the clicked row, so the
+    /// user can browse session previews without entering live-send.
+    /// Double-click still activates the session via the configured
+    /// `default_attach_mode`.
+    SelectOnly,
+}
+
+/// What the TUI does after a new session is created. See
+/// `SessionConfig::new_session_attach_mode`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NewSessionAttachMode {
+    /// Attach to the new session's tmux pane (the historical
+    /// behavior; the user lands inside tmux with the agent running).
+    #[default]
+    Tmux,
+    /// Enter live-send mode against the new session's pane: the agent
+    /// runs in the background, the TUI stays on the home view, and
+    /// keystrokes pipe straight to the agent. Users who never want to
+    /// see a raw tmux session pick this so creating a session never
+    /// detaches them from the home list.
+    LiveSend,
 }
 
 /// What to render in the per-row tag slot next to the session title.
@@ -634,6 +717,10 @@ impl Default for SessionConfig {
             restart_wake_message: default_restart_wake_message(),
             row_tag: RowTagMode::default(),
             session_id_poller_max_threads: default_session_id_poller_max_threads(),
+            live_send_exit_chord: default_live_send_exit_chord(),
+            new_session_attach_mode: NewSessionAttachMode::default(),
+            default_attach_mode: NewSessionAttachMode::default(),
+            click_action: ClickAction::default(),
         }
     }
 }
@@ -644,6 +731,12 @@ fn default_snooze_duration_minutes() -> u32 {
 
 fn default_restart_wake_message() -> String {
     "wake up: pick up what you were doing".to_string()
+}
+
+fn default_live_send_exit_chord() -> String {
+    // Ctrl+q: mobile-friendly, passes Termius, well-known quit chord.
+    // Kept in sync with live_send::DEFAULT_EXIT_CHORD.
+    "C-q".to_string()
 }
 
 /// Upper bound on snooze duration: 30 days (43,200 minutes). Originally
@@ -1089,7 +1182,7 @@ impl Default for SandboxConfig {
 }
 
 fn default_sandbox_image() -> String {
-    "ghcr.io/njbrake/aoe-sandbox:latest".to_string()
+    "ghcr.io/agent-of-empires/aoe-sandbox:latest".to_string()
 }
 
 fn default_sandbox_environment() -> Vec<String> {

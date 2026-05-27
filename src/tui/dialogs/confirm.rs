@@ -83,7 +83,7 @@ impl ConfirmDialog {
             .wrap(Wrap { trim: true });
         frame.render_widget(message, chunks[0]);
 
-        render_yes_no(frame, chunks[1], theme, self.selected);
+        let _ = render_yes_no(frame, chunks[1], theme, self.selected);
     }
 }
 

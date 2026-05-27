@@ -770,7 +770,7 @@ fn test_cli_session_capture_plain() {
 }
 
 /// Renaming a session via CLI should rename the tmux session, not kill it.
-/// Regression test for https://github.com/njbrake/agent-of-empires/issues/431
+/// Regression test for https://github.com/agent-of-empires/agent-of-empires/issues/431
 #[test]
 #[serial]
 fn test_cli_rename_preserves_tmux_session() {

@@ -5,7 +5,7 @@ use ratatui::prelude::Position;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
-use super::{HomeView, TerminalMode, ViewMode};
+use super::{live_send, DragKind, HomeView, PreviewSelection, TerminalMode, ViewMode};
 use crate::session::config::{load_config, save_config, GroupByMode, SortOrder};
 use crate::session::{list_profiles, repo_config, resolve_config_or_warn, Item, Status};
 use crate::tui::app::Action;
@@ -19,6 +19,7 @@ use crate::tui::dialogs::{
     SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
+use crate::tui::responsive;
 use crate::tui::settings::{SettingsAction, SettingsView};
 
 /// Maximum gap between two left-clicks on the same row that still
@@ -26,6 +27,108 @@ use crate::tui::settings::{SettingsAction, SettingsView};
 /// environments. Worth tuning if real-world feedback says it's too
 /// fast for trackpads or too slow on remote sessions.
 const DOUBLE_CLICK_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// xterm bracketed-paste start sequence: `ESC [ 2 0 0 ~`. An agent that
+/// has enabled bracketed paste mode (`\e[?2004h`) treats everything
+/// between this marker and the matching end marker as one paste rather
+/// than as keystrokes, so interior newlines accumulate in the input
+/// buffer instead of firing `submit` per line.
+const BRACKETED_PASTE_START: &[u8] = &[0x1b, b'[', b'2', b'0', b'0', b'~'];
+
+/// xterm bracketed-paste end sequence: `ESC [ 2 0 1 ~`. Pairs with
+/// [`BRACKETED_PASTE_START`].
+const BRACKETED_PASTE_END: &[u8] = &[0x1b, b'[', b'2', b'0', b'1', b'~'];
+
+/// Decompose pasted text into a series of `TmuxKey`s safe for the
+/// live-send worker to dispatch.
+///
+/// Single-line pastes (no `\n` / `\r`) skip the bracketed-paste
+/// wrapping and travel as a single `Literal`: a bare shell or any
+/// agent that hasn't enabled `\e[?2004h` keeps working unchanged,
+/// because we never emit the escape markers it would render as
+/// literal text. Tabs in single-line pastes still go through as
+/// `Named("Tab")` to mirror the historical path.
+///
+/// Multi-line pastes get wrapped in xterm bracketed-paste markers
+/// (`\e[200~` / `\e[201~`) so the receiving agent sees the entire
+/// payload as one paste rather than as N independent Enter keypresses.
+/// Without the wrapping, agents that submit on Enter (Claude Code,
+/// Codex, OpenCode, ...) post one user message per pasted line, which
+/// is the bug behind #1546. The whole payload (markers, printable
+/// runs, interior CRs, and tabs) goes through as a single `HexBytes`,
+/// so the worker fires one `tmux send-keys -H` subprocess per paste
+/// instead of one per chunk. `\r\n` pairs coalesce to a single CR so
+/// Windows-line-ending pastes don't double up; other control bytes
+/// (BEL, ESC, ...) are dropped rather than risk that an embedded
+/// escape closes the bracketed-paste sequence on the agent's side.
+pub(super) fn split_paste_for_live_send(text: &str) -> Vec<live_send::TmuxKey> {
+    let has_newline = text.contains('\n') || text.contains('\r');
+    if !has_newline {
+        return split_inline_paste(text);
+    }
+    split_bracketed_paste(text)
+}
+
+fn split_inline_paste(text: &str) -> Vec<live_send::TmuxKey> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    for ch in text.chars() {
+        let is_control = (ch as u32) < 0x20 || ch == '\x7f';
+        if !is_control {
+            buf.push(ch);
+            continue;
+        }
+        if !buf.is_empty() {
+            out.push(live_send::TmuxKey::Literal(std::mem::take(&mut buf)));
+        }
+        if ch == '\t' {
+            out.push(live_send::TmuxKey::Named("Tab".to_string()));
+        }
+        // BEL, ESC, etc.: dropping is friendlier than mapping
+        // to a named key that could cancel the agent's input.
+    }
+    if !buf.is_empty() {
+        out.push(live_send::TmuxKey::Literal(buf));
+    }
+    out
+}
+
+fn split_bracketed_paste(text: &str) -> Vec<live_send::TmuxKey> {
+    // Build one contiguous byte payload: start marker, then the paste
+    // content with printables as their UTF-8 bytes / interior newlines
+    // as CR (0x0d) / tabs as 0x09, then the end marker. Sending it as
+    // one `HexBytes` means the worker fires exactly one `tmux send-keys
+    // -H` subprocess per paste rather than one per chunk.
+    let mut bytes = Vec::with_capacity(text.len() + BRACKETED_PASTE_START.len() * 2);
+    bytes.extend_from_slice(BRACKETED_PASTE_START);
+
+    let mut chars = text.chars().peekable();
+    let mut utf8_buf = [0u8; 4];
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\n' => bytes.push(0x0d),
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                bytes.push(0x0d);
+            }
+            '\t' => bytes.push(0x09),
+            c if (c as u32) < 0x20 || c == '\x7f' => {
+                // Embedded ESC / BEL / etc. has no safe encoding
+                // inside the paste payload; drop rather than risk a
+                // bogus terminal escape closing the paste early.
+            }
+            c => {
+                let s = c.encode_utf8(&mut utf8_buf);
+                bytes.extend_from_slice(s.as_bytes());
+            }
+        }
+    }
+
+    bytes.extend_from_slice(BRACKETED_PASTE_END);
+    vec![live_send::TmuxKey::HexBytes(bytes)]
+}
 
 fn resolve_hook_install_agent(
     tool_name: &str,
@@ -132,11 +235,376 @@ impl HomeView {
         self.list_area.contains(Position::from((col, row)))
     }
 
+    /// True when `(col, row)` lands on the side-by-side list/preview
+    /// divider. The divider is the preview's left border column (one
+    /// past `list_area.right()` is exclusive, so this *is* a valid hit
+    /// target that hit_list / hit_preview both miss by design). Returns
+    /// `false` in stacked mode, in the diff/settings/serve takeover
+    /// views (which clear `divider_col`), and while any modal dialog is
+    /// open, so a dialog over the divider swallows stray clicks rather
+    /// than starting a hidden drag.
+    pub fn hit_divider(&self, col: u16, row: u16) -> bool {
+        if self.has_dialog() {
+            return false;
+        }
+        let Some(div_col) = self.divider_col else {
+            return false;
+        };
+        if col != div_col {
+            return false;
+        }
+        let list_y = self.list_area.y;
+        let list_bottom = self.list_area.bottom();
+        row >= list_y && row < list_bottom
+    }
+
+    /// Begin a drag if `(col, row)` is on the divider, or inside the
+    /// preview pane (whenever the pane is on screen, in or out of live
+    /// mode). Returns true when a drag actually started, so the caller
+    /// can mark the event handled and skip the row-click path.
+    ///
+    /// Divider drags resize the list/preview split (the only kind we
+    /// had before live-send shipped). Preview-pane drags start an
+    /// in-app text selection: terminal-native drag-select can't reach
+    /// the preview because we capture mouse events to support wheel
+    /// scroll, and we want one mechanism that also works on Mosh and
+    /// mobile clients where Shift-bypass does nothing.
+    pub fn handle_drag_start(&mut self, col: u16, row: u16) -> bool {
+        if self.hit_divider(col, row) {
+            self.drag_state = Some(DragKind::ListDivider {
+                start_col: col,
+                start_width: self.list_width,
+            });
+            return true;
+        }
+        // Modals that aren't live-send sit over the preview, so a
+        // click inside `preview_area` while one is open is meant for
+        // the modal underneath and should not seed a hidden selection
+        // behind it. `handle_drag_move`'s cancel branch covers a modal
+        // that opens mid-drag; this guards the start.
+        if self.has_non_live_send_overlay() {
+            return false;
+        }
+        if self.hit_preview(col, row) {
+            self.preview_selection = Some(PreviewSelection {
+                anchor: (col, row),
+                extent: (col, row),
+                finalized: false,
+            });
+            self.drag_state = Some(DragKind::PreviewSelect);
+            return true;
+        }
+        false
+    }
+
+    /// Apply a drag-in-progress event. For the list divider, recompute
+    /// the requested width from `(start_width + delta)` and clamp to
+    /// `[10, main_area_width - PREVIEW_MIN_WIDTH]` so the preview keeps
+    /// its usability floor and the value never wraps `u16`. For a
+    /// preview-pane text selection, clamp the extent to the preview
+    /// area and stash it on `preview_selection`; the renderer reads it
+    /// each frame to paint the highlight.
+    ///
+    /// Returns true when state actually changed (so the caller
+    /// redraws). The drag does NOT persist on every tick; the divider
+    /// path saves on release, the preview-select path emits OSC 52 on
+    /// release.
+    pub fn handle_drag_move(&mut self, col: u16, row: u16) -> bool {
+        // A dialog opened mid-drag (e.g. a hotkey pressed while the
+        // mouse button is still held) shouldn't keep updating the
+        // sidebar invisibly under the modal. End the drag here so the
+        // next `Up(Left)` is a no-op, persisting whatever width the
+        // user dragged to before the dialog covered it (handle_drag_end
+        // is the normal save site, so we mirror its behavior).
+        //
+        // `has_dialog()` returns true while live-send is active, which
+        // is exactly when preview drag-select is meant to work. Live
+        // mode is therefore exempt — but a real modal (info / confirm
+        // / palette / picker) opening mid-select must also kill the
+        // drag and drop the selection so it can't keep mutating under
+        // the modal or finalize on mouse-up behind the overlay.
+        let drag_is_preview = matches!(self.drag_state, Some(DragKind::PreviewSelect));
+        let cancel_drag = if drag_is_preview {
+            self.has_non_live_send_overlay()
+        } else {
+            self.has_dialog()
+        };
+        if cancel_drag && self.drag_state.is_some() {
+            self.drag_state = None;
+            if drag_is_preview {
+                self.preview_selection = None;
+                self.preview_copy_pending = false;
+                self.preview_copy_text = None;
+            } else {
+                self.save_list_width();
+            }
+            return false;
+        }
+        match self.drag_state {
+            Some(DragKind::ListDivider {
+                start_col,
+                start_width,
+            }) => {
+                // i32 arithmetic so a leftward drag past the start column doesn't
+                // underflow u16 before the clamp.
+                let delta = col as i32 - start_col as i32;
+                let proposed = start_width as i32 + delta;
+
+                // Clamp ceiling tracks the live viewport width; if the user
+                // resized the terminal mid-drag, the new width is honored. The
+                // floor of 10 matches the keyboard `<` shrink limit.
+                let ceiling = self
+                    .main_area_width
+                    .saturating_sub(responsive::PREVIEW_MIN_WIDTH);
+                let max_width = ceiling.max(10);
+                let clamped = proposed.clamp(10, max_width as i32) as u16;
+
+                if clamped == self.list_width {
+                    return false;
+                }
+                self.list_width = clamped;
+                true
+            }
+            Some(DragKind::PreviewSelect) => {
+                let Some(sel) = self.preview_selection.as_mut() else {
+                    return false;
+                };
+                // Clamp the drag extent to the preview pane so a
+                // mouse-out below the pane (very common: users drag down
+                // through the last visible row, expecting the selection
+                // to stop at the bottom) doesn't try to highlight
+                // chrome rows on neighbouring widgets.
+                let area = self.preview_area;
+                if area.width == 0 || area.height == 0 {
+                    return false;
+                }
+                let max_x = area.right().saturating_sub(1);
+                let max_y = area.bottom().saturating_sub(1);
+                let clamped_x = col.clamp(area.x, max_x);
+                let clamped_y = row.clamp(area.y, max_y);
+                let new_extent = (clamped_x, clamped_y);
+                if sel.extent == new_extent {
+                    return false;
+                }
+                sel.extent = new_extent;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// End any active drag. For the list divider, persist the final
+    /// `list_width` to config so the new layout survives a restart.
+    /// For a preview-pane selection, mark it `finalized` so the
+    /// renderer keeps the highlight visible until the user dismisses
+    /// it. The actual clipboard copy is the caller's job (see
+    /// `app.rs`) so we can keep this method side-effect-free besides
+    /// state, which is what the existing divider path does too.
+    ///
+    /// Returns true when a drag was actually in progress, so the
+    /// caller can avoid a spurious redraw on every `Up(Left)` that
+    /// wasn't part of a drag.
+    pub fn handle_drag_end(&mut self) -> bool {
+        let Some(state) = self.drag_state.take() else {
+            return false;
+        };
+        match state {
+            DragKind::ListDivider { .. } => {
+                self.save_list_width();
+            }
+            DragKind::PreviewSelect => {
+                // A bare click (no movement between Down and Up) collapses
+                // anchor == extent. Treat that as "no selection" so a stray
+                // click doesn't paint a 1x1 highlight or copy a single
+                // character to the clipboard. Genuine multi-cell drags
+                // get finalized so the renderer keeps the highlight visible
+                // until dismissed; the next render also captures the
+                // selected cells so the app loop can write them to the
+                // user's clipboard once the buffer is drawn.
+                if let Some(sel) = self.preview_selection {
+                    if sel.anchor == sel.extent {
+                        self.preview_selection = None;
+                    } else if let Some(s) = self.preview_selection.as_mut() {
+                        s.finalized = true;
+                        self.preview_copy_pending = true;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Whether `drag_state` is currently a PreviewSelect (vs. a divider
+    /// drag or nothing). Used by the Down(Left) handler in `app.rs` to
+    /// tell whether `handle_drag_start` just installed a fresh selection
+    /// or a divider drag.
+    pub fn is_preview_select_dragging(&self) -> bool {
+        matches!(self.drag_state, Some(DragKind::PreviewSelect))
+    }
+
+    /// Read the characters underneath the current preview selection
+    /// from the rendered frame buffer, joined into a tmux-style flow
+    /// string. Called from `paint_preview_selection` on the render
+    /// that follows `handle_drag_end`, when `preview_copy_pending`
+    /// is set and the buffer still holds the cells the user dragged
+    /// over.
+    ///
+    /// The frame buffer is the authoritative source: it carries exactly
+    /// what the user sees, with ansi-to-tui decoding and scroll already
+    /// applied. Reading the parsed `Text` upstream of the renderer would
+    /// duplicate the wrap math and skew when the preview is mid-scroll.
+    pub(super) fn extract_preview_selection_text(
+        &self,
+        buffer: &ratatui::buffer::Buffer,
+    ) -> Option<String> {
+        let sel = self.preview_selection?;
+        let preview = self.preview_area;
+        let buf_area = buffer.area;
+        let preview = preview.intersection(buf_area);
+        if preview.width == 0 || preview.height == 0 {
+            return None;
+        }
+        let ((start_col, start_row), (end_col, end_row)) = sel.ordered();
+        if start_row == end_row && start_col == end_col {
+            return None;
+        }
+        let preview_right_excl = preview.right();
+        let preview_left = preview.x;
+        let mut out = String::new();
+        for row in start_row..=end_row {
+            if row < preview.y || row >= preview.bottom() {
+                if row < end_row {
+                    out.push('\n');
+                }
+                continue;
+            }
+            let row_start_col = if row == start_row {
+                start_col.max(preview_left)
+            } else {
+                preview_left
+            };
+            let row_end_excl = if row == end_row {
+                end_col.saturating_add(1).min(preview_right_excl)
+            } else {
+                preview_right_excl
+            };
+            if row_end_excl <= row_start_col {
+                if row < end_row {
+                    out.push('\n');
+                }
+                continue;
+            }
+            let mut line = String::new();
+            for col in row_start_col..row_end_excl {
+                line.push_str(buffer[(col, row)].symbol());
+            }
+            // Trim only trailing whitespace per row, not leading: a
+            // selection over indented code keeps the indentation,
+            // while padding at the right edge of the preview (the
+            // common case for unfilled rows) doesn't bloat the paste.
+            out.push_str(line.trim_end());
+            if row < end_row {
+                out.push('\n');
+            }
+        }
+        if out.chars().all(char::is_whitespace) {
+            return None;
+        }
+        Some(out)
+    }
+
+    /// Drain the text captured on the last render that painted a
+    /// finalized preview selection. Returns `Some` exactly once per
+    /// finalized drag — `App` calls this immediately after the draw
+    /// to write the bytes to the clipboard.
+    pub fn take_preview_copy_text(&mut self) -> Option<String> {
+        self.preview_copy_text.take()
+    }
+
+    /// Discard any in-flight preview selection. Called from key/click
+    /// paths so the user dismisses the highlight by interacting with
+    /// the TUI again. Returns true when state actually changed (so the
+    /// caller can redraw).
+    pub fn clear_preview_selection(&mut self) -> bool {
+        if self.preview_selection.take().is_some() {
+            // Cancel any in-progress drag too so the next Up(Left)
+            // doesn't re-finalize a stale selection.
+            if matches!(self.drag_state, Some(DragKind::PreviewSelect)) {
+                self.drag_state = None;
+            }
+            // A pending capture from a previous finalized drag is
+            // moot once the selection is gone; drop it so the next
+            // selection starts clean.
+            self.preview_copy_pending = false;
+            self.preview_copy_text = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Route a left-click into whichever modal dialog supports mouse
+    /// input. Returns true when the click was consumed, in which case
+    /// the caller must NOT fall through to the divider / preview / list
+    /// handlers. Two cases both count as consumed: the dialog acted on
+    /// the click (Yes/No), and the click landed elsewhere on screen
+    /// while a modal is open (the modal absorbs it).
+    ///
+    /// Only the destructive delete dialog wires Yes/No clicks today;
+    /// the existing modals continue to swallow mouse events implicitly
+    /// via `has_dialog()` gates in the other handlers.
+    pub fn handle_dialog_click(&mut self, col: u16, row: u16) -> bool {
+        if let Some(dialog) = &mut self.unified_delete_dialog {
+            if let Some(result) = dialog.handle_click(col, row) {
+                match result {
+                    DialogResult::Continue => {}
+                    DialogResult::Cancel => {
+                        self.unified_delete_dialog = None;
+                    }
+                    DialogResult::Submit(options) => {
+                        self.unified_delete_dialog = None;
+                        if let Err(e) = self.delete_selected(&options) {
+                            tracing::error!(target: "tui.input", "Failed to delete session: {}", e);
+                        }
+                    }
+                }
+                return true;
+            }
+            // Click landed inside the dialog area but missed both
+            // buttons (e.g. on a checkbox or the title): swallow it so
+            // the underlying list doesn't shift selection out from
+            // under the modal.
+            return true;
+        }
+        // Other dialogs also need to swallow clicks while open. The
+        // existing `has_dialog()` gates inside list / preview / divider
+        // handlers already do this, so no extra work here.
+        false
+    }
+
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
         update_info: Option<&crate::update::UpdateInfo>,
     ) -> Option<Action> {
+        // Any keystroke drops a finalized preview-pane selection. The
+        // highlight pins to cell coords, so as soon as the user starts
+        // doing anything else (navigating the list, opening a dialog,
+        // typing through live-send, etc.) the cells underneath can
+        // change and the highlight would point at unrelated content.
+        // Doing the clear here covers both the live-send branch below
+        // and the regular home-view path.
+        self.clear_preview_selection();
+
+        // Live-send capture wins over every other key handler. While
+        // `live_send` is `Some` the home view is acting as a thin relay
+        // to the target pane; dialog hotkeys, search, and list navigation
+        // all suspend until the user exits with Ctrl+q.
+        if self.live_send.is_some() {
+            self.handle_live_send_key(key);
+            return None;
+        }
+
         // Handle unsaved changes confirmation for settings (shown over settings view)
         if self.settings_close_confirm {
             if let Some(dialog) = &mut self.confirm_dialog {
@@ -635,6 +1103,38 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.group_picker_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.group_picker_dialog = None;
+                }
+                DialogResult::Submit(mode) => {
+                    self.group_picker_dialog = None;
+                    if mode != self.group_by {
+                        self.apply_group_by(mode);
+                    }
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.sort_picker_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.sort_picker_dialog = None;
+                }
+                DialogResult::Submit(order) => {
+                    self.sort_picker_dialog = None;
+                    if order != self.sort_order {
+                        self.apply_sort_order(order);
+                    }
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.profile_picker_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -822,56 +1322,53 @@ impl HomeView {
                 self.view_mode = ViewMode::Agent;
             }
             KeyCode::Char('q') => return Some(Action::Quit),
-            // `w` / `W`: toggle snooze on the cursor's session. Snooze is
-            // "temporary archive": the row sinks to tier 99 for `config.
-            // session.snooze_duration_minutes` (default 30), renders
-            // italic+dim with a `z ` prefix and remaining-time in the age
-            // column, then rejoins the active Attention sort when the
-            // timer elapses (lazy; `is_snoozed()` just compares against
-            // now). Pressing w/W on a snoozed row wakes it immediately.
-            // Mnemonic: Wait. Separate namespace from archive (`z`/`Z`)
-            // and favorite (`f`/`F`). Session-only for v1.
-            KeyCode::Char('w') if !self.strict_hotkeys => {
+            // `w` / `W` (snooze), `h` / `H` (snooze alias), and `f` / `F`
+            // (favorite) are gated to Attention sort. Snooze and favorite
+            // are triage primitives; they only have a visible effect
+            // (and a sort impact) in Attention mode. Outside Attention,
+            // mutating these flags would silently change persisted state
+            // with no on-screen feedback, so we ignore the press
+            // entirely. Other sort modes fall through to the existing
+            // fallback bindings (`h` collapses; `w` is jump-to-next-
+            // waiting in non-strict mode).
+            KeyCode::Char('w')
+                if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_snooze_at_cursor() {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
-            KeyCode::Char('W') if self.strict_hotkeys => {
+            KeyCode::Char('W')
+                if self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_snooze_at_cursor() {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
-            // `h` / `H`: alias for `w` / `W` (snooze). Mnemonic: Hide,
-            // borrowed from email-app conventions where H snoozes the
-            // focused message off the list for a while. Plain `h` was
-            // previously a vim-style left/collapse alias, but ← already
-            // covers that, and users with email-app muscle memory keep
-            // reaching for H expecting snooze. `w`/`W` stays functional
-            // for backward compat; `h`/`H` is the advertised binding.
-            KeyCode::Char('h') if !self.strict_hotkeys => {
+            KeyCode::Char('h')
+                if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_snooze_at_cursor() {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
-            KeyCode::Char('H') if self.strict_hotkeys => {
+            KeyCode::Char('H')
+                if self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_snooze_at_cursor() {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
-            // `f` / `F`: toggle favorite on the cursor's session. Within
-            // the Attention sort, favorited rows pin above non-favorited
-            // peers in the same status tier; a favorited Running stays in
-            // the Running bucket but bubbles above plain Running rows.
-            // Render layer (`render.rs`) adds bold + underline and a
-            // leading `* ` glyph. Favorite survives an unsnooze (positive
-            // care-more signal) but archive clears it (mutex in
-            // `Instance::archive()`).
-            KeyCode::Char('f') if !self.strict_hotkeys => {
+            KeyCode::Char('f')
+                if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_favorite_at_cursor() {
                     tracing::error!("toggle_favorite_at_cursor failed: {}", e);
                 }
             }
-            KeyCode::Char('F') if self.strict_hotkeys => {
+            KeyCode::Char('F')
+                if self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_favorite_at_cursor() {
                     tracing::error!("toggle_favorite_at_cursor failed: {}", e);
                 }
@@ -1283,10 +1780,10 @@ impl HomeView {
                         ) {
                             let msg = match &method {
                                 InstallMethod::Nix => {
-                                    "Nix install: run `nix run github:njbrake/agent-of-empires` to update".to_string()
+                                    "Nix install: run `nix run github:agent-of-empires/agent-of-empires` to update".to_string()
                                 }
                                 InstallMethod::Cargo => {
-                                    "Cargo install: run `cargo install --git https://github.com/njbrake/agent-of-empires aoe`".to_string()
+                                    "Cargo install: run `cargo install --git https://github.com/agent-of-empires/agent-of-empires aoe`".to_string()
                                 }
                                 InstallMethod::Unknown { .. } => {
                                     "Unknown install method: run `aoe update` in a terminal for instructions".to_string()
@@ -1466,7 +1963,7 @@ impl HomeView {
                     if self.group_by == GroupByMode::Project {
                         self.info_dialog = Some(InfoDialog::new(
                             "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press 'g' to switch to manual grouping to manage groups.",
+                            "Project groups are automatic. Press 'g' and pick Manual to manage groups.",
                         ));
                         return None;
                     }
@@ -1555,7 +2052,7 @@ impl HomeView {
                     if self.group_by == GroupByMode::Project {
                         self.info_dialog = Some(InfoDialog::new(
                             "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press Shift+G to switch to manual grouping to manage groups.",
+                            "Project groups are automatic. Press Ctrl+G and pick Manual to manage groups.",
                         ));
                         return None;
                     }
@@ -1613,7 +2110,7 @@ impl HomeView {
                     if self.group_by == GroupByMode::Project {
                         self.info_dialog = Some(InfoDialog::new(
                             "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press 'g' to switch to manual grouping to manage groups.",
+                            "Project groups are automatic. Press 'g' and pick Manual to manage groups.",
                         ));
                         return None;
                     }
@@ -1663,7 +2160,7 @@ impl HomeView {
                     if self.group_by == GroupByMode::Project {
                         self.info_dialog = Some(InfoDialog::new(
                             "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press Shift+G to switch to manual grouping to manage groups.",
+                            "Project groups are automatic. Press Ctrl+G and pick Manual to manage groups.",
                         ));
                         return None;
                     }
@@ -1694,20 +2191,32 @@ impl HomeView {
             KeyCode::Char('M') if self.strict_hotkeys => {
                 self.open_send_message_dialog();
             }
-            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.apply_sort_order(self.sort_order.cycle_reverse());
+            // Tab enters live-send mode on the selected running session.
+            // Free at the home-view top level (settings/cockpit/dialogs
+            // own their own Tab handlers), and the entry-vs-send
+            // distinction is unambiguous: this branch only fires when
+            // `live_send` is None, because the live-send capture at the
+            // top of `handle_key` short-circuits otherwise. While in
+            // live mode Tab is sent verbatim to the agent.
+            KeyCode::Tab => {
+                if let Some(action) = self.start_live_send() {
+                    return Some(action);
+                }
             }
-            // Plain lowercase 'o' cycles sort only OUTSIDE strict mode. In strict
-            // mode, bare 'o' falls through to the typing-guard catch-all (compose
-            // dialog), per the no-destructive-lowercase contract.
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.show_sort_picker();
+            }
+            // Plain lowercase 'o' opens the sort picker only OUTSIDE strict mode.
+            // In strict mode, bare 'o' falls through to the typing-guard catch-all
+            // (compose dialog), per the no-destructive-lowercase contract.
             KeyCode::Char('o') if !self.strict_hotkeys => {
-                self.apply_sort_order(self.sort_order.cycle());
+                self.show_sort_picker();
             }
             // Shift+O in strict mode arrives here as Char('O') (normalize_strict_key
-            // no longer lowercases 'O') so it's the one key that cycles sort in
+            // no longer lowercases 'O') so it's the one bare-letter sort hotkey in
             // strict mode. Also matches Shift+O in non-strict mode.
             KeyCode::Char('O') => {
-                self.apply_sort_order(self.sort_order.cycle());
+                self.show_sort_picker();
             }
             // ±10 navigation: Shift+Up/Down, PageUp/PageDown, OR { / }.
             // iPad-friendly ±10 aliases for PageUp/PageDown. iPads have no
@@ -1743,18 +2252,20 @@ impl HomeView {
             }
             KeyCode::Home => {
                 self.cursor = 0;
+                self.mouse_pos = None;
                 self.update_selected();
             }
             KeyCode::Char('g')
                 if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                self.apply_group_by(self.group_by.cycle());
+                self.show_group_picker();
             }
             KeyCode::Char('g') if !self.strict_hotkeys => {
-                self.apply_group_by(self.group_by.cycle());
+                self.show_group_picker();
             }
             KeyCode::End | KeyCode::Char('G') if !self.flat_items.is_empty() => {
                 self.cursor = self.flat_items.len() - 1;
+                self.mouse_pos = None;
                 self.update_selected();
             }
             KeyCode::Enter => {
@@ -1891,6 +2402,15 @@ impl HomeView {
                     });
                 }
                 Item::Group { name, path, .. } => {
+                    // The synthetic Archived section header (and any
+                    // sub-folder rendered under it in Project mode) is
+                    // not a real group; skip it so the palette doesn't
+                    // surface the sentinel path or invite Jump-to-group
+                    // navigation that the rest of the codebase
+                    // intentionally disarms.
+                    if crate::session::is_within_archived_section(path) {
+                        continue;
+                    }
                     let label = if name == path {
                         format!("Jump to group: {}", name)
                     } else {
@@ -1964,6 +2484,15 @@ impl HomeView {
                 self.view_mode = ViewMode::Tool(tool_name);
                 self.preview_scroll_offset = 0;
                 self.tool_preview_cache = super::PreviewCache::default();
+                None
+            }
+            PaletteAction::EnterLiveSend => self.start_live_send(),
+            PaletteAction::OpenSortPicker => {
+                self.show_sort_picker();
+                None
+            }
+            PaletteAction::OpenGroupPicker => {
+                self.show_group_picker();
                 None
             }
         }
@@ -2055,6 +2584,14 @@ impl HomeView {
         };
 
         self.cursor = new_cursor;
+        // Keyboard nav overrides any prior hover. Without this, when mosh
+        // (or any prediction layer) eats the `Moved` event that fires as
+        // the cursor leaves the list, the hover background stays painted
+        // on the row the mouse was last on while the keyboard-selected
+        // row also paints — two highlighted rows at once. handle_hover
+        // only clears `mouse_pos` when it RECEIVES an off-list Moved, so
+        // any keyboard transition has to clear it directly.
+        self.mouse_pos = None;
         self.update_selected();
     }
 
@@ -2084,7 +2621,31 @@ impl HomeView {
             }
         }
         match self.view_mode {
-            ViewMode::Agent => Some(Action::AttachSession(id)),
+            ViewMode::Agent => {
+                // `default_attach_mode = LiveSend` swaps the historical
+                // tmux attach for live-send mode on Enter / double-click.
+                // Cockpit was already handled above (the resolver also
+                // returns None for cockpit, so the match is double-safe);
+                // Terminal/Tool views keep their existing paths regardless.
+                //
+                // Route through `start_live_send` so the same-target
+                // guard (already-live on this session) is honored: a
+                // double-click on the live row would otherwise re-run
+                // ensure_pane_ready and respawn the worker for no
+                // reason. `start_live_send` returns `None` for that
+                // and for cockpit/creating rows; in either of those
+                // cases we leave activation alone (cockpit was already
+                // dispatched to OpenCockpit above; same-target re-click
+                // is intentionally a no-op).
+                if matches!(
+                    self.default_attach_mode(&id),
+                    Some(crate::session::NewSessionAttachMode::LiveSend)
+                ) {
+                    self.start_live_send()
+                } else {
+                    Some(Action::AttachSession(id))
+                }
+            }
             ViewMode::Terminal => {
                 let terminal_mode = if let Some(inst) = self.get_instance(&id) {
                     if inst.is_sandboxed() {
@@ -2112,8 +2673,22 @@ impl HomeView {
                 }
                 Item::Group { path, .. } => {
                     self.selected_session = None;
-                    self.selected_group = Some(path.clone());
-                    self.selected_group_profile = self.profile_for_cursor(self.cursor);
+                    if crate::session::is_within_archived_section(path) {
+                        // The synthetic Archived section (and any
+                        // project sub-folder rendered under it in
+                        // Project mode) is not a real group: it can't
+                        // be renamed, deleted, archived, or moved.
+                        // Leaving `selected_group` unset disarms every
+                        // keybind that branches on
+                        // `selected_group.is_some()` (rename, delete,
+                        // archive group, etc.) without each one having
+                        // to special-case the sentinel.
+                        self.selected_group = None;
+                        self.selected_group_profile = None;
+                    } else {
+                        self.selected_group = Some(path.clone());
+                        self.selected_group_profile = self.profile_for_cursor(self.cursor);
+                    }
                 }
             }
             if self.selected_session != prev_session {
@@ -2180,6 +2755,14 @@ impl HomeView {
     }
 
     fn toggle_group_collapsed(&mut self, path: &str) {
+        // The synthetic Archived section is not a member of any
+        // GroupTree; its collapsed state lives on HomeView and persists
+        // separately. Route here before either branch tries to mutate a
+        // nonexistent group.
+        if crate::session::is_archived_section_path(path) {
+            self.toggle_archived_section();
+            return;
+        }
         if self.group_by == GroupByMode::Project {
             let collapsed = self
                 .project_group_collapsed
@@ -2212,19 +2795,35 @@ impl HomeView {
     /// its scroll boundary or has no session selected.
     pub fn handle_scroll_up(&mut self, col: u16, row: u16) -> bool {
         const STEP: u16 = 3;
+        // Any scroll repositions the preview content under the
+        // selection rect, so a leftover highlight from a previous drag
+        // would point at unrelated text. Drop it before changing
+        // offsets so the highlight disappears alongside the scroll.
+        self.clear_preview_selection();
         if let Some(ref mut diff) = self.diff_view {
             diff.scroll_up(STEP);
             return true;
         }
-        if self.has_dialog() {
-            return false;
-        }
-        if self.hit_list(col, row) {
-            self.move_cursor(-1);
-            return true;
-        }
-        if !self.hit_preview(col, row) {
-            return false;
+        // Live-send mode lets the user scroll the preview to read
+        // agent history without exiting, but list scroll is suppressed
+        // (changing the selection mid-live-send would silently aim the
+        // next keystroke at a different pane than the one the user is
+        // looking at). All other modals swallow scroll entirely.
+        if self.live_send.is_some() {
+            if !self.hit_preview(col, row) {
+                return false;
+            }
+        } else {
+            if self.has_dialog() {
+                return false;
+            }
+            if self.hit_list(col, row) {
+                self.move_cursor(-1);
+                return true;
+            }
+            if !self.hit_preview(col, row) {
+                return false;
+            }
         }
         if self.selected_session.is_none() {
             return false;
@@ -2271,8 +2870,15 @@ impl HomeView {
     /// outside the inner rect, dialog open, diff view active). Shared by
     /// `handle_click` and `hovered_index` so selection and hover use the
     /// exact same math.
+    ///
+    /// Live-send is intentionally NOT treated as a blocking dialog here.
+    /// `has_dialog()` returns true while live mode is active so other
+    /// surfaces (key shortcuts, preview-click, scroll wheel) stay
+    /// frozen, but clicks on list rows are how the user switches the
+    /// live target session: blocking them would make the feature
+    /// unreachable via mouse.
     pub(super) fn resolve_row_to_index(&self, col: u16, row: u16) -> Option<usize> {
-        if self.diff_view.is_some() || self.has_dialog() {
+        if self.diff_view.is_some() || self.has_non_live_send_overlay() {
             return None;
         }
         let inner = self.list_inner_area;
@@ -2324,17 +2930,21 @@ impl HomeView {
             .and_then(|(c, r)| self.resolve_row_to_index(c, r))
     }
 
-    /// Route a left-click at (col, row) inside the session list. A single
-    /// click on a session row selects it (same effect as arrow-key
-    /// navigation); a single click on a group row toggles its collapsed
-    /// state; a second click on the same row within
+    /// Route a left-click at (col, row) inside the session list. A
+    /// single click on a session row selects it AND requests live-send
+    /// mode for that row (same `Action::EnterLiveSend` that Tab would
+    /// emit); a single click on a group row toggles its collapsed
+    /// state; a second click on the same session row within
     /// `DOUBLE_CLICK_THRESHOLD` activates the session (the same Action
-    /// the `Enter` keybind would have produced). Returns the activation
-    /// `Action` for the caller to dispatch, or `None` for selection-only /
-    /// no-op clicks. The caller redraws unconditionally so the moved
-    /// cursor / toggled group always paints before the action executes.
-    /// Gated by `has_dialog()` (via `resolve_row_to_index`) so clicks
-    /// don't shift selection out from under an open modal.
+    /// the `Enter` keybind would have produced) so users can still
+    /// drop into a full tmux attach without going through live mode.
+    /// Returns the action for the caller to dispatch, or `None` for
+    /// no-op clicks (group toggle, cockpit/creating rows, same-session
+    /// re-clicks while already live). The caller redraws unconditionally
+    /// so the moved cursor / toggled group always paints before the
+    /// action executes. Gated by `has_dialog()` (via
+    /// `resolve_row_to_index`) so clicks don't shift selection out
+    /// from under an open modal.
     pub fn handle_click(&mut self, col: u16, row: u16) -> Option<Action> {
         self.handle_click_at(std::time::Instant::now(), col, row)
     }
@@ -2387,15 +2997,34 @@ impl HomeView {
         match item {
             Item::Group { path, .. } => {
                 self.toggle_group_collapsed(&path);
+                None
             }
-            Item::Session { .. } => {
+            Item::Session { id, .. } => {
                 if self.cursor != abs_idx {
                     self.cursor = abs_idx;
                     self.update_selected();
                 }
+                // Single-click behavior is user-configurable via
+                // `SessionConfig::click_action`. `LiveSend` (default,
+                // historical behavior) enters live-send for the clicked
+                // row, or switches the live target when already in live
+                // mode. `SelectOnly` stops at the cursor update above so
+                // the user can browse preview content without ever
+                // entering live-send; double-click still activates via
+                // `default_attach_mode`. `click_action` returns `None`
+                // for cockpit-mode sessions, where `start_live_send`
+                // already short-circuits, so the historical fall-through
+                // is fine.
+                if matches!(
+                    self.click_action(&id),
+                    Some(crate::session::ClickAction::SelectOnly)
+                ) {
+                    None
+                } else {
+                    self.start_live_send()
+                }
             }
         }
-        None
     }
 
     /// Record the mouse position from a `MouseEventKind::Moved` event so
@@ -2418,19 +3047,29 @@ impl HomeView {
     /// Route a mouse-wheel-down at (col, row); see handle_scroll_up.
     pub fn handle_scroll_down(&mut self, col: u16, row: u16) -> bool {
         const STEP: u16 = 3;
+        // Mirror handle_scroll_up: a stale highlight pinned to cells
+        // whose content just moved would mislead, so drop it first.
+        self.clear_preview_selection();
         if let Some(ref mut diff) = self.diff_view {
             diff.scroll_down(STEP);
             return true;
         }
-        if self.has_dialog() {
-            return false;
-        }
-        if self.hit_list(col, row) {
-            self.move_cursor(1);
-            return true;
-        }
-        if !self.hit_preview(col, row) {
-            return false;
+        // See handle_scroll_up for the live-send / has_dialog reasoning.
+        if self.live_send.is_some() {
+            if !self.hit_preview(col, row) {
+                return false;
+            }
+        } else {
+            if self.has_dialog() {
+                return false;
+            }
+            if self.hit_list(col, row) {
+                self.move_cursor(1);
+                return true;
+            }
+            if !self.hit_preview(col, row) {
+                return false;
+            }
         }
         if self.selected_session.is_none() {
             return false;
@@ -2444,12 +3083,27 @@ impl HomeView {
 
     /// Route a bracketed paste event to the active text input dialog.
     ///
-    /// Active text-input dialogs (rename / send_message / new) win first so
-    /// multi-line voice/dictation lands in the dialog the user is actively
-    /// typing into. The settings view is checked last; its paste handler
-    /// strips newlines (settings/input.rs handle_paste sanitizes), which
-    /// would destroy multi-line dictation if we checked it first.
+    /// Live-send mode wins above every dialog: a paste while the user is
+    /// "attached" should stream straight to the agent's pane, not buffer
+    /// in a dialog the user isn't even looking at. Text-input dialogs
+    /// (rename / send_message / new) come next so multi-line dictation
+    /// lands in whichever dialog the user is actively typing into. The
+    /// settings view is checked last; its paste handler strips newlines,
+    /// which would destroy multi-line dictation if we checked it first.
     pub fn handle_paste(&mut self, text: &str) {
+        if let Some(state) = self.live_send.clone() {
+            // Mirror the live-send key path: any interaction dismisses
+            // the finalized highlight so it doesn't follow agent output
+            // through subsequent renders.
+            self.clear_preview_selection();
+            if let Some(worker) = &self.live_send_worker {
+                for key in split_paste_for_live_send(text) {
+                    worker.send(key);
+                }
+            }
+            self.stamp_last_accessed(&state.session_id);
+            return;
+        }
         if let Some(ref mut dialog) = self.rename_dialog {
             dialog.handle_paste(text);
             return;
@@ -2528,6 +3182,166 @@ impl HomeView {
             profiles,
             tools,
         ));
+    }
+
+    /// Attempt to enter live-send mode against the currently-selected
+    /// session. Unlike `resolve_paste_target`, this does NOT require
+    /// the tmux pane to already exist: `prepare_live_send` calls
+    /// `ensure_pane_ready` which revives stopped sessions (Docker
+    /// start, splash wait, resume cascade). Without this relaxation
+    /// Tab would silently no-op on dead-but-recoverable rows and the
+    /// "Reviving..." toast plumbing would never fire.
+    ///
+    /// Still no-ops on group headers, empty lists, and Creating rows
+    /// (no instance yet, nothing to revive). Also no-ops when the
+    /// selected session is already the live-send target so click-to-
+    /// enter doesn't re-run ensure_pane_ready / drop the live worker
+    /// when the user clicks the same row twice.
+    pub(super) fn start_live_send(&mut self) -> Option<Action> {
+        let id = self.selected_session.clone()?;
+        if self.live_send.as_ref().is_some_and(|s| s.session_id == id) {
+            return None;
+        }
+        let inst = self.get_instance(&id)?;
+        if matches!(inst.status, Status::Creating | Status::Deleting) {
+            return None;
+        }
+        // Cockpit-mode sessions are not tmux-backed (HomeView's attach
+        // path special-cases them away from tmux). Live-send has no
+        // target in that mode, so silently no-op rather than enqueue
+        // an Action::EnterLiveSend that would fail downstream.
+        if inst.is_cockpit_mode() {
+            return None;
+        }
+        Some(Action::EnterLiveSend(id))
+    }
+
+    /// Translate one key event in live-send mode and hand the result to
+    /// the background worker. The worker owns the tmux Session and runs
+    /// `send-keys` off the UI thread so a slow fork+exec never blocks
+    /// the redraw loop; literal-key runs coalesce into a single tmux
+    /// call so fast typing isn't N forks. Ctrl+q clears `live_send`
+    /// and drops the worker (which closes its channel, exiting the
+    /// thread cleanly on the next iteration).
+    ///
+    /// Before dispatching we re-verify that the target session still
+    /// exists at the same tmux name as it had at entry time. If a peer
+    /// process deleted the session or a rename diverged the name from
+    /// what the worker is targeting, the user would otherwise type
+    /// into the void with only a `tracing::warn!` for company. Auto-
+    /// exit + info dialog instead.
+    fn handle_live_send_key(&mut self, key: KeyEvent) {
+        let Some(state) = self.live_send.clone() else {
+            return;
+        };
+
+        // `handle_key` already cleared any finalized preview
+        // selection at the top, so the highlight doesn't linger
+        // across the keystroke that switched the user out of
+        // copy-and-look mode. The PageUp/PageDown scroll keys below
+        // would otherwise need their own dismissal; the shared
+        // top-of-handle_key clear covers them too.
+
+        // Shift+PageUp / Shift+PageDown scroll the preview pane
+        // without forwarding to the agent. Matches the terminal-
+        // emulator convention (xterm, gnome-terminal, iTerm, etc.)
+        // where shift+page operates on the outer scrollback, not the
+        // inner program. Bare PageUp/PageDown still goes to the agent
+        // so agents that page their own UI keep working.
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        if shift && !ctrl && !alt {
+            const PAGE_STEP: u16 = 10;
+            match key.code {
+                KeyCode::PageUp => {
+                    self.preview_scroll_offset =
+                        self.preview_scroll_offset.saturating_add(PAGE_STEP);
+                    return;
+                }
+                KeyCode::PageDown => {
+                    self.preview_scroll_offset =
+                        self.preview_scroll_offset.saturating_sub(PAGE_STEP);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
+        // Exit-chord check runs before the drift check: exiting is
+        // always safe, and the user pressing the chord to escape a
+        // drifted/stuck live mode shouldn't hit a "session ended"
+        // dialog on the way out.
+        if live_send::chord_list_matches(&state.exit_chords, key) {
+            self.exit_live_send_and_restore_sizing(&state);
+            return;
+        }
+        if let Some(reason) = self.live_send_drift_reason(&state) {
+            self.exit_live_send_and_restore_sizing(&state);
+            self.info_dialog = Some(InfoDialog::new("Live send ended", reason));
+            return;
+        }
+        match live_send::translate(key) {
+            live_send::LiveDispatch::Ignore => {}
+            live_send::LiveDispatch::Send(tmux_key) => {
+                if let Some(worker) = &self.live_send_worker {
+                    worker.send(tmux_key);
+                }
+                self.stamp_last_accessed(&state.session_id);
+            }
+        }
+    }
+
+    /// Tear down live-send state and restore the tmux window's
+    /// automatic sizing policy. live-send's per-keystroke resize loop
+    /// forces tmux into manual sizing; if we leave it that way, the
+    /// next tmux attach from a full-size terminal stays cramped at
+    /// the preview-pane dimensions live-send left behind. Re-setting
+    /// `window-size latest` is best-effort: failures are swallowed so
+    /// a stuck pane never blocks the user's exit.
+    fn exit_live_send_and_restore_sizing(&mut self, state: &live_send::LiveSendState) {
+        let session = crate::tmux::Session::from_name(&state.tmux_name);
+        session.reset_size_to_latest_client();
+        self.live_send = None;
+        self.live_send_worker = None;
+        self.live_send_last_resize = None;
+        // Preview selections also work outside live mode now, but a
+        // live-mode highlight pins to the live-resized pane coords,
+        // and exiting reflows the preview back to its normal size.
+        // Drop the selection so the highlight can't survive into a
+        // pane it no longer points at.
+        self.clear_preview_selection();
+    }
+
+    /// Returns `Some(reason)` if the live-send target has drifted out
+    /// from under us between entry and now. Three drift modes:
+    /// - Instance row deleted (peer / web cockpit / another aoe killed
+    ///   it).
+    /// - Title renamed (which regenerates the tmux session name; the
+    ///   worker is now targeting a stale name).
+    /// - tmux session itself is gone (`tmux kill-session`, server
+    ///   restart) even though our instance row says otherwise. We use
+    ///   the existing `session_exists_from_cache` lookup so this costs
+    ///   a hashmap probe per keystroke (the status poller refreshes
+    ///   the cache every 500ms anyway). If the cache has no entry
+    ///   (`None`, e.g. before first refresh) we don't claim drift; the
+    ///   instance + name checks above are still the load-bearing
+    ///   safety net.
+    ///
+    /// The caller uses the message verbatim in the info dialog, so
+    /// phrase it as a user-facing sentence.
+    fn live_send_drift_reason(&self, state: &live_send::LiveSendState) -> Option<&'static str> {
+        let Some(inst) = self.get_instance(&state.session_id) else {
+            return Some("Session was deleted while live mode was active.");
+        };
+        let current_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+        if current_name != state.tmux_name {
+            return Some("Session was renamed while live mode was active.");
+        }
+        if crate::tmux::session_exists_from_cache(&state.tmux_name) == Some(false) {
+            return Some("tmux pane went away while live mode was active.");
+        }
+        None
     }
 
     /// Open the send-message dialog for the currently-selected running session.
@@ -2759,7 +3573,7 @@ impl HomeView {
     /// `CreationPoller` when hooks are present, when the session is sandboxed,
     /// or when a worktree branch is requested (to avoid freezing the TUI on
     /// slow git hooks like `post-checkout`).
-    fn create_session_with_hooks(
+    pub(super) fn create_session_with_hooks(
         &mut self,
         data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
@@ -2777,7 +3591,7 @@ impl HomeView {
         match self.create_session(data) {
             Ok(session_id) => {
                 self.new_dialog = None;
-                Some(Action::AttachSession(session_id))
+                Some(Action::AttachAfterCreate(session_id))
             }
             Err(e) => {
                 tracing::error!(target: "tui.input", "Failed to create session: {}", e);

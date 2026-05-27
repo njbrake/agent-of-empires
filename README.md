@@ -2,10 +2,10 @@
   <img src="assets/logo.png" alt="Agent of Empires" width="128">
   <h1 align="center">Agent of Empires (AoE)</h1>
   <p align="center">
-    <a href="https://trendshift.io/repositories/22434" target="_blank"><img src="https://trendshift.io/api/badge/repositories/22434" alt="njbrake%2Fagent-of-empires | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+    <a href="https://trendshift.io/repositories/22434" target="_blank"><img src="https://trendshift.io/api/badge/repositories/22434" alt="agent-of-empires%2Fagent-of-empires | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
   </p>
   <p align="center">
-    <a href="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml"><img src="https://github.com/njbrake/agent-of-empires/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/agent-of-empires/agent-of-empires/actions/workflows/ci.yml"><img src="https://github.com/agent-of-empires/agent-of-empires/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://formulae.brew.sh/formula/aoe"><img src="https://img.shields.io/homebrew/v/aoe" alt="Homebrew"></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
     <a href="https://clawhub.ai/njbrake/aoe"><img src="https://img.shields.io/badge/ClawHub-aoe-blue" alt="ClawHub"></a>
@@ -73,17 +73,17 @@ The key tmux shortcut to know: **`Ctrl+b d`** detaches from a session and return
 ```bash
 # Quick install (Linux & macOS)
 curl -fsSL \
-  https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh \
+  https://raw.githubusercontent.com/agent-of-empires/agent-of-empires/main/scripts/install.sh \
   | bash
 
 # Homebrew
 brew install aoe
 
 # Nix
-nix run github:njbrake/agent-of-empires
+nix run github:agent-of-empires/agent-of-empires
 
 # Build from source
-git clone https://github.com/njbrake/agent-of-empires
+git clone https://github.com/agent-of-empires/agent-of-empires
 cd agent-of-empires && cargo build --release
 ```
 
@@ -198,7 +198,7 @@ unchanged.
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=njbrake/agent-of-empires&type=date&legend=top-left)](https://www.star-history.com/#njbrake/agent-of-empires&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=agent-of-empires/agent-of-empires&type=date&legend=top-left)](https://www.star-history.com/#agent-of-empires/agent-of-empires&type=date&legend=top-left)
 
 ## Acknowledgments
 

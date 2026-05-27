@@ -1,6 +1,6 @@
 import { test, expect } from "./helpers/mockedTest";
 import { devices, type Page } from "@playwright/test";
-import { clickSidebarSession } from "./helpers/sidebar";
+import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
 import { mockTerminalApis, type MockHandle } from "./helpers/terminal-mocks";
 
 // Regression for the SIGWINCH-on-every-soft-keyboard-cycle bug.
@@ -87,12 +87,7 @@ async function setKeyboard(page: Page, opts: { open: boolean; px?: number; pwa?:
 }
 
 async function openSession(page: Page, handle: MockHandle) {
-  // Sidebar is collapsed on mobile; open it before clicking the session row.
-  const sidebarToggle = page.getByRole("button", { name: "Toggle sidebar" });
-  if (await sidebarToggle.isVisible()) {
-    await sidebarToggle.click();
-    await page.waitForTimeout(200);
-  }
+  await openMobileSidebar(page);
   await clickSidebarSession(page, "pinch-test");
   await page
     .locator('[data-term="agent"] .xterm')

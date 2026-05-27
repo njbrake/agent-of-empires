@@ -1,11 +1,16 @@
 //! Home view - main session list and navigation
 
 mod input;
+mod live_send;
 mod operations;
 mod render;
 
 #[cfg(test)]
 mod tests;
+
+// LiveSendState is intentionally NOT re-exported: it's an internal
+// detail of the home module. Tests that need to install it directly
+// go through the `super::live_send::LiveSendState` path.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -14,6 +19,7 @@ use ratatui::prelude::Rect;
 use tui_input::Input;
 
 use crate::session::{
+    append_archived_section, append_archived_section_by_project,
     config::{load_config, save_config, GroupByMode, SortOrder},
     flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn,
     DefaultTerminalMode, EnsureReadyOutcome, Group, GroupTree, Instance, Item, Storage,
@@ -26,9 +32,10 @@ use super::deletion_poller::DeletionPoller;
 use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
-    HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog,
-    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, RestartDialog,
-    SnoozeDurationDialog, UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
+    GroupPickerDialog, HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData,
+    NewSessionDialog, NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog,
+    RestartDialog, SnoozeDurationDialog, SortPickerDialog, UnifiedDeleteDialog,
+    UpdateConfirmDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -55,6 +62,124 @@ fn project_group_name(inst: &Instance) -> String {
                 base_path.to_string()
             }
         })
+}
+
+/// Kinds of in-progress mouse drags. Today only the list/preview divider
+/// is draggable; the enum keeps future drag targets (diff split, group
+/// reorder) from churning the `Option<...>` shape on `HomeView`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DragKind {
+    /// Resizing the side-by-side list/preview divider. `start_col` is the
+    /// column where the user pressed; `start_width` is the requested
+    /// `list_width` at that moment. The new requested width is
+    /// `start_width + (current_col - start_col)`, clamped on apply.
+    ListDivider { start_col: u16, start_width: u16 },
+    /// Drag-selecting text inside the preview pane. Available whenever
+    /// the pane is on screen (in or out of live-send mode). The anchor
+    /// cell is where the user pressed; `preview_selection` on
+    /// `HomeView` carries the live extent and is what the renderer
+    /// reads. We keep the kind here (with no payload beyond a marker)
+    /// so `handle_drag_move` / `handle_drag_end` can dispatch by
+    /// variant without re-checking `live_send`.
+    PreviewSelect,
+}
+
+/// Flow-style text selection in the preview pane, matching tmux's
+/// default mouse selection: from the anchor cell, the selection runs
+/// in reading order (left-to-right, top-to-bottom) wrapping across
+/// every row in between, and ends at the extent cell. Coordinates are
+/// absolute terminal cells (matching the frame buffer's coords) so the
+/// renderer can apply a reversed-style highlight without re-deriving
+/// pane geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PreviewSelection {
+    /// Cell the user pressed Down(Left) on.
+    pub(super) anchor: (u16, u16),
+    /// Current (or final) extent. Equals `anchor` at drag start.
+    pub(super) extent: (u16, u16),
+    /// True once Up(Left) has fired. The renderer keeps the highlight
+    /// visible after release until the user dismisses it (next key,
+    /// click, or scroll), so they can verify what was copied.
+    pub(super) finalized: bool,
+}
+
+impl PreviewSelection {
+    /// Anchor and extent ordered in reading order (row first, then
+    /// column). The first tuple is the cell where the selection starts
+    /// in the flow; the second is where it ends. A drag that runs
+    /// up-and-right still resolves to the higher row as the start.
+    pub(super) fn ordered(self) -> ((u16, u16), (u16, u16)) {
+        let (ac, ar) = self.anchor;
+        let (ec, er) = self.extent;
+        if (ar, ac) <= (er, ec) {
+            ((ac, ar), (ec, er))
+        } else {
+            ((ec, er), (ac, ar))
+        }
+    }
+
+    /// Decompose the selection into one to three flow-shape `Rect`
+    /// segments inside `preview_area`. Returns an empty vec when the
+    /// preview area is zero-sized. The shape is the tmux default:
+    ///
+    /// * single-row selection: one segment between the two columns.
+    /// * multi-row selection: (1) start col to the preview's right
+    ///   edge on the first row, (2) full-width middle rows when any
+    ///   exist, (3) the preview's left edge to the end col on the
+    ///   last row.
+    pub(super) fn flow_rects(
+        self,
+        preview_area: ratatui::layout::Rect,
+    ) -> Vec<ratatui::layout::Rect> {
+        let mut out = Vec::new();
+        if preview_area.width == 0 || preview_area.height == 0 {
+            return out;
+        }
+        let ((start_col, start_row), (end_col, end_row)) = self.ordered();
+        let left = preview_area.x;
+        let right_excl = preview_area.right();
+
+        if start_row == end_row {
+            let lo = start_col.min(end_col);
+            let hi = start_col.max(end_col);
+            let width = hi.saturating_sub(lo).saturating_add(1);
+            out.push(ratatui::layout::Rect {
+                x: lo,
+                y: start_row,
+                width,
+                height: 1,
+            });
+            return out;
+        }
+
+        let first_width = right_excl.saturating_sub(start_col);
+        if first_width > 0 {
+            out.push(ratatui::layout::Rect {
+                x: start_col,
+                y: start_row,
+                width: first_width,
+                height: 1,
+            });
+        }
+        if end_row > start_row + 1 {
+            out.push(ratatui::layout::Rect {
+                x: left,
+                y: start_row + 1,
+                width: preview_area.width,
+                height: end_row - start_row - 1,
+            });
+        }
+        let last_width = end_col.saturating_sub(left).saturating_add(1);
+        if last_width > 0 {
+            out.push(ratatui::layout::Rect {
+                x: left,
+                y: end_row,
+                width: last_width,
+                height: 1,
+            });
+        }
+        out
+    }
 }
 
 pub(super) struct GroupRenameContext {
@@ -91,6 +216,19 @@ pub(super) struct PreviewCache {
     /// `tmux capture-pane` subprocess while the cached window still covers
     /// the requested scroll.
     pub(super) captured_lines: usize,
+    /// Lazily parsed ratatui `Text` view of `content`. Populated on the
+    /// first render after a refresh that wasn't a no-op; reused as-is
+    /// on every subsequent render until `content` is replaced. The
+    /// invalidation point is `refresh_*_preview_cache_if_needed` which
+    /// sets this to `None` whenever it writes a fresh `content`. See
+    /// `PreviewCache::ensure_parsed` for the lazy-parse contract.
+    ///
+    /// Without this cache, `ansi-to-tui` re-parses the full pane
+    /// payload (~12 KB of ANSI text for a typical agent) on every
+    /// render iteration, including the many that fire on ticker
+    /// wake-ups or unrelated key events. With it, the parse happens
+    /// at most once per actual content change.
+    pub(super) parsed_text: Option<ratatui::text::Text<'static>>,
 }
 
 impl Default for PreviewCache {
@@ -101,6 +239,29 @@ impl Default for PreviewCache {
             last_refresh: Instant::now(),
             dimensions: (0, 0),
             captured_lines: 0,
+            parsed_text: None,
+        }
+    }
+}
+
+impl PreviewCache {
+    /// Ensure `parsed_text` is populated, parsing `content` if it is
+    /// not already cached. Side-effect only: returns nothing so the
+    /// caller can drop the `&mut` borrow before reading
+    /// `parsed_text` (which lets shared borrows on sibling fields of
+    /// the parent struct coexist with the read).
+    ///
+    /// Cheap on cache-hit (single `is_none` check). Cache-miss runs
+    /// `parse_output_text` once and stashes the result.
+    pub(super) fn ensure_parsed(&mut self) {
+        if self.content.is_empty() {
+            self.parsed_text = None;
+            return;
+        }
+        if self.parsed_text.is_none() {
+            self.parsed_text = Some(crate::tui::components::preview::parse_output_text(
+                &self.content,
+            ));
         }
     }
 }
@@ -210,6 +371,8 @@ pub struct HomeView {
     /// opens, consumed on submit.
     pub(super) pending_snooze_session: Option<String>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
+    pub(super) group_picker_dialog: Option<GroupPickerDialog>,
+    pub(super) sort_picker_dialog: Option<SortPickerDialog>,
     pub(super) projects_dialog: Option<ProjectsDialog>,
     pub(super) command_palette: Option<CommandPaletteDialog>,
     #[cfg(feature = "serve")]
@@ -218,6 +381,23 @@ pub struct HomeView {
     pub(super) send_message_dialog: Option<super::dialogs::SendMessageDialog>,
     /// Session to receive the message from the send dialog
     pub(super) pending_send_session: Option<String>,
+    /// Live-send mode: when `Some`, every key event in the home view is
+    /// translated to a tmux send-keys call against this session's pane
+    /// until the user presses the exit chord (Ctrl+q). Set by `Tab` (in
+    /// both modes) and by the palette entry; cleared by the exit chord
+    /// inside the live handler.
+    pub(super) live_send: Option<live_send::LiveSendState>,
+    /// Background dispatcher created alongside `live_send`. Owns the
+    /// tmux Session and a worker thread that drains a channel of
+    /// translated keystrokes, coalescing runs of literals into single
+    /// `tmux send-keys` calls so the UI thread never blocks on fork
+    /// latency. Dropping (set to None when live mode exits) closes the
+    /// channel and the worker thread exits cleanly on its own.
+    pub(super) live_send_worker: Option<live_send::LiveSendWorker>,
+    /// Last (cols, rows) we asked the worker to resize the pane to in
+    /// the current live-send session. Used to dedup the resize messages
+    /// fired from the preview refresh path; cleared on live-send exit.
+    pub(super) live_send_last_resize: Option<(u16, u16)>,
     /// Pasted text captured at the home view that we couldn't immediately
     /// route (no session selected, cursor on a group header, etc.). Drained
     /// into the next compose dialog the user opens, so voice/dictation never
@@ -267,6 +447,26 @@ pub struct HomeView {
     /// Reset to 0 whenever the selected session changes.
     pub(super) preview_scroll_offset: u16,
     pub(super) preview_area: Rect,
+    /// Sub-rect of `preview_area` where the agent's captured pane content
+    /// is actually painted: `preview_area` minus the info header when
+    /// the user has it expanded (Agent view, non-compact). When the
+    /// info header is hidden or the layout is compact, this matches
+    /// `preview_area` exactly.
+    ///
+    /// `refresh_preview_cache_if_needed` and the live-send sync resize
+    /// both read this so the tmux pane is sized to the visible output
+    /// portion, not the full inner. Sizing to the full inner caused the
+    /// agent to render `info_height` extra rows that the user couldn't
+    /// see; tail-anchored display clipped those rows off the top, so
+    /// every frame in info-expanded mode looked shifted up.
+    pub(super) preview_pane_area: Rect,
+    /// Outer rect of the preview pane (block + borders + content), captured
+    /// during `render_preview`. The live-send preview-only fast path uses
+    /// this to call back into `render_preview` with the correct OUTER area,
+    /// since `preview_area` itself is the INNER rect (used for hit-tests
+    /// on the content). Passing the inner as if it were the outer would
+    /// make `render_preview` draw a nested block.
+    pub(in crate::tui) preview_outer_area: Rect,
     pub(super) diff_area: Rect,
     pub(super) list_area: Rect,
     /// Inner content rect of the session list (borders/padding stripped).
@@ -317,10 +517,53 @@ pub struct HomeView {
     // Resizable list column width (percentage-like units)
     pub(super) list_width: u16,
 
+    /// Visible column of the list/preview divider in side-by-side mode,
+    /// `None` in stacked layout or while the diff view is open. Set in
+    /// `render()` after the layout split; read by mouse handlers to
+    /// hit-test divider clicks and clamp drag updates.
+    pub(super) divider_col: Option<u16>,
+    /// Width of the main horizontal area (list + preview) captured at the
+    /// last render. Used as the clamp ceiling when a divider drag updates
+    /// `list_width`, so the new width can't push the preview below
+    /// `PREVIEW_MIN_WIDTH`.
+    pub(super) main_area_width: u16,
+    /// Active mouse-drag state, `None` when no button is held. Set on
+    /// `Down(Left)` over a draggable target (the list/preview divider
+    /// today), updated on each `Drag(Left)`, cleared on `Up(Left)`.
+    pub(super) drag_state: Option<DragKind>,
+
+    /// In-app text selection over the preview pane, populated only in
+    /// live-send mode (where terminal-native drag-select doesn't reach
+    /// us because mouse capture is on). The renderer reads this to
+    /// paint a reversed-style highlight. Cleared on the next key
+    /// press / click / mode change.
+    pub(super) preview_selection: Option<PreviewSelection>,
+
+    /// Set by `handle_drag_end` when a non-empty selection finalizes.
+    /// On the next render, the highlight-paint pass reads cell symbols
+    /// from the populated frame buffer, joins them into a string, and
+    /// stashes that in `preview_copy_text` for the app loop to drain
+    /// after the draw returns. Without this hop, reading
+    /// `terminal.current_buffer_mut()` post-draw returns ratatui's
+    /// blank back-buffer (it swaps current ↔ previous after every
+    /// frame) so the extracted text is all empty cells.
+    pub(super) preview_copy_pending: bool,
+
+    /// Captured text from the most recently finalized preview
+    /// selection, awaiting clipboard write. Drained by `App` right
+    /// after the draw that paints the finalized highlight.
+    pub(super) preview_copy_text: Option<String>,
+
     /// Show the info header (profile/tool/path/status/sandbox/worktree) at
     /// the top of the preview pane. Toggled with `i` and persisted to
     /// `app_state.show_preview_info`.
     pub(super) show_preview_info: bool,
+
+    /// Collapsed state of the synthetic "Archived" sidebar section.
+    /// Defaults to `true` (collapsed) so archived rows stay tucked at the
+    /// bottom until the user opts to see them. Persisted to
+    /// `app_state.archived_section_collapsed`.
+    pub(super) archived_section_collapsed: bool,
 
     /// Channel that startup-recovery workers send results back on. `None`
     /// when no recovery was attempted at construction (live tmux, daemon
@@ -479,6 +722,8 @@ impl HomeView {
             snooze_duration_dialog: None,
             pending_snooze_session: None,
             profile_picker_dialog: None,
+            group_picker_dialog: None,
+            sort_picker_dialog: None,
             projects_dialog: None,
             command_palette: None,
             #[cfg(feature = "serve")]
@@ -486,6 +731,9 @@ impl HomeView {
             update_confirm_dialog: None,
             send_message_dialog: None,
             pending_send_session: None,
+            live_send: None,
+            live_send_worker: None,
+            live_send_last_resize: None,
             pending_paste: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
@@ -509,6 +757,8 @@ impl HomeView {
             tool_preview_cache: PreviewCache::default(),
             preview_scroll_offset: 0,
             preview_area: Rect::default(),
+            preview_pane_area: Rect::default(),
+            preview_outer_area: Rect::default(),
             diff_area: Rect::default(),
             list_area: Rect::default(),
             list_inner_area: Rect::default(),
@@ -528,9 +778,19 @@ impl HomeView {
                 .as_ref()
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
+            divider_col: None,
+            main_area_width: 0,
+            drag_state: None,
+            preview_selection: None,
+            preview_copy_pending: false,
+            preview_copy_text: None,
             show_preview_info: user_config
                 .as_ref()
                 .and_then(|c| c.app_state.show_preview_info)
+                .unwrap_or(true),
+            archived_section_collapsed: user_config
+                .as_ref()
+                .and_then(|c| c.app_state.archived_section_collapsed)
                 .unwrap_or(true),
             recovery_rx: None,
             recovery_lock: None,
@@ -1565,6 +1825,14 @@ impl HomeView {
                 if let Err(e) = self.reload() {
                     tracing::warn!(target: "tui.home", "Failed to reload session state: {e}");
                 }
+                // reload()'s restore-previous-selection fallback lands
+                // the cursor on whichever flat_items index is closest
+                // to the now-removed stub, which in project-grouped
+                // layouts is often the new session's group folder.
+                // Pin selection onto the new session directly so the
+                // preview pane and dispatch in app.rs see the right
+                // row.
+                self.select_and_reveal_session(&session_id);
                 self.new_dialog = None;
 
                 if !warnings.is_empty() {
@@ -1753,13 +2021,59 @@ impl HomeView {
         serve_open || self.info_dialog.is_some() || self.changelog_dialog.is_some()
     }
 
-    pub fn has_dialog(&self) -> bool {
+    /// Same membership as `has_dialog()` minus live-send. Two callers:
+    ///
+    /// - List-row click routing: clicks must keep working in live mode
+    ///   (that's how the user switches the live target by clicking another
+    ///   row), but every other modal surface should still freeze the list.
+    /// - Preview-only fast path gate (`App::draw_preview_only`): the fast
+    ///   path is exactly what live-send wants, so live-send itself can't
+    ///   gate it off; any OTHER overlay does, since the fast path repaints
+    ///   the snapshot underneath and only re-renders the preview pane.
+    ///
+    /// `has_dialog()` ORs `live_send.is_some()` on top, so it would also
+    /// gate off the fast path it's supposed to enable — that's why the
+    /// fast path needs this method instead.
+    pub(in crate::tui) fn has_non_live_send_overlay(&self) -> bool {
         #[cfg(feature = "serve")]
         let serve_open = self.serve_view.is_some();
         #[cfg(not(feature = "serve"))]
         let serve_open = false;
 
         self.show_help
+            || self.search_active
+            || self.new_dialog.is_some()
+            || self.confirm_dialog.is_some()
+            || self.unified_delete_dialog.is_some()
+            || self.group_delete_options_dialog.is_some()
+            || self.rename_dialog.is_some()
+            || self.restart_dialog.is_some()
+            || self.hook_trust_dialog.is_some()
+            || self.hooks_install_dialog.is_some()
+            || self.welcome_dialog.is_some()
+            || self.no_agents_dialog.is_some()
+            || self.changelog_dialog.is_some()
+            || self.info_dialog.is_some()
+            || self.snooze_duration_dialog.is_some()
+            || self.profile_picker_dialog.is_some()
+            || self.projects_dialog.is_some()
+            || self.command_palette.is_some()
+            || self.tool_picker_dialog.is_some()
+            || self.send_message_dialog.is_some()
+            || self.update_confirm_dialog.is_some()
+            || serve_open
+            || self.settings_view.is_some()
+            || self.diff_view.is_some()
+    }
+
+    pub fn has_dialog(&self) -> bool {
+        #[cfg(feature = "serve")]
+        let serve_open = self.serve_view.is_some();
+        #[cfg(not(feature = "serve"))]
+        let serve_open = false;
+
+        self.live_send.is_some()
+            || self.show_help
             || self.search_active
             || self.new_dialog.is_some()
             || self.confirm_dialog.is_some()
@@ -1805,7 +2119,13 @@ impl HomeView {
         if !self.has_dialog() {
             return true;
         }
-        self.rename_dialog.is_some()
+        // Live-send mode is also paste-aware: handle_paste forwards
+        // the chunk straight to the pane via the control-mode worker,
+        // which is strictly faster and safer than letting the chars
+        // fan out as individual KeyEvents and stream per-char tmux
+        // commands.
+        self.live_send.is_some()
+            || self.rename_dialog.is_some()
             || self.send_message_dialog.is_some()
             || self.new_dialog.is_some()
             || self.settings_view.is_some()
@@ -1838,6 +2158,28 @@ impl HomeView {
                 tracing::warn!(target: "tui.home", "Failed to save config: {e}");
             }
         }
+    }
+
+    pub fn toggle_archived_section(&mut self) {
+        self.archived_section_collapsed = !self.archived_section_collapsed;
+        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
+            config.app_state.archived_section_collapsed = Some(self.archived_section_collapsed);
+            if let Err(e) = save_config(&config) {
+                tracing::warn!(target: "tui.home", "Failed to save config: {e}");
+            }
+        }
+        self.flat_items = self.build_flat_items();
+        // Defensive cursor clamp + selection refresh. Today the only
+        // call site routes through `toggle_group_collapsed` after the
+        // cursor lands on the section header, and the header survives
+        // the rebuild at the same end-of-list index, so the cursor stays
+        // valid. Programmatic callers (palette command, future macros)
+        // wouldn't have that invariant, so clamp here rather than rely
+        // on every caller to know about it.
+        if !self.flat_items.is_empty() && self.cursor >= self.flat_items.len() {
+            self.cursor = self.flat_items.len() - 1;
+        }
+        self.update_selected();
     }
 
     pub fn show_welcome(&mut self) {
@@ -1913,28 +2255,40 @@ impl HomeView {
             } else {
                 self.instances.clone()
             };
-            return flatten_sessions_by_attention(&filtered);
+            let mut items = flatten_sessions_by_attention(&filtered);
+            append_archived_section(&mut items, &filtered, self.archived_section_collapsed);
+            return items;
         }
 
-        if let Some(profile) = &self.active_profile {
+        let (mut items, archive_pool) = if let Some(profile) = &self.active_profile {
             let filtered: Vec<Instance> = self
                 .instances
                 .iter()
                 .filter(|i| i.source_profile == *profile)
                 .cloned()
                 .collect();
-            match self.group_trees.get(profile) {
+            let items = match self.group_trees.get(profile) {
                 Some(tree) => flatten_tree(tree, &filtered, self.sort_order),
                 None => Vec::new(),
-            }
+            };
+            (items, filtered)
         } else if self.storages.len() <= 1 {
-            match self.group_trees.values().next() {
+            let items = match self.group_trees.values().next() {
                 Some(tree) => flatten_tree(tree, &self.instances, self.sort_order),
                 None => Vec::new(),
-            }
+            };
+            (items, self.instances.clone())
         } else {
-            flatten_tree_all_profiles(&self.instances, &self.group_trees, self.sort_order)
-        }
+            let items =
+                flatten_tree_all_profiles(&self.instances, &self.group_trees, self.sort_order);
+            (items, self.instances.clone())
+        };
+
+        // Pin the synthetic Archived section to the bottom regardless of
+        // sort order. Archived rows were filtered out of the natural flow
+        // inside `flatten_tree` / `flatten_tree_all_profiles`.
+        append_archived_section(&mut items, &archive_pool, self.archived_section_collapsed);
+        items
     }
 
     fn build_flat_items_by_project(&self) -> Vec<Item> {
@@ -1964,7 +2318,15 @@ impl HomeView {
                 tree.set_collapsed(path, true);
             }
         }
-        flatten_tree(&tree, &grouped, self.sort_order)
+        let mut items = flatten_tree(&tree, &grouped, self.sort_order);
+        append_archived_section_by_project(
+            &mut items,
+            &grouped,
+            self.archived_section_collapsed,
+            &self.project_group_collapsed,
+            self.sort_order,
+        );
+        items
     }
 
     /// The active profile filter name, or `None` when no filter is applied.
@@ -2042,6 +2404,16 @@ impl HomeView {
         self.profile_picker_dialog = Some(ProfilePickerDialog::new(entries, &current_profile));
     }
 
+    /// Show the group-by picker dialog seeded with the current mode.
+    pub(super) fn show_group_picker(&mut self) {
+        self.group_picker_dialog = Some(GroupPickerDialog::new(self.group_by));
+    }
+
+    /// Show the sort-order picker dialog seeded with the current order.
+    pub(super) fn show_sort_picker(&mut self) {
+        self.sort_picker_dialog = Some(SortPickerDialog::new(self.sort_order));
+    }
+
     pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
         let old_status = self.get_instance(id).map(|inst| inst.status);
         self.mutate_instance(id, |inst| inst.status = status);
@@ -2055,8 +2427,33 @@ impl HomeView {
     }
 
     /// Stamp `last_accessed_at` on a session (user-initiated interaction).
+    ///
+    /// Sunk rows (archived or snoozed) take the heavier `apply_user_action`
+    /// path so the auto-unarchive/unsnooze side effect in `touch_last_accessed`
+    /// is persisted (merge_from_tui doesn't carry those fields; without this,
+    /// reload would resurrect the sink from disk) and the row leaves the
+    /// Archived section visually on the same frame. Non-sunk rows stay on
+    /// the cheap mutate_instance path; their only mutation is the timestamp,
+    /// which save() already mirrors via merge_from_tui.
     pub fn stamp_last_accessed(&mut self, id: &str) {
-        self.mutate_instance(id, |inst| inst.touch_last_accessed());
+        let was_sunk = self
+            .instance_map
+            .get(id)
+            .map(|i| i.is_archived() || i.snoozed_until.is_some())
+            .unwrap_or(false);
+        if was_sunk {
+            if let Err(e) = self.apply_user_action(id, |inst| inst.touch_last_accessed()) {
+                tracing::warn!(
+                    target: "tui.home",
+                    session_id = %id,
+                    error = %e,
+                    "stamp_last_accessed: failed to persist auto-unsink"
+                );
+            }
+            self.flat_items = self.build_flat_items();
+        } else {
+            self.mutate_instance(id, |inst| inst.touch_last_accessed());
+        }
     }
 
     /// Run the send-message work after the dialog has been dismissed: call
@@ -2115,6 +2512,192 @@ impl HomeView {
             self.selected_session = None;
         }
         stale_sid
+    }
+
+    /// Stage live-send mode against `session_id`. Mirrors
+    /// `execute_send_message`'s revive cascade so a cold-start (Docker
+    /// pull, agent splash) is handled before the user starts typing,
+    /// then installs `live_send` state so subsequent keystrokes are
+    /// captured by `handle_live_send_key`.
+    ///
+    /// Geometry-sensitive work is intentionally split out into
+    /// `finalize_live_send_resize`: the caller is expected to settle
+    /// any toast/banner state (which can shift `preview_pane_area` by a
+    /// row) and redraw between `prepare_live_send` and
+    /// `finalize_live_send_resize`, so the sync resize targets the
+    /// geometry the user will actually see for the next several frames.
+    /// Without that split, the "Reviving session..." toast shown during
+    /// this slow phase made `preview_pane_area` one row shorter than
+    /// the post-toast frame, and the agent's first capture rendered
+    /// shifted up.
+    ///
+    /// Returns `Ok(Some(stale_sid))` when the resume-fallback cascade
+    /// fired during respawn, `Ok(None)` on a clean ready, and `Err(())`
+    /// if the pane could not be readied (`info_dialog` is set with the
+    /// underlying error so the caller only has to clear its toast).
+    pub fn prepare_live_send(&mut self, session_id: &str) -> Result<Option<String>, ()> {
+        let outcome = self.try_mutate_instance_writeback_on_err(session_id, |inst| {
+            inst.ensure_pane_ready().map_err(Into::into)
+        });
+        let stale_sid = match outcome {
+            Ok(Some(EnsureReadyOutcome::Respawned {
+                stale_sid: Some(sid),
+            }))
+            | Ok(Some(EnsureReadyOutcome::Started {
+                stale_sid: Some(sid),
+            })) => Some(sid),
+            Ok(_) => None,
+            Err(err) => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Live send failed",
+                    &format!("Cannot prepare session: {}", err),
+                ));
+                return Err(());
+            }
+        };
+        let inst = match self.get_instance(session_id) {
+            Some(inst) => inst.clone(),
+            None => {
+                // Defensive: ensure_pane_ready succeeded but the
+                // instance is gone (deleted by a peer process between
+                // those two calls). Without a dialog the user would
+                // press Tab and see nothing happen, with no clue why.
+                self.info_dialog = Some(InfoDialog::new(
+                    "Live send failed",
+                    "Session disappeared before live mode could start.",
+                ));
+                return Err(());
+            }
+        };
+        // Resolve the tmux session name up front so the worker thread
+        // can reconstruct a Session without re-touching HomeView. If we
+        // can't even build the Session here, surface the error before
+        // installing live state.
+        let tmux_session = match crate::tmux::Session::new(&inst.id, &inst.title) {
+            Ok(s) => s,
+            Err(e) => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Live send failed",
+                    &format!("Cannot resolve tmux session: {}", e),
+                ));
+                return Err(());
+            }
+        };
+        let tmux_name = tmux_session.name().to_string();
+        // Switching live mode from session A to session B (click on a
+        // different row while already live): we need to drop the old
+        // worker BEFORE resetting the old session's window-size,
+        // otherwise any `Resize` still queued in the old worker can
+        // fire after the reset and flip the old pane back to manual
+        // sizing. The worker thread is intentionally not joined, so
+        // dropping its `Sender` is the only way to know its dispatch
+        // loop has finished (its `recv` returns Err and the thread
+        // exits on the next iteration).
+        let prev_tmux_name = self
+            .live_send
+            .as_ref()
+            .map(|state| state.tmux_name.clone())
+            .filter(|name| name != &tmux_name);
+        if prev_tmux_name.is_some() {
+            // Drop worker first so its queued resizes (if any) drain
+            // against the old session before we reset its sizing.
+            self.live_send_worker = None;
+            if let Some(name) = &prev_tmux_name {
+                crate::tmux::Session::from_name(name).reset_size_to_latest_client();
+            }
+        }
+        // Parse the configured exit-chord list now so the per-keystroke
+        // dispatch path doesn't re-parse on every event. Config edits
+        // during live mode aren't possible (settings_view participates
+        // in has_dialog and lives in its own takeover), so a snapshot
+        // at entry time is sufficient.
+        let exit_chord_spec = resolve_config_or_warn(&self.config_profile())
+            .session
+            .live_send_exit_chord;
+        let exit_chords = live_send::parse_chord_list(&exit_chord_spec);
+        self.live_send = Some(live_send::LiveSendState {
+            session_id: inst.id.clone(),
+            title: inst.title.clone(),
+            tmux_name: tmux_name.clone(),
+            exit_chords,
+        });
+        // Spawn the background worker that dispatches translated
+        // keystrokes as one-shot `tmux send-keys` subprocesses (the
+        // pre-#1485 path; control-mode was tried as an optimization
+        // but turned out to be unreliable on real-world tmux setups
+        // and was removed in favor of this simpler model).
+        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name));
+        // Clear the resize dedup so `finalize_live_send_resize` always
+        // issues its sync resize, even if the cached geometry from a
+        // prior session happens to match the current preview_pane_area.
+        self.live_send_last_resize = None;
+        self.stamp_last_accessed(session_id);
+        Ok(stale_sid)
+    }
+
+    /// Synchronously resize the live-send pane to match `self.preview_pane_area`,
+    /// then block for ~50 ms so the agent has time to handle SIGWINCH and
+    /// re-lay out before the next preview capture.
+    ///
+    /// Must be called after `prepare_live_send` returns `Ok(_)` and after
+    /// the caller has redrawn the frame in the post-toast geometry the
+    /// user will see for the next several frames. See `prepare_live_send`
+    /// for why the two are split.
+    ///
+    /// `preview_pane_area` is the cached OUTPUT sub-rect: the full inner
+    /// (after border + padding) minus the Agent-view info header when the
+    /// user has it expanded. Sizing to the full inner instead would leave
+    /// the top `info_height` rows of the agent's output outside the
+    /// visible window; tail-clip semantics in the preview's `Paragraph`
+    /// render then drop those rows on every frame, which the user
+    /// perceives as content shifted up.
+    pub fn finalize_live_send_resize(&mut self) {
+        let Some(state) = self.live_send.as_ref() else {
+            return;
+        };
+        let tmux_name = state.tmux_name.clone();
+        let pane = self.preview_pane_area;
+        if pane.width == 0 || pane.height == 0 {
+            return;
+        }
+        let resize_status = std::process::Command::new("tmux")
+            .args([
+                "resize-window",
+                "-t",
+                &tmux_name,
+                "-x",
+                &pane.width.to_string(),
+                "-y",
+                &pane.height.to_string(),
+            ])
+            .stderr(std::process::Stdio::null())
+            .status();
+        // Only register the dedup if the resize subprocess actually
+        // succeeded. If tmux failed (session died between our state
+        // install and now, tmux binary missing, etc.), leaving
+        // `live_send_last_resize` as None lets the next
+        // `refresh_preview_cache_if_needed` try the resize again
+        // through the worker.
+        if matches!(&resize_status, Ok(s) if s.success()) {
+            self.live_send_last_resize = Some((pane.width, pane.height));
+        }
+        // Give the agent ~50ms to handle SIGWINCH and re-lay out
+        // before we capture the first frame. Some agents (claude-
+        // code in particular) do a full clear-screen + redraw on
+        // resize; capturing during that produces a partial frame.
+        // 50ms is the smallest delay that empirically lets the
+        // most-common agents settle.
+        //
+        // Wrap the sleep in `block_in_place` so the tokio
+        // multi-threaded runtime can reschedule any other tasks
+        // off this worker for the duration. Without it, the 50ms
+        // would block every other tokio task (status pollers,
+        // update checks, etc.) from running on this thread. The
+        // call is a no-op on a current-thread runtime; aoe
+        // always uses multi-threaded (`#[tokio::main]`).
+        tokio::task::block_in_place(|| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        });
     }
 
     pub fn save(&mut self) -> anyhow::Result<()> {
@@ -2671,6 +3254,120 @@ impl HomeView {
         self.active_profile
             .clone()
             .unwrap_or_else(crate::session::config::resolve_default_profile)
+    }
+
+    /// Resolve the effective `SessionConfig` for an existing session
+    /// row, honoring per-profile overrides. Reads the instance's
+    /// `source_profile` so the picked config matches whatever profile
+    /// the session was filed under (the home view's active profile may
+    /// already have moved on); falls back to `config_profile()` when
+    /// the instance has no recorded profile. Returns `None` for
+    /// cockpit-mode sessions because the attach-mode / click-action
+    /// settings all have cockpit-specific bypass paths upstream;
+    /// callers treat `None` as "skip this setting, the cockpit path
+    /// handles activation."
+    fn resolve_session_config_for(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::session::SessionConfig> {
+        let inst = self.get_instance(session_id)?;
+        if inst.is_cockpit_mode() {
+            return None;
+        }
+        let profile = if inst.source_profile.is_empty() {
+            self.config_profile()
+        } else {
+            inst.source_profile.clone()
+        };
+        Some(crate::session::resolve_config_or_warn(&profile).session)
+    }
+
+    /// Resolve `new_session_attach_mode` for a freshly-created session.
+    /// See `resolve_session_config_for` for the profile-resolution and
+    /// cockpit-bypass rules.
+    pub fn new_session_attach_mode(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::session::NewSessionAttachMode> {
+        self.resolve_session_config_for(session_id)
+            .map(|s| s.new_session_attach_mode)
+    }
+
+    /// Resolve `click_action` for an existing session row when the
+    /// user single-clicks it in the Agent view. See
+    /// `resolve_session_config_for` for resolution rules; `None`
+    /// (cockpit) is treated by the caller as "fall through to the
+    /// historical live-send path," which `start_live_send` itself
+    /// short-circuits for cockpit anyway.
+    pub(super) fn click_action(&self, session_id: &str) -> Option<crate::session::ClickAction> {
+        self.resolve_session_config_for(session_id)
+            .map(|s| s.click_action)
+    }
+
+    /// Resolve `default_attach_mode` for an existing session row when
+    /// the user activates it (Enter / double-click) in the Agent view.
+    /// See `resolve_session_config_for` for resolution rules; callers
+    /// short-circuit to the cockpit-specific activation path before
+    /// consulting this setting.
+    pub(super) fn default_attach_mode(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::session::NewSessionAttachMode> {
+        self.resolve_session_config_for(session_id)
+            .map(|s| s.default_attach_mode)
+    }
+
+    /// Pin selection to `session_id` and place the cursor on its row.
+    /// If the containing group is collapsed (manual grouping or
+    /// project grouping), it's force-expanded and `flat_items` is
+    /// rebuilt so the row is actually present before the cursor
+    /// search. No-op when the session can't be resolved at all
+    /// (deleted between caller and us): leaves the prior selection
+    /// untouched so the user doesn't see the cursor leap to nowhere.
+    ///
+    /// Used by `apply_creation_results` so a freshly-created session
+    /// becomes the visible cursor row; also a natural fit for any
+    /// future "jump to session" path (command palette deep link,
+    /// API-driven focus change) that wants the same reveal behavior.
+    pub fn select_and_reveal_session(&mut self, session_id: &str) {
+        let Some(inst) = self.get_instance(session_id) else {
+            return;
+        };
+        let group_path = match self.group_by {
+            GroupByMode::Project => Some(project_group_name(inst)),
+            GroupByMode::Manual => {
+                let p = inst.group_path.clone();
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p)
+                }
+            }
+        };
+        let target_profile = inst.source_profile.clone();
+        self.selected_session = Some(session_id.to_string());
+        self.selected_group = None;
+        self.selected_group_profile = None;
+        if let Some(gpath) = group_path {
+            match self.group_by {
+                GroupByMode::Project => {
+                    self.project_group_collapsed.insert(gpath, false);
+                }
+                GroupByMode::Manual => {
+                    if let Some(tree) = self.group_trees.get_mut(&target_profile) {
+                        tree.set_collapsed(&gpath, false);
+                    }
+                }
+            }
+            self.flat_items = self.build_flat_items();
+        }
+        if let Some(pos) = self
+            .flat_items
+            .iter()
+            .position(|item| matches!(item, Item::Session { id, .. } if id == session_id))
+        {
+            self.cursor = pos;
+        }
     }
 
     /// Refresh all config-dependent state from the current profile's config.

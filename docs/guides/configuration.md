@@ -206,7 +206,7 @@ init_submodules = true
 ```toml
 [sandbox]
 enabled_by_default = false
-default_image = "ghcr.io/njbrake/aoe-sandbox:latest"
+default_image = "ghcr.io/agent-of-empires/aoe-sandbox:latest"
 cpu_limit = "4"
 memory_limit = "8g"
 port_mappings = ["3000:3000", "5432:5432"]
@@ -220,7 +220,7 @@ default_terminal_mode = "host"
 | Option | Default | Description |
 |--------|---------|-------------|
 | `enabled_by_default` | `false` | Auto-enable sandbox for new sessions |
-| `default_image` | `ghcr.io/njbrake/aoe-sandbox:latest` | Docker image for containers |
+| `default_image` | `ghcr.io/agent-of-empires/aoe-sandbox:latest` | Docker image for containers |
 | `cpu_limit` | (none) | CPU limit (e.g., `"4"`) |
 | `memory_limit` | (none) | Memory limit (e.g., `"8g"`) |
 | `port_mappings` | `[]` | Host-to-container port mappings (e.g., `["3000:3000"]`) |

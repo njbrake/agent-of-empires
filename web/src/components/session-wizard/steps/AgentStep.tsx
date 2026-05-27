@@ -328,7 +328,7 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
                   type="text"
                   value={data.sandboxImage}
                   onChange={(e) => onChange("sandboxImage", e.target.value)}
-                  placeholder="ghcr.io/njbrake/aoe-sandbox:latest"
+                  placeholder="ghcr.io/agent-of-empires/aoe-sandbox:latest"
                   className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
                 />
               </div>

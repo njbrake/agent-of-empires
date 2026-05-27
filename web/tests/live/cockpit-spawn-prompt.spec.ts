@@ -12,7 +12,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
-import { waitForCockpitReady } from "../helpers/cockpit";
+import { enableCockpitAndWait, waitForReplayContains } from "../helpers/cockpit";
 
 base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}, testInfo) => {
   const serve = await spawnAoeServe({
@@ -32,17 +32,10 @@ base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}
     // implicitly spawns the cockpit supervisor via tokio::spawn. A
     // follow-up explicit POST to /cockpit/spawn would 409 with
     // "already running", so we only call enable and let it own the
-    // spawn lifecycle.
-    const enableRes = await fetch(
-      `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`,
-      { method: "POST" },
-    );
-    expect(enableRes.ok).toBeTruthy();
-    // Wait for the tokio::spawn'd supervisor to finish its ACP handshake
-    // (initialize + session/new) before prompting, by polling replay for
-    // any frame. The previous `setTimeout(2_000)` race proved tight under
-    // CI load.
-    await waitForCockpitReady(serve.baseUrl, sessionId);
+    // spawn lifecycle. `enableCockpitAndWait` POSTs enable, asserts a
+    // 2xx, then waits for the ACP handshake (initialize + session/new)
+    // to finish before returning.
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     const promptRes = await fetch(
       `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`,
@@ -55,30 +48,13 @@ base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}
     expect(promptRes.status).toBeGreaterThanOrEqual(200);
     expect(promptRes.status).toBeLessThan(300);
 
-    let sawChunk = false;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const replay = await fetch(
-        `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-      ).then((r) => r.json());
-      // GET /cockpit/replay returns { frames, lost, highest_seq, lowest_seq }
-      // (src/server/api/cockpit.rs::cockpit_replay). Each frame's serialized
-      // `event` is an externally-tagged enum, so the chunk is keyed
-      // `AgentMessageChunk`. Match either casing to stay robust if the
-      // wire format ever moves to snake_case.
-      const frames: unknown[] = Array.isArray(replay)
-        ? replay
-        : replay.frames ?? [];
-      const json = JSON.stringify(frames);
-      if (
-        json.includes("agent_message_chunk") ||
-        json.includes("AgentMessageChunk")
-      ) {
-        sawChunk = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    expect(sawChunk).toBe(true);
+    // Match either casing in case the wire format moves to snake_case
+    // (frames currently serialize `event` as an externally-tagged enum,
+    // keyed `AgentMessageChunk`; src/server/api/cockpit.rs::cockpit_replay).
+    await waitForReplayContains(serve.baseUrl, sessionId, [
+      "agent_message_chunk",
+      "AgentMessageChunk",
+    ]);
   } finally {
     await serve.stop();
   }

@@ -77,6 +77,11 @@ export interface SpawnOptions {
   cockpit?: boolean;
   /** Optional path to a FAKE_ACP_SCRIPT for cockpit tests. */
   fakeAcpScript?: string;
+  /** Extra environment variables exported in the fake-ACP shim. Lets
+   *  cockpit tests toggle behavior on the fake agent (e.g. force a
+   *  rejection of session/set_config_option) without writing a full
+   *  scripted turn file. */
+  extraEnv?: Record<string, string>;
   /**
    * Runs after the isolated $HOME tree is set up and the fake shim is on
    * PATH, but BEFORE `aoe serve` spawns. Use to call `aoe add` so the
@@ -328,14 +333,25 @@ async function waitForServer(
 function writeFakeClaudeShim(binDir: string): void {
   // Dashboard tracer specs only need the tmux pane to stay open with a
   // long-running process. Cockpit specs swap this for the ACP agent shim
-  // via `writeFakeAcpShim`.
+  // via `writeFakeAcpShim`. Install shims for the built-in agents the
+  // wizard UI surfaces (claude / codex / gemini); the agent picker
+  // filters by `which <binary>` (src/tmux/mod.rs::is_agent_available),
+  // so without these the picker only offers claude and persistence
+  // specs that pick a non-default tool would hang on a missing button.
   const script = "#!/bin/bash\nexec tail -f /dev/null\n";
-  const path = join(binDir, "claude");
-  writeFileSync(path, script);
-  chmodSync(path, 0o755);
+  for (const name of ["claude", "codex", "gemini"]) {
+    const path = join(binDir, name);
+    writeFileSync(path, script);
+    chmodSync(path, 0o755);
+  }
 }
 
-function writeFakeAcpShim(binDir: string, fakeAcpScript: string | undefined): void {
+function writeFakeAcpShim(
+  binDir: string,
+  fakeAcpScript: string | undefined,
+  fakeAcpDebugLog: string,
+  extraEnv: Record<string, string> | undefined,
+): void {
   // The cockpit supervisor resolves the agent through `AgentRegistry`
   // (src/cockpit/agent_registry.rs): the `claude` tool key maps to
   // command `claude-agent-acp`, not `claude`. `resolve_agent_command`
@@ -343,11 +359,25 @@ function writeFakeAcpShim(binDir: string, fakeAcpScript: string | undefined): vo
   // entry in the shim dir the supervisor falls through to the real
   // installed adapter, which then surfaces "Authentication required"
   // on the first prompt. Shim every name a cockpit test can land on.
+  //
+  // The shim also re-exports diagnostic env vars (FAKE_ACP_SCRIPT,
+  // FAKE_ACP_DEBUG_LOG) so they reach the node child even when the
+  // daemon -> runner spawn chain does not propagate every env from
+  // the parent (observed in CI: seedEnv vars set on `aoe serve` do
+  // not all reach the runner-spawned fake-ACP child, so relying on
+  // process.env in fakeAcpAgent.mjs alone is unreliable).
   const fakeAgentJs = resolve(__dirname, "fakeAcpAgent.mjs");
-  const scriptLine = fakeAcpScript
-    ? `export FAKE_ACP_SCRIPT=${JSON.stringify(fakeAcpScript)}\n`
-    : "";
-  const script = `#!/bin/bash\n${scriptLine}exec node ${JSON.stringify(fakeAgentJs)} "$@"\n`;
+  const scriptLines: string[] = [];
+  if (fakeAcpScript) {
+    scriptLines.push(`export FAKE_ACP_SCRIPT=${JSON.stringify(fakeAcpScript)}`);
+  } else {
+    scriptLines.push("unset FAKE_ACP_SCRIPT");
+  }
+  scriptLines.push(`export FAKE_ACP_DEBUG_LOG=${JSON.stringify(fakeAcpDebugLog)}`);
+  for (const [key, value] of Object.entries(extraEnv ?? {})) {
+    scriptLines.push(`export ${key}=${JSON.stringify(value)}`);
+  }
+  const script = `#!/bin/bash\n${scriptLines.join("\n")}\nexec node ${JSON.stringify(fakeAgentJs)} "$@"\n`;
   for (const name of ["claude", "claude-agent-acp", "aoe-agent"]) {
     const path = join(binDir, name);
     writeFileSync(path, script);
@@ -416,8 +446,26 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   // and checks `starts_with(dirs::home_dir())`; if HOME is the un-
   // canonicalized form, that check fails on macOS and any browse call
   // against the test's HOME tree returns "outside the home directory".
+  //
+  // Use `/tmp/...` as the base instead of `tmpdir()`. On macOS,
+  // `tmpdir()` resolves to `/private/var/folders/<hash>/T/...` (~95
+  // chars). After we append `/.agent-of-empires-dev/cockpit-workers/
+  // <session_id>.sock` (~60 chars) we blow past the 104-byte
+  // `sun_path` limit on Darwin unix sockets and the runner's
+  // `UnixListener::bind` fails with ENAMETOOLONG. Because the runner
+  // writes its stderr to /dev/null, the failure surfaces as "runner
+  // socket … did not appear within Ns" (the daemon's wait_for_socket
+  // poll never sees a socket appear) instead of a typed bind error.
+  // `/tmp` is a stable, short, world-writable directory on every
+  // supported OS we target; using it caps the path well under
+  // sun_path on Darwin (104) and Linux (108). See macOS sun_path
+  // <sys/un.h>.
+  // Windows has no `/tmp`; fall back to `tmpdir()` there. `sun_path`
+  // is a POSIX-only limit, so the Darwin short-path workaround does
+  // not apply to win32 either.
+  const shortBase = process.platform === "win32" ? tmpdir() : "/tmp";
   const home = realpathSync(
-    mkdtempSync(join(tmpdir(), `aoe-pw-w${opts.workerIndex}-p${opts.parallelIndex}-`)),
+    mkdtempSync(join(shortBase, `aoe-pw-w${opts.workerIndex}-p${opts.parallelIndex}-`)),
   );
   const xdg = join(home, "config");
   const tmp = join(home, "tmp");
@@ -426,8 +474,9 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   for (const dir of [xdg, tmp, tmuxTmp, shimBin]) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
+  const fakeAcpDebugLog = join(home, "fake-acp.log");
   if (opts.cockpit) {
-    writeFakeAcpShim(shimBin, opts.fakeAcpScript);
+    writeFakeAcpShim(shimBin, opts.fakeAcpScript, fakeAcpDebugLog, opts.extraEnv);
   } else {
     writeFakeClaudeShim(shimBin);
   }
@@ -441,6 +490,31 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     TMPDIR: tmp,
     TMUX_TMPDIR: tmuxTmp,
     PATH: `${shimBin}:${process.env.PATH ?? ""}`,
+    // Lift the runner-socket appearance deadline. The `aoe
+    // __cockpit-runner` shim re-execs the debug `aoe` binary, which
+    // under v8 coverage + 3 parallel workers + tmux + a fake-ACP node
+    // subprocess can take >10s to bind its unix listener on a
+    // contended runner. The production 10s default in
+    // `runner_socket_deadline()` covers cold caches; tests need
+    // headroom or `cockpit_enable` fails with `runner socket … did
+    // not appear within 10s` (deterministic on slower local + CI
+    // machines, never on hot caches). Honored only in debug builds.
+    AOE_COCKPIT_RUNNER_SOCKET_TIMEOUT_MS: "60000",
+    // FAKE_ACP_DEBUG_LOG is *also* re-exported by the shim itself
+    // (see writeFakeAcpShim) because the daemon -> runner -> node
+    // spawn chain on CI Linux did not propagate this env var from
+    // process.env alone. Keeping it on seedEnv too is harmless and
+    // covers any future caller that bypasses the shim path.
+    FAKE_ACP_DEBUG_LOG: fakeAcpDebugLog,
+    // Daemon log level. AOE_LOG_LEVEL only accepts a single level
+    // string (trace|debug|info|warn|error); see LogLevel::parse in
+    // src/logging.rs. The default `info` is sufficient for the
+    // post-mortem attachments; `trace` was used briefly to diagnose
+    // the XDG_CONFIG_HOME bug but adds enough I/O pressure on CI to
+    // cause unrelated REST flakes (e.g. settings PATCH failing
+    // under contention and triggering an optimistic-update revert).
+    // Override via process env if a future investigation needs it.
+    AOE_LOG_LEVEL: process.env.AOE_LOG_LEVEL ?? "info",
   };
 
   if (authMode === "token") {

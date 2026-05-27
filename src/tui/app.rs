@@ -18,6 +18,22 @@ use crate::session::{get_update_settings, save_config, Config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
+/// Minimum elapsed time between considering periodic update re-checks.
+/// The main loop runs at ~20Hz; gating on this gap keeps the per-iteration
+/// `get_update_settings()` config read off the hot path while still
+/// re-evaluating well under any realistic `check_interval_hours` setting.
+const UPDATE_CHECK_THROTTLE_GAP: Duration = Duration::from_secs(60);
+
+/// Floor for the periodic re-check interval. The settings TUI validator
+/// rejects `check_interval_hours = 0`, but a user could still land in that
+/// state by hand-editing the config file. Without a floor, the periodic
+/// re-check would fire once per `UPDATE_CHECK_THROTTLE_GAP` (60s) and the
+/// underlying `check_for_update` cache TTL would also be zero, defeating
+/// the cache and hitting GitHub on every tick. One hour is generous; users
+/// who genuinely want hourly checks set `check_interval_hours = 1` and get
+/// the same effect via the normal path.
+const MIN_PERIODIC_RECHECK_INTERVAL: Duration = Duration::from_secs(3600);
+
 /// Inter-key timeout for the paste-burst detector. After any printable Char
 /// or Enter, the event loop polls for the next event with this timeout; if
 /// another burst-candidate arrives before the deadline, it joins the burst.
@@ -92,6 +108,20 @@ pub struct App {
     /// the sync `execute_action` can't lend out).
     #[cfg(feature = "serve")]
     pending_cockpit_open: Option<String>,
+    /// Version of the install currently being attempted (auto or manual).
+    /// Set when the install task is spawned; transferred to
+    /// `last_installed_version_in_session` on confirmed success in
+    /// `poll_update_status`. Cleared on failure so the user can retry.
+    pending_install_version: Option<String>,
+    /// Version we successfully installed this session. The running binary's
+    /// compile-time `CARGO_PKG_VERSION` stays at the old value until
+    /// restart, so without this guard every periodic re-check (#1471) would
+    /// surface the same release again: as an auto-install loop in auto
+    /// mode, and as a re-appearing banner in notify mode. A genuinely newer
+    /// release clears the guard automatically because the version string
+    /// differs. Single-process scope; on restart the new binary's
+    /// `CARGO_PKG_VERSION` makes the underlying check return "no update".
+    last_installed_version_in_session: Option<String>,
 }
 
 /// Check if the app version changed and return the previous version if changelog should be shown.
@@ -208,6 +238,8 @@ impl App {
             mouse_captured: crate::tui::mouse_capture_requested(),
             #[cfg(feature = "serve")]
             pending_cockpit_open: None,
+            pending_install_version: None,
+            last_installed_version_in_session: None,
         })
     }
 
@@ -257,7 +289,7 @@ impl App {
         )?;
         let draw_result = (|| -> Result<()> {
             crossterm::execute!(terminal.backend_mut(), crossterm::cursor::Hide)?;
-            terminal.draw(|f| self.render(f)).map(|_| ())?;
+            terminal.draw(|f| self.render(f))?;
             Ok(())
         })();
         let end_result = crossterm::execute!(
@@ -410,35 +442,19 @@ impl App {
         // Refresh tmux session cache
         crate::tmux::refresh_session_cache();
 
-        // Spawn async update check
+        // Spawn async update check at startup. The periodic re-check below
+        // covers long-running sessions (#1471). `last_update_check` stays
+        // `None` when the startup spawn does not fire (mode=off) so that
+        // toggling the mode on later triggers a check immediately, instead
+        // of waiting up to `check_interval_hours` from process launch.
         let settings = get_update_settings();
-        if settings.update_check_mode.is_enabled() {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            self.update_rx = Some(rx);
-            tokio::spawn(async move {
-                let version = env!("CARGO_PKG_VERSION");
-                let mut result = check_for_update(version, false).await;
-                // For Homebrew installs, suppress the "update available"
-                // ribbon until the formula has caught up to the GitHub
-                // release. Otherwise users see the prompt, press 'u', and
-                // hit a no-op `brew upgrade` while the formula lags. The
-                // brew probes are sync; offload to keep the runtime free.
-                if let Ok(info) = &mut result {
-                    if info.available {
-                        let target = info.latest_version.clone();
-                        let actionable = tokio::task::spawn_blocking(move || {
-                            crate::update::install::install_method_supports_target(&target)
-                        })
-                        .await
-                        .unwrap_or(true);
-                        if !actionable {
-                            info.available = false;
-                        }
-                    }
-                }
-                let _ = tx.send(result);
-            });
-        }
+        let mut last_update_check: Option<std::time::Instant> =
+            if settings.update_check_mode.is_enabled() {
+                self.spawn_update_check();
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
 
         // SIGHUP/SIGTERM futures so we exit cleanly when the terminal
         // emulator is force-quit, preventing PTY slot leaks (#541).
@@ -458,12 +474,43 @@ impl App {
             (hup.ok(), term.ok())
         };
 
-        let mut refresh_interval = tokio::time::interval(Duration::from_millis(50));
+        // 33ms ticker (~30fps) is the steady-state refresh in live-send.
+        // 16ms (60fps) was tried but produced visible tearing on
+        // terminals that don't support synchronized-update escapes
+        // (notably macOS Terminal.app); back-to-back ticker + post-key
+        // wakes within ~1ms also doubled-up frame writes. 33ms gives
+        // each frame's writes enough time to land before the next
+        // frame starts, while remaining responsive enough that
+        // animation looks fluid. The post-key wake below covers the
+        // typing-echo case where 33ms would feel laggy.
+        let mut refresh_interval = tokio::time::interval(Duration::from_millis(33));
         refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // After any keystroke routed to live-send, schedule one extra
+        // refresh ~15ms later (roughly the `tmux send-keys` fork plus
+        // agent-echo time) so the resulting capture catches the echo
+        // deterministically instead of waiting up to one full ticker
+        // interval. Cleared when the wake fires; re-armed by each
+        // subsequent key.
+        let mut last_live_key_at: Option<std::time::Instant> = None;
+        const POST_KEY_WAKE_DELAY: Duration = Duration::from_millis(15);
+        // Track when the last refresh fired so the ticker arm can
+        // back off if a post-key wake just ran. Without this, a key
+        // pressed ~10ms before a ticker tick produces two refreshes
+        // back-to-back (post-key wake at +15ms, ticker at +16ms),
+        // which on a non-sync-update terminal looks like tearing:
+        // the first frame's per-cell writes are still landing when
+        // the second frame starts overwriting them.
+        let mut last_refresh_at: Option<std::time::Instant> = None;
+        const REFRESH_COOLDOWN: Duration = Duration::from_millis(15);
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
         let mut last_spinner_redraw = std::time::Instant::now();
         let mut last_heartbeat = std::time::Instant::now();
+        // Throttle for how often the periodic block re-reads settings;
+        // without this, the inner guards would re-fire on every loop
+        // iteration once any time has passed, hitting the config file at
+        // the 20Hz loop rate.
+        let mut last_update_eval = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
         // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
@@ -482,6 +529,12 @@ impl App {
                 terminal.clear()?;
                 self.needs_redraw = false;
             }
+
+            // Compute the post-key wake deadline once per iteration so
+            // the select! arm doesn't have to dance with the Option.
+            // `None` here becomes `pending` inside the arm.
+            let post_key_deadline = last_live_key_at.map(|t| t + POST_KEY_WAKE_DELAY);
+            let mut woke_via_post_key = false;
 
             // All event sources are polled cooperatively via tokio::select!.
             // This ensures signal futures actually get scheduled (fixing #608
@@ -600,11 +653,39 @@ impl App {
                             self.handle_key(key, terminal).await?;
                             self.sync_mouse_capture(terminal)?;
 
-                            // Skip the draw when returning from tmux attach.
-                            // needs_redraw triggers a clear + stale event drain
-                            // on the next iteration; drawing before that drain
-                            // wastes a frame and can flicker.
-                            if !self.needs_redraw {
+                            // Arm the post-key wake when the key was
+                            // routed into live-send. We don't have an
+                            // explicit signal from handle_key for that
+                            // (it returns ()), but `live_send.is_some()`
+                            // after the call is a good proxy: a key
+                            // that EXITS live-send won't arm a wake,
+                            // and keys outside live-send leave it None
+                            // anyway since we never set it.
+                            let live_after = self.home.live_send.is_some();
+                            if live_after {
+                                last_live_key_at = Some(std::time::Instant::now());
+                            }
+
+                            // Skip the immediate draw when:
+                            //   - We're returning from tmux attach
+                            //     (`needs_redraw` triggers a clear +
+                            //     stale event drain on the next
+                            //     iteration; drawing before the drain
+                            //     wastes a frame and can flicker), OR
+                            //   - We're inside live-send. The key was
+                            //     queued to the worker but has NOT been
+                            //     dispatched to tmux yet, so the home
+                            //     view's preview cache is still stale.
+                            //     Drawing now produces a frame
+                            //     identical to the previous one
+                            //     (ratatui's diff is empty) and then
+                            //     the post-key wake fires ~15ms later
+                            //     with fresh post-echo content.
+                            //     Skipping the immediate draw avoids a
+                            //     no-op paint that on non-sync-update
+                            //     terminals can still emit cursor-move
+                            //     bytes mid-frame.
+                            if !self.needs_redraw && !live_after {
                                 self.draw(terminal)?;
                             }
 
@@ -626,15 +707,52 @@ impl App {
                             // a bool. The single-click selection always
                             // mutates `cursor` so we redraw unconditionally
                             // before dispatching the action.
+                            //
+                            // Priority order for `Down(Left)`:
+                            //   1. modal dialog click (e.g. delete Yes/No)
+                            //   2. drag-start (divider, or preview text
+                            //      selection)
+                            //   3. list row click (existing select/activate)
+                            // A bare press on the preview seeds a 1x1
+                            // PreviewSelect; `handle_drag_end` collapses it
+                            // back to no selection on release if the cursor
+                            // never moved.
                             let click_action = if matches!(
                                 mouse.kind,
                                 MouseEventKind::Down(MouseButton::Left)
-                            ) && hit_list
-                            {
-                                let action =
-                                    self.home.handle_click(mouse.column, mouse.row);
-                                self.draw(terminal)?;
-                                action
+                            ) {
+                                if self.home.handle_dialog_click(mouse.column, mouse.row)
+                                {
+                                    // A modal swallowed the click — drop any
+                                    // leftover preview highlight so it doesn't
+                                    // linger behind / through the dialog.
+                                    let _ = self.home.clear_preview_selection();
+                                    self.sync_mouse_capture(terminal)?;
+                                    self.draw(terminal)?;
+                                    None
+                                } else if self
+                                    .home
+                                    .handle_drag_start(mouse.column, mouse.row)
+                                {
+                                    // handle_drag_start already overwrote the
+                                    // selection if it started a PreviewSelect;
+                                    // a fresh ListDivider drag is unrelated to
+                                    // the highlight and should drop it.
+                                    if !self.home.is_preview_select_dragging() {
+                                        let _ = self.home.clear_preview_selection();
+                                    }
+                                    None
+                                } else if hit_list {
+                                    let _ = self.home.clear_preview_selection();
+                                    let action = self
+                                        .home
+                                        .handle_click(mouse.column, mouse.row);
+                                    self.draw(terminal)?;
+                                    action
+                                } else {
+                                    let _ = self.home.clear_preview_selection();
+                                    None
+                                }
                             } else {
                                 None
                             };
@@ -644,6 +762,22 @@ impl App {
                                 }
                                 MouseEventKind::ScrollDown if hit_scroll_target => {
                                     self.home.handle_scroll_down(mouse.column, mouse.row)
+                                }
+                                // Drag(Left) without a matching drag_state
+                                // is a no-op inside the handler; we don't
+                                // need a separate guard here.
+                                MouseEventKind::Drag(MouseButton::Left) => {
+                                    self.home.handle_drag_move(mouse.column, mouse.row)
+                                }
+                                MouseEventKind::Up(MouseButton::Left) => {
+                                    // Finalize the drag here, but defer the
+                                    // clipboard write until after the next
+                                    // draw: the renderer captures cell text
+                                    // while the buffer is still populated
+                                    // (ratatui resets the back buffer on
+                                    // every frame, so reading post-draw
+                                    // sees empty cells).
+                                    self.home.handle_drag_end()
                                 }
                                 // Moved events are dispatched unconditionally
                                 // (no `hit_list` guard) so the handler can
@@ -657,6 +791,13 @@ impl App {
                             };
                             if handled {
                                 self.draw(terminal)?;
+                            }
+                            // After the draw that paints a freshly-finalized
+                            // preview selection, the renderer has captured
+                            // the cell text into `preview_copy_text`. Drain
+                            // it and write to the user's clipboard.
+                            if let Some(text) = self.home.take_preview_copy_text() {
+                                crate::tui::clipboard::copy_to_clipboard(&text);
                             }
                             if let Some(action) = click_action {
                                 self.execute_action(action, terminal)?;
@@ -713,6 +854,17 @@ impl App {
                 }
                 _ = refresh_interval.tick() => {}
                 _ = async {
+                    match post_key_deadline {
+                        Some(at) => tokio::time::sleep_until(at.into()).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    // Targeted refresh ~15ms after a live-send key,
+                    // catching the agent's echo before the next ticker.
+                    woke_via_post_key = true;
+                    last_live_key_at = None;
+                }
+                _ = async {
                     #[cfg(unix)]
                     match sighup {
                         Some(ref mut s) => { s.recv().await; }
@@ -740,18 +892,35 @@ impl App {
                 }
             }
 
-            // Check for update result (non-blocking)
+            // Periodic refreshes (only when no input pending).
+            //
+            // `needs_full_refresh` separately tracks whether anything
+            // other than the live-send ticker/post-key wake wants a
+            // refresh; on those flags the cool-down at the bottom of
+            // the loop is bypassed so deterministic signals (status
+            // updates, dialog ticks) get painted right away.
+            let mut refresh_needed = false;
+            let mut needs_full_refresh = false;
+
+            // Update-check / install-status polls can flip the
+            // bottom-of-screen update bar (banner or transient toast)
+            // on or off, which shifts the home view's layout. If a
+            // live-send wake fires on the same iteration, the
+            // preview-only fast path would paint a stale snapshot
+            // whose preview rect no longer lines up with the new
+            // layout. Treat any banner state change as full-refresh
+            // work so the slow path rebuilds the layout AND the
+            // snapshot.
             if self.poll_update_check() {
                 self.needs_redraw = true;
+                refresh_needed = true;
+                needs_full_refresh = true;
             }
-
-            // Check for in-progress update completion
             if self.poll_update_status() {
                 self.needs_redraw = true;
+                refresh_needed = true;
+                needs_full_refresh = true;
             }
-
-            // Periodic refreshes (only when no input pending)
-            let mut refresh_needed = false;
 
             if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
                 self.home.request_status_refresh();
@@ -760,33 +929,51 @@ impl App {
 
             if self.home.apply_status_updates() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if self.home.apply_deletion_results() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if self.home.apply_session_id_updates() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if self.home.apply_recovery_updates() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if let Some(session_id) = self.home.apply_creation_results() {
-                self.attach_session(&session_id, terminal)?;
+                self.dispatch_new_session_attach(&session_id, terminal)?;
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if self.home.tick_dialog() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
-            if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
+            // Defer the 5s disk reload while the user is in live-send.
+            // The reload is on the UI thread and rebuilds the sidebar
+            // tree from disk, which causes a visible hitch in the
+            // preview. The user can't change session config from inside
+            // live mode anyway. Leaving `last_disk_refresh` un-advanced
+            // when we skip means the first tick outside live-send
+            // re-checks the interval and reloads immediately if it's
+            // been ≥5s since the last successful reload (so a change
+            // on disk during a long live-send session is picked up on
+            // exit instead of sitting stale for another 5s window).
+            if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL && self.home.live_send.is_none()
+            {
                 self.home.reload()?;
                 last_disk_refresh = std::time::Instant::now();
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
@@ -794,17 +981,92 @@ impl App {
                 last_heartbeat = std::time::Instant::now();
             }
 
-            // Animated spinners (rattles) need periodic redraws, but only at
-            // the spinner frame rate to avoid unnecessary widget tree rebuilds
+            // Periodic update re-check (#1471). The startup spawn only fires
+            // once per process; long-running TUI sessions would otherwise
+            // silently miss releases that ship after the user attached. The
+            // throttle gap keeps the per-iteration `get_update_settings()`
+            // config-file read off the 20Hz hot path.
+            if last_update_eval.elapsed() >= UPDATE_CHECK_THROTTLE_GAP {
+                last_update_eval = std::time::Instant::now();
+                let settings = get_update_settings();
+                if should_spawn_periodic_update_check(
+                    last_update_check.map(|t| t.elapsed()),
+                    periodic_recheck_interval(settings.check_interval_hours),
+                    self.update_rx.is_some(),
+                    settings.update_check_mode.is_enabled(),
+                ) {
+                    self.spawn_update_check();
+                    last_update_check = Some(std::time::Instant::now());
+                }
+            }
+
+            // Animated spinners (rattles) need periodic redraws, but only
+            // at the spinner frame rate to avoid unnecessary widget tree
+            // rebuilds. Skip in live-send: the spinner lives in the
+            // sidebar (which the user isn't looking at) and forcing a
+            // full HomeView render every 120ms inside live mode wakes
+            // the loop eight times a second to repaint a region the
+            // user can't see, which only adds load on top of the
+            // already-busy preview refresh.
             if last_spinner_redraw.elapsed() >= SPINNER_REDRAW_INTERVAL
                 && self.home.has_animated_sessions()
+                && self.home.live_send.is_none()
             {
                 last_spinner_redraw = std::time::Instant::now();
                 refresh_needed = true;
+                needs_full_refresh = true;
+            }
+
+            // In live-send, the 33ms ticker is the steady-state
+            // refresh source; treat every tick as a refresh. The
+            // post-key wake (`woke_via_post_key`) is the same signal
+            // but on a deterministic ~15ms delay after each keystroke
+            // so typing-echo latency doesn't have to wait for ticker
+            // phase. Outside live-send, only the periodic checks
+            // above trigger refresh.
+            if self.home.live_send.is_some() || woke_via_post_key {
+                refresh_needed = true;
+            }
+
+            // Cool-down guard against double-painting in live-send.
+            // The post-key wake and the ticker can fire within 1ms of
+            // each other (key pressed 14ms before a ticker tick: post-
+            // key wake fires at +15ms, ticker tick fires at +16ms),
+            // which doubles up frame writes and produces visible
+            // tearing on terminals without synchronized-update
+            // support. Skip ticker-driven refreshes inside the
+            // cool-down window unless this refresh was specifically
+            // requested by something else (status update, post-key
+            // wake, etc).
+            if refresh_needed
+                && self.home.live_send.is_some()
+                && !woke_via_post_key
+                && !needs_full_refresh
+                && last_refresh_at
+                    .map(|t| t.elapsed() < REFRESH_COOLDOWN)
+                    .unwrap_or(false)
+            {
+                refresh_needed = false;
             }
 
             if refresh_needed {
+                // Always do a full draw in live-send. The
+                // `draw_preview_only` snapshot-painting fast path was
+                // landed in #1495 to cheapen `%output` wakes, but
+                // (a) `%output` wakes no longer exist (control-mode
+                // is gone), and (b) on terminals that don't support
+                // synchronized-update escapes (Apple Terminal.app,
+                // Mosh-with-prediction), the snapshot-then-overlay
+                // pattern produced visible "drag" (the previous
+                // frame's preview cells stayed on screen for a beat
+                // while ratatui's diff caught up). Always-full-draw is
+                // ~2-3ms more CPU per frame (rebuilding the sidebar
+                // widget tree) but is uniformly clean across
+                // terminals. Outside live-send the same path runs
+                // when `refresh_needed`, so this is just collapsing
+                // the conditional branch.
                 self.draw(terminal)?;
+                last_refresh_at = Some(std::time::Instant::now());
             }
 
             if self.should_quit {
@@ -852,6 +1114,39 @@ impl App {
         }
     }
 
+    /// Spawn an async update check, mirroring the brew-formula-lag
+    /// suppression done at startup. Stores the receiver on `self.update_rx`
+    /// so the main loop's `poll_update_check` picks up the result. Callers
+    /// are responsible for gating on `update_check_mode.is_enabled()` and
+    /// avoiding duplicate in-flight checks via `self.update_rx.is_none()`.
+    fn spawn_update_check(&mut self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.update_rx = Some(rx);
+        tokio::spawn(async move {
+            let version = env!("CARGO_PKG_VERSION");
+            let mut result = check_for_update(version, false).await;
+            // For Homebrew installs, suppress the "update available" banner
+            // until the formula has caught up to the GitHub release.
+            // Otherwise users see the prompt, press 'u', and hit a no-op
+            // `brew upgrade` while the formula lags. The brew probes are
+            // sync; offload to keep the runtime free.
+            if let Ok(info) = &mut result {
+                if info.available {
+                    let target = info.latest_version.clone();
+                    let actionable = tokio::task::spawn_blocking(move || {
+                        crate::update::install::install_method_supports_target(&target)
+                    })
+                    .await
+                    .unwrap_or(true);
+                    if !actionable {
+                        info.available = false;
+                    }
+                }
+            }
+            let _ = tx.send(result);
+        });
+    }
+
     /// Poll for update check result (non-blocking).
     /// Returns true if an update is available, was just received, and is
     /// not snoozed by a prior `dismissed_update_version`.
@@ -868,6 +1163,21 @@ impl App {
         let Some(info) = self.update_info.as_ref() else {
             return false;
         };
+
+        // Already installed this version this session (auto or manual). The
+        // running binary's compile-time `CARGO_PKG_VERSION` is stale until
+        // the user restarts, so every periodic re-check (#1471) would
+        // otherwise rediscover the same release: auto mode would loop the
+        // installer, notify mode would re-show the banner. Skip both.
+        if self.last_installed_version_in_session.as_deref() == Some(info.latest_version.as_str()) {
+            tracing::info!(
+                target: "update.dedup",
+                version = %info.latest_version,
+                "skipping: already installed this version this session, restart aoe to use it"
+            );
+            self.update_info = None;
+            return false;
+        }
 
         // Auto mode: install in the background and suppress the banner.
         // The new binary is picked up on next launch; we do not restart
@@ -942,6 +1252,11 @@ impl App {
         self.update_status = Some(UpdateStatus::transient(format!(
             "auto-updating to v{version} in background…"
         )));
+        // Stash for `poll_update_status` to promote into
+        // `last_installed_version_in_session` on confirmed success. Tracking
+        // only on success preserves the user's ability to retry after a
+        // failed install (transient network issue, disk full, etc.).
+        self.pending_install_version = Some(version.clone());
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.update_status_rx = Some(rx);
         let handle = tokio::runtime::Handle::current();
@@ -959,12 +1274,17 @@ impl App {
         };
         match rx.try_recv() {
             Ok(Ok(())) => {
+                // Promote the pending version into the per-session record so
+                // the periodic re-check (#1471) stops surfacing this release.
+                self.last_installed_version_in_session = self.pending_install_version.take();
                 self.update_status = Some(UpdateStatus::persistent(
                     "update complete. Restart aoe to use the new version.".into(),
                 ));
                 true
             }
             Ok(Err(e)) => {
+                // Clear pending so a retry is allowed.
+                self.pending_install_version = None;
                 self.update_status = Some(UpdateStatus::transient(format!("update failed: {e}")));
                 true
             }
@@ -973,6 +1293,7 @@ impl App {
                 false
             }
             Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                self.pending_install_version = None;
                 self.update_status = Some(UpdateStatus::transient(
                     "update task ended unexpectedly".into(),
                 ));
@@ -1012,6 +1333,9 @@ impl App {
             })?;
             match result {
                 Ok(()) => {
+                    // Record the successful manual install so the periodic
+                    // re-check (#1471) stops re-surfacing this release.
+                    self.last_installed_version_in_session = Some(version.clone());
                     self.update_status = Some(UpdateStatus::persistent(
                         "update complete. Restart aoe to use the new version.".into(),
                     ));
@@ -1029,6 +1353,9 @@ impl App {
             // async I/O still use the existing tokio runtime while sidestepping the
             // Send constraint.
             self.update_status = Some(UpdateStatus::transient(format!("updating to v{version}…")));
+            // Stash for `poll_update_status` to promote on confirmed success
+            // (#1471). Mirrors the auto-install path.
+            self.pending_install_version = Some(version.clone());
             let (tx, rx) = tokio::sync::oneshot::channel();
             self.update_status_rx = Some(rx);
             let handle = tokio::runtime::Handle::current();
@@ -1055,6 +1382,36 @@ fn persist_dismissed_update_version(version: Option<String>) {
             error = %e,
             "failed to persist dismissed_update_version"
         );
+    }
+}
+
+/// Convert `check_interval_hours` to a `Duration` for the periodic re-check,
+/// clamped to a sane minimum. See `MIN_PERIODIC_RECHECK_INTERVAL`.
+fn periodic_recheck_interval(check_interval_hours: u64) -> Duration {
+    Duration::from_secs(check_interval_hours.saturating_mul(3600))
+        .max(MIN_PERIODIC_RECHECK_INTERVAL)
+}
+
+/// Decide whether the main loop should spawn a fresh periodic update check.
+/// Pulled out as a pure function so the throttle/in-flight/mode guards are
+/// testable without driving the tokio runtime, the config file, or the
+/// network. `elapsed = None` means no check has run yet this process, which
+/// makes the first tick after the user enables update_check_mode mid-session
+/// fire immediately rather than waiting up to `check_interval_hours` from
+/// process launch. `interval` is the value produced by
+/// `periodic_recheck_interval`.
+fn should_spawn_periodic_update_check(
+    elapsed: Option<Duration>,
+    interval: Duration,
+    rx_in_flight: bool,
+    mode_enabled: bool,
+) -> bool {
+    if rx_in_flight || !mode_enabled {
+        return false;
+    }
+    match elapsed {
+        None => true,
+        Some(e) => e >= interval,
     }
 }
 
@@ -1191,6 +1548,9 @@ impl App {
             Action::AttachSession(id) => {
                 self.attach_session(&id, terminal)?;
             }
+            Action::AttachAfterCreate(id) => {
+                self.dispatch_new_session_attach(&id, terminal)?;
+            }
             Action::AttachTerminal(id, mode) => {
                 self.attach_terminal(&id, mode, terminal)?;
             }
@@ -1260,6 +1620,39 @@ impl App {
                     }
                 }
             }
+            Action::EnterLiveSend(id) => {
+                // Same revive flow as SendMessage so cold-start (Docker,
+                // agent splash) gives the user "Reviving..." feedback.
+                // After the pane is ready, install the live-send state on
+                // HomeView so the next key event routes through the live
+                // handler instead of the normal action dispatch.
+                self.home
+                    .set_instance_status(&id, crate::session::Status::Starting);
+                self.update_status = Some(UpdateStatus::transient("Reviving session...".into()));
+                self.draw(terminal)?;
+                let outcome = self.home.prepare_live_send(&id);
+                // Settle the toast to its final state BEFORE the sync resize
+                // and redraw, so HomeView's cached `preview_pane_area`
+                // matches the geometry the user will see for the next
+                // several frames. Otherwise the toast row that was on screen
+                // during `prepare_live_send` would make the preview pane one
+                // row shorter than post-toast, the sync resize would target
+                // the smaller pane, and the first capture would render
+                // shifted up.
+                self.update_status = match &outcome {
+                    Ok(Some(sid)) => Some(UpdateStatus::transient(format!(
+                        "Resume failed for sid {sid}; live-send sent to a fresh pane (history not loaded)"
+                    ))),
+                    // On clean ready, drop the toast entirely. On Err the
+                    // info_dialog already carries the failure detail, so the
+                    // transient toast just gets in the way.
+                    Ok(None) | Err(()) => None,
+                };
+                if outcome.is_ok() {
+                    self.draw(terminal)?;
+                    self.home.finalize_live_send_resize();
+                }
+            }
             Action::AttachToolSession(id, tool_name) => {
                 self.attach_tool_session(&id, &tool_name, terminal)?;
             }
@@ -1273,6 +1666,37 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Route a freshly-created session through the user's
+    /// `new_session_attach_mode` setting. Shared by both creation paths
+    /// (synchronous `Action::AttachAfterCreate` and the async branch in
+    /// the main loop's `apply_creation_results` handler) so the setting
+    /// applies regardless of which one fired.
+    ///
+    /// Cockpit sessions return `None` from the resolver and fall through
+    /// to `attach_session`, which already no-ops for cockpit. Same for
+    /// missing-instance race conditions: better to do the tmux-attach
+    /// fallback than silently swallow the new session.
+    fn dispatch_new_session_attach(
+        &mut self,
+        session_id: &str,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        let mode = self.home.new_session_attach_mode(session_id);
+        tracing::debug!(target: "tui.input",
+            session_id = %session_id,
+            mode = ?mode,
+            "new session created; dispatching attach mode"
+        );
+        match mode {
+            Some(crate::session::NewSessionAttachMode::LiveSend) => {
+                self.execute_action(Action::EnterLiveSend(session_id.to_string()), terminal)
+            }
+            Some(crate::session::NewSessionAttachMode::Tmux) | None => {
+                self.attach_session(session_id, terminal)
+            }
+        }
     }
 
     fn attach_session(
@@ -1660,6 +2084,19 @@ pub enum Action {
     /// can render a "Reviving..." status before the potentially-slow
     /// ensure_pane_ready call.
     SendMessage(String, String),
+    /// Enter live-send mode on a session. Same revive-and-stage pattern
+    /// as `SendMessage`: the deferred action lets the app loop render the
+    /// "Reviving..." toast before `ensure_pane_ready` runs, then the home
+    /// view flips into the live-send capture state for subsequent keys.
+    EnterLiveSend(String),
+    /// Attach to a session that was just created via the synchronous
+    /// create path (no sandbox, no hooks, no worktree). Routes through
+    /// the same `new_session_attach_mode` dispatch as the async path's
+    /// `apply_creation_results` so the user's "live mode by default"
+    /// setting applies in both cases. `AttachSession` deliberately
+    /// bypasses the setting because pressing Enter on a session row is
+    /// the user's explicit ask for a tmux attach.
+    AttachAfterCreate(String),
     /// Attach to a tool session (lazygit, yazi, etc.) for the given agent
     /// session. The tool_name indexes into Config.tools.
     AttachToolSession(String, String),
@@ -1747,6 +2184,119 @@ mod tests {
         assert!(info.is_none());
         // Receiver should be put back for next poll
         assert!(rx_out.is_some());
+    }
+
+    #[test]
+    fn periodic_recheck_fires_after_interval_elapses() {
+        // The dominant bug (#1471): the original code spawned the update check
+        // only once at startup. After the configured interval has passed in a
+        // long-running TUI, the loop must spawn a fresh check.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(should_spawn_periodic_update_check(
+            Some(interval + Duration::from_secs(1)),
+            interval,
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_holds_within_interval() {
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(!should_spawn_periodic_update_check(
+            Some(interval - Duration::from_secs(1)),
+            interval,
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_skips_when_in_flight() {
+        // Don't queue a second check while one is already running; the existing
+        // one will deliver its result on the oneshot channel and the next tick
+        // after that can fire normally.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(!should_spawn_periodic_update_check(
+            Some(interval + Duration::from_secs(1)),
+            interval,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_skips_when_mode_disabled() {
+        // update_check_mode = "off" should suppress both startup and periodic
+        // checks. Mirror the gate at startup.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(!should_spawn_periodic_update_check(
+            Some(interval + Duration::from_secs(1)),
+            interval,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_fires_immediately_when_never_checked_and_mode_enabled() {
+        // User started with mode=off, toggled to notify/auto mid-session. The
+        // first guard tick after toggle should fire without waiting another
+        // full `check_interval_hours` from process launch.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(should_spawn_periodic_update_check(
+            None, interval, false, true,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_skips_when_never_checked_but_mode_disabled() {
+        // Symmetric: a None elapsed does not override the mode gate. Mode=off
+        // still wins.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(!should_spawn_periodic_update_check(
+            None, interval, false, false,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_interval_honors_user_setting() {
+        assert_eq!(
+            periodic_recheck_interval(24),
+            Duration::from_secs(24 * 3600)
+        );
+        assert_eq!(
+            periodic_recheck_interval(168),
+            Duration::from_secs(168 * 3600)
+        );
+    }
+
+    #[test]
+    fn periodic_recheck_interval_floors_zero_to_minimum() {
+        // The settings TUI rejects 0, but a hand-edited config could land
+        // here. Without the floor, a 0-hour interval combined with the 0-hour
+        // cache TTL would hit GitHub on every throttle-gap tick (~60s).
+        assert_eq!(periodic_recheck_interval(0), MIN_PERIODIC_RECHECK_INTERVAL);
+    }
+
+    #[test]
+    fn periodic_recheck_interval_does_not_overflow() {
+        // `saturating_mul` keeps `u64::MAX` hours from wrapping. The result
+        // is "effectively never re-check" rather than a panic.
+        let _ = periodic_recheck_interval(u64::MAX);
+    }
+
+    #[test]
+    fn periodic_recheck_fires_at_interval_boundary() {
+        // `>=`, not `>`. A user with `check_interval_hours = 1` should get the
+        // tick at the 1-hour mark, not 1h + epsilon.
+        let interval = Duration::from_secs(3600);
+        assert!(should_spawn_periodic_update_check(
+            Some(interval),
+            interval,
+            false,
+            true,
+        ));
     }
 
     #[test]

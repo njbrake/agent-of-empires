@@ -1214,6 +1214,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(api::cockpit_set_mode),
         )
         .route(
+            "/api/sessions/{id}/cockpit/config-option",
+            post(api::cockpit_set_config_option),
+        )
+        .route(
             "/api/sessions/{id}/cockpit/enable",
             post(api::cockpit_enable),
         )

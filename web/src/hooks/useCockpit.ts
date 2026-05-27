@@ -43,7 +43,20 @@ export type Action =
   | { kind: "clear_queue" }
   | { kind: "dismiss_primer" }
   | { kind: "dismiss_rejected_prompt"; id: string }
-  | { kind: "dismiss_mode_switch_failed" };
+  | { kind: "dismiss_mode_switch_failed" }
+  | { kind: "set_pending_config_option"; configId: string; value: string }
+  | { kind: "clear_pending_config_option" }
+  | {
+      /** Clear pendingConfigOption only when it still matches the
+       *  (configId, value) pair of the failed request. Prevents a
+       *  stale request A from wiping a newer request B's pending
+       *  state after the user clicked a second option mid-flight.
+       *  See #1403 (review feedback). */
+      kind: "clear_pending_config_option_if_match";
+      configId: string;
+      value: string;
+    }
+  | { kind: "dismiss_config_option_switch_failed" };
 
 // LRU-capped module cache keyed by cockpit session id. Mirrors the
 // per-session CockpitState into `localStorage` under
@@ -415,6 +428,27 @@ function reducer(state: CockpitState, action: Action): CockpitState {
   }
   if (action.kind === "dismiss_mode_switch_failed") {
     return { ...state, modeSwitchFailed: null };
+  }
+  if (action.kind === "set_pending_config_option") {
+    return {
+      ...state,
+      pendingConfigOption: { configId: action.configId, value: action.value },
+    };
+  }
+  if (action.kind === "clear_pending_config_option") {
+    return { ...state, pendingConfigOption: null };
+  }
+  if (action.kind === "clear_pending_config_option_if_match") {
+    if (
+      state.pendingConfigOption?.configId === action.configId &&
+      state.pendingConfigOption?.value === action.value
+    ) {
+      return { ...state, pendingConfigOption: null };
+    }
+    return state;
+  }
+  if (action.kind === "dismiss_config_option_switch_failed") {
+    return { ...state, configOptionSwitchFailed: null };
   }
   return emptyCockpitState();
 }
@@ -1126,6 +1160,63 @@ export function useCockpit(
     dispatch({ kind: "dismiss_mode_switch_failed" });
   }, []);
 
+  // Send `session/set_config_option` to the daemon (model / reasoning
+  // effort / future selector). Pessimistic: the current value stays put
+  // until the adapter pushes a confirming `ConfigOptionsUpdated`. The
+  // pending dispatch records the in-flight click so the UI can dim the
+  // just-clicked option without lying about active state. On HTTP
+  // failure the pending state clears and lastError surfaces a banner;
+  // adapter-side rejection comes back as a `ConfigOptionSwitchFailed`
+  // frame which clears pending in the reducer and renders a
+  // non-blocking notice. See #1403.
+  const setConfigOption = useCallback(
+    async (configId: string, value: string) => {
+      if (!sessionId) return;
+      dispatch({ kind: "set_pending_config_option", configId, value });
+      try {
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/config-option`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ config_id: configId, value }),
+          },
+        );
+        if (!res.ok) {
+          const detail = await safeText(res);
+          // Guard against the user clicking a second option before this
+          // request's response landed: clear pending only when it
+          // still matches our (configId, value) pair. See #1403.
+          dispatch({
+            kind: "clear_pending_config_option_if_match",
+            configId,
+            value,
+          });
+          dispatch({
+            kind: "error",
+            message:
+              `Could not set ${configId} (${res.status}). ${detail}`.trim(),
+          });
+        }
+      } catch (e) {
+        dispatch({
+          kind: "clear_pending_config_option_if_match",
+          configId,
+          value,
+        });
+        dispatch({
+          kind: "error",
+          message: `Network error setting ${configId}: ${describeError(e)}`,
+        });
+      }
+    },
+    [sessionId],
+  );
+
+  const dismissConfigOptionSwitchFailed = useCallback(() => {
+    dispatch({ kind: "dismiss_config_option_switch_failed" });
+  }, []);
+
   // Cancels the in-flight agent turn (ACP session/cancel). Must only
   // fire on an explicit user gesture against a dedicated cancel/stop
   // affordance; never bind this to the Escape key. Claude Code CLI
@@ -1261,6 +1352,8 @@ export function useCockpit(
     clearQueue,
     dismissRejectedPrompt,
     dismissModeSwitchFailed,
+    setConfigOption,
+    dismissConfigOptionSwitchFailed,
   };
 }
 

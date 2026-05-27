@@ -8,6 +8,7 @@ import { CockpitPrefsProvider } from "./lib/cockpitPrefs";
 import { safeGetItem, safeSetItem } from "./lib/safeStorage";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
+import { useSidebarSortMode } from "./hooks/useSidebarSortMode";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useResolvedTheme } from "./hooks/useResolvedTheme";
 import { useWebSettings } from "./hooks/useWebSettings";
@@ -222,9 +223,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     sweepOrphanDrafts(new Set(sessions.map((s) => s.id)));
   }, [sessionsLoaded, sessions]);
 
+  const [sidebarSortMode, setSidebarSortMode] = useSidebarSortMode();
+
   const { groups, toggleRepoCollapsed, updateRepoAppearance } = useRepoGroups(
     workspaces,
     workspaceOrdering,
+    sidebarSortMode,
   );
 
   // Drag-end handler for the sidebar. Optimistically applies the new
@@ -880,6 +884,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             onProjects={handleOpenProjects}
             onDeleteSession={handleDeleteSession}
             readOnly={serverAbout?.read_only}
+            sortMode={sidebarSortMode}
+            onSortModeChange={setSidebarSortMode}
           />
         )}
 

@@ -79,12 +79,18 @@ fn encode_claude_project_path(project_path: &str) -> String {
 /// falling back to `~/.claude.json` if the dir scan result is stale.
 ///
 /// Used as a fallback when hooks don't fire (e.g. after `/clear` or `/new`).
-pub(crate) fn capture_claude_session_id(project_path: &str) -> Result<String> {
+pub(crate) fn capture_claude_session_id(
+    project_path: &str,
+    known_session_id: Option<&str>,
+) -> Result<String> {
     let claude_home = resolve_agent_home(Some("CLAUDE_CONFIG_DIR"), ".claude")?;
     let canonical = canonicalize_or_raw(project_path);
 
-    // Source 1: most recently modified .jsonl in the project dir
-    if let Some((id, modified)) = scan_claude_project_dir(&claude_home, &canonical)? {
+    // Source 1: this poller's own known session if its .jsonl is still fresh,
+    // otherwise the most recently modified .jsonl in the project dir.
+    if let Some((id, modified)) =
+        scan_claude_project_dir(&claude_home, &canonical, known_session_id)?
+    {
         let age = modified.elapsed().unwrap_or(Duration::from_secs(u64::MAX));
         if age <= Duration::from_secs(5 * 60) {
             return Ok(id);
@@ -108,11 +114,24 @@ pub(crate) fn capture_claude_session_id(project_path: &str) -> Result<String> {
     anyhow::bail!("No active Claude session found for {}", project_path)
 }
 
-/// Scan `~/.claude/projects/{encoded-path}/` for the most recently modified
-/// UUID-named `.jsonl` file.
+/// Scan `~/.claude/projects/{encoded-path}/` for the session this poller should
+/// report.
+///
+/// When several AoE sessions share one `project_path` (a fleet rooted at a
+/// single repo), the bare "most recently modified `.jsonl`" heuristic makes
+/// every session's poller report whichever session most recently wrote — so
+/// they all steal one another's session ids and resume the same conversation
+/// (issue #1522). To prevent that, if the caller's own `known` session still
+/// has a fresh `.jsonl` here, return it: each session sticks to its own
+/// transcript rather than racing for the global most-recent.
+///
+/// Falls back to the most-recent file when `known` is `None`, absent, or stale
+/// (e.g. the session genuinely moved to a new conversation), preserving the
+/// original behaviour for the single-session-per-repo case.
 fn scan_claude_project_dir(
     claude_home: &Path,
     project_path: &Path,
+    known: Option<&str>,
 ) -> Result<Option<(String, std::time::SystemTime)>> {
     let dir_name = encode_claude_project_path(&project_path.to_string_lossy());
     let project_dir = claude_home.join("projects").join(&dir_name);
@@ -122,6 +141,7 @@ fn scan_claude_project_dir(
     }
 
     let mut best: Option<(String, std::time::SystemTime)> = None;
+    let mut known_hit: Option<(String, std::time::SystemTime)> = None;
 
     for entry in resilient_read_dir(&project_dir)? {
         let path = entry.path();
@@ -143,6 +163,22 @@ fn scan_claude_project_dir(
 
         if best.as_ref().is_none_or(|(_, t)| modified > *t) {
             best = Some((stem.to_string(), modified));
+        }
+        if known == Some(stem) {
+            known_hit = Some((stem.to_string(), modified));
+        }
+    }
+
+    // issue #1522: anchor to our own session while its file is fresh, so
+    // sessions sharing a project_path don't cross-assign. The freshness bound
+    // mirrors the caller's staleness gate in `capture_claude_session_id`.
+    if let Some((kid, kmt)) = known_hit {
+        let fresh = kmt
+            .elapsed()
+            .map(|age| age <= Duration::from_secs(5 * 60))
+            .unwrap_or(false);
+        if fresh {
+            return Ok(Some((kid, kmt)));
         }
     }
 
@@ -203,14 +239,32 @@ fn read_claude_json_session_id(project_path: &Path) -> Option<String> {
 /// bypasses `apply_session_id_updates`, replicate the
 /// `retroactive_capture_excludes` filter at the consumer or thread an
 /// `extra_excludes` set into this closure mirroring the other agents.
-pub(crate) fn claude_poll_fn(project_path: String) -> impl Fn() -> Option<String> + Send + 'static {
+pub(crate) fn claude_poll_fn(
+    project_path: String,
+    known_session_id: Option<String>,
+) -> impl Fn() -> Option<String> + Send + 'static {
+    // issue #1522: promote the last successfully captured sid to the anchor
+    // for subsequent polls. Without this, the closure keeps the startup
+    // `known_session_id` forever; once that file goes stale the scan drops
+    // back to global-most-recent and shared-repo fleets can resume
+    // cross-assigning on the next /clear or fork.
+    let last_known = std::sync::Mutex::new(known_session_id);
     move || {
-        capture_claude_session_id(&project_path)
+        let current_known = last_known.lock().ok().and_then(|g| g.clone());
+        let captured = capture_claude_session_id(&project_path, current_known.as_deref())
             .map_err(
                 |e| tracing::debug!(target: "session.capture", "Claude disk scan failed: {}", e),
             )
             .ok()
-            .and_then(validated_session_id)
+            .and_then(validated_session_id);
+
+        if let Some(id) = captured.as_ref() {
+            if let Ok(mut guard) = last_known.lock() {
+                *guard = Some(id.clone());
+            }
+        }
+
+        captured
     }
 }
 
@@ -2047,8 +2101,147 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject");
+        let result = capture_claude_session_id("/tmp/myproject", None);
         assert_eq!(result.unwrap(), uuid_new);
+
+        match old_val {
+            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_claude_session_prefers_known_when_shared() {
+        // issue #1522: two sessions share a project_path and both .jsonl files
+        // are fresh. Without an anchor the poller returns the most-recent for
+        // BOTH, cross-assigning ids. With `known`, each sticks to its own file.
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid_a = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let uuid_b = "11111111-2222-3333-4444-555555555555";
+        std::fs::write(project_dir.join(format!("{uuid_a}.jsonl")), "a\n").unwrap();
+        // Nudge A 30s into the past so B is unambiguously the most-recent.
+        let a_time = std::time::SystemTime::now() - Duration::from_secs(30);
+        std::fs::File::options()
+            .write(true)
+            .open(project_dir.join(format!("{uuid_a}.jsonl")))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(a_time))
+            .unwrap();
+        std::fs::write(project_dir.join(format!("{uuid_b}.jsonl")), "b\n").unwrap();
+
+        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
+        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
+
+        // No anchor -> most recent (B): original behaviour preserved.
+        assert_eq!(
+            capture_claude_session_id("/tmp/myproject", None).unwrap(),
+            uuid_b
+        );
+        // Anchor to A (fresh) -> stays on A despite B being newer.
+        assert_eq!(
+            capture_claude_session_id("/tmp/myproject", Some(uuid_a)).unwrap(),
+            uuid_a
+        );
+        // Anchor to B -> B.
+        assert_eq!(
+            capture_claude_session_id("/tmp/myproject", Some(uuid_b)).unwrap(),
+            uuid_b
+        );
+        // Anchor to an id with no file here -> fall back to most-recent (B).
+        let absent = "99999999-9999-9999-9999-999999999999";
+        assert_eq!(
+            capture_claude_session_id("/tmp/myproject", Some(absent)).unwrap(),
+            uuid_b
+        );
+
+        match old_val {
+            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_capture_claude_session_known_but_stale_falls_back() {
+        // If our own session's file went stale (>5min), adopt the fresh
+        // most-recent rather than clinging to a dead anchor.
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid_known = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let uuid_fresh = "11111111-2222-3333-4444-555555555555";
+        std::fs::write(project_dir.join(format!("{uuid_known}.jsonl")), "k\n").unwrap();
+        let stale = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(project_dir.join(format!("{uuid_known}.jsonl")))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stale))
+            .unwrap();
+        std::fs::write(project_dir.join(format!("{uuid_fresh}.jsonl")), "f\n").unwrap();
+
+        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
+        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
+
+        assert_eq!(
+            capture_claude_session_id("/tmp/myproject", Some(uuid_known)).unwrap(),
+            uuid_fresh
+        );
+
+        match old_val {
+            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_claude_poll_fn_promotes_last_known_across_polls() {
+        // issue #1522: once a stale anchor falls back to the disk's most-recent,
+        // the closure must adopt that sid as its new anchor so a later sibling
+        // write (think: another session in the same fleet) cannot steal it
+        // back on the next poll. Without promotion, the closure stays anchored
+        // to its startup sid forever, and shared-repo cross-assignment returns
+        // the moment a session forks (/clear, /new, --fork-session).
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid_startup = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let uuid_post_fork = "11111111-2222-3333-4444-555555555555";
+        let uuid_sibling = "99999999-8888-7777-6666-555555555555";
+
+        // Startup anchor's file is stale; the post-fork file is fresh.
+        std::fs::write(project_dir.join(format!("{uuid_startup}.jsonl")), "s\n").unwrap();
+        let stale = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(project_dir.join(format!("{uuid_startup}.jsonl")))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stale))
+            .unwrap();
+        std::fs::write(project_dir.join(format!("{uuid_post_fork}.jsonl")), "f\n").unwrap();
+
+        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
+        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
+
+        let poll = claude_poll_fn("/tmp/myproject".to_string(), Some(uuid_startup.to_string()));
+
+        // First poll: anchor is stale, fall back to most-recent (post-fork).
+        assert_eq!(poll().as_deref(), Some(uuid_post_fork));
+
+        // A sibling session in the same dir writes its transcript with a newer
+        // mtime than the post-fork file.
+        std::fs::write(project_dir.join(format!("{uuid_sibling}.jsonl")), "x\n").unwrap();
+
+        // Second poll: closure must now anchor to the post-fork sid (still
+        // fresh) and refuse to drift onto the sibling's newer file.
+        assert_eq!(poll().as_deref(), Some(uuid_post_fork));
 
         match old_val {
             Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
@@ -2072,7 +2265,7 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject");
+        let result = capture_claude_session_id("/tmp/myproject", None);
         assert!(result.is_err(), "Agent files should not be picked up");
 
         match old_val {
@@ -2104,7 +2297,7 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject");
+        let result = capture_claude_session_id("/tmp/myproject", None);
         assert!(result.is_err(), "Stale session file should be rejected");
         assert!(
             result
@@ -2130,7 +2323,7 @@ mod tests {
         let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
 
-        let result = capture_claude_session_id("/tmp/myproject");
+        let result = capture_claude_session_id("/tmp/myproject", None);
         assert!(result.is_err(), "Empty dir should return error");
 
         match old_val {

@@ -17,13 +17,15 @@ mod v006_unlimited_cockpit_history;
 mod v007_serve_log_to_legacy;
 mod v008_lock_in_default_profile;
 mod v009_update_check_mode;
+mod v010_drop_legacy_live_send_exit_chord;
+mod v011_relocate_sandbox_image;
 
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-const CURRENT_VERSION: u32 = 9;
+const CURRENT_VERSION: u32 = 11;
 const VERSION_FILE: &str = ".schema_version";
 
 struct Migration {
@@ -77,6 +79,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 9,
         name: "update_check_mode",
         run: v009_update_check_mode::run,
+    },
+    Migration {
+        version: 10,
+        name: "drop_legacy_live_send_exit_chord",
+        run: v010_drop_legacy_live_send_exit_chord::run,
+    },
+    Migration {
+        version: 11,
+        name: "relocate_sandbox_image",
+        run: v011_relocate_sandbox_image::run,
     },
 ];
 

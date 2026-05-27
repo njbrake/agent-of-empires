@@ -21,15 +21,18 @@ pub use crate::sound::{SoundConfig, SoundConfigOverride};
 pub use crate::status_hooks::{StatusHookConfig, StatusHookConfigOverride};
 pub(crate) use capture::is_valid_session_id;
 pub use config::{
-    get_update_settings, load_config, save_config, validate_snooze_duration, Config,
-    ContainerRuntimeName, DefaultTerminalMode, GroupByMode, RowTagMode, SandboxConfig,
-    SessionConfig, ThemeConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig,
-    WorktreeConfig,
+    get_update_settings, load_config, save_config, validate_snooze_duration, ClickAction, Config,
+    ContainerRuntimeName, DefaultTerminalMode, GroupByMode, NewSessionAttachMode, RowTagMode,
+    SandboxConfig, SessionConfig, ThemeConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
+    UpdatesConfig, WorktreeConfig,
 };
 pub(crate) use environment::user_shell;
 pub use environment::{validate_env_entries, validate_env_entry};
 pub use groups::{
-    flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles, Group, GroupTree, Item,
+    append_archived_section, append_archived_section_by_project, archived_project_sub_path,
+    flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles,
+    is_archived_section_path, is_within_archived_section, Group, GroupTree, Item,
+    ARCHIVED_SECTION_NAME, ARCHIVED_SECTION_PATH,
 };
 pub(crate) use instance::persist_session_to_storage;
 pub use instance::{

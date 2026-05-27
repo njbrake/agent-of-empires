@@ -60,12 +60,12 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 ],
             ),
             (
-                "Attention",
+                "Attention (Attention sort only, except Archive)",
                 vec![
                     ("w", "Jump to next waiting/idle"),
-                    ("F", "Toggle favorite"),
-                    ("H", "Snooze (toggle)"),
-                    ("Z", "Archive (toggle)"),
+                    ("F", "Toggle favorite (Attention sort)"),
+                    ("H", "Snooze (toggle, Attention sort)"),
+                    ("Z", "Archive (toggle, any sort)"),
                 ],
             ),
             (
@@ -76,9 +76,9 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("Ctrl+D", "Diff view (git changes)"),
                     ("< >", "Resize list panel"),
                     ("I", "Toggle preview info header"),
-                    ("O", "Cycle sort forward"),
-                    ("Ctrl+O", "Cycle sort backward"),
-                    ("Ctrl+G", "Toggle group by project"),
+                    ("O", "Sort order"),
+                    ("Ctrl+O", "Sort order"),
+                    ("Ctrl+G", "Group by"),
                 ],
             ),
             (
@@ -92,6 +92,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("u", "Update aoe (when available)"),
                     ("Ctrl+x", "Dismiss update bar (this session)"),
                     ("Shift+drag", "Select text in preview"),
+                    ("Drag", "Select + copy preview (live mode)"),
                     ("Ctrl+K", "Command palette"),
                     ("?", "Toggle help"),
                     ("Q", "Quit"),
@@ -127,12 +128,12 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 ],
             ),
             (
-                "Attention",
+                "Attention (Attention sort only, except Archive)",
                 vec![
                     ("w", "Jump to next waiting/idle"),
-                    ("f", "Toggle favorite"),
-                    ("h", "Snooze (toggle)"),
-                    ("z", "Archive (toggle)"),
+                    ("f", "Toggle favorite (Attention sort)"),
+                    ("h", "Snooze (toggle, Attention sort)"),
+                    ("z", "Archive (toggle, any sort)"),
                 ],
             ),
             (
@@ -143,9 +144,9 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("D", "Diff view (git changes)"),
                     ("< >", "Resize list panel"),
                     ("i", "Toggle preview info header"),
-                    ("o", "Cycle sort forward"),
-                    ("Ctrl+o", "Cycle sort backward"),
-                    ("g", "Toggle group by project"),
+                    ("o", "Sort order"),
+                    ("Ctrl+o", "Sort order"),
+                    ("g", "Group by"),
                 ],
             ),
             (
@@ -160,6 +161,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("u", "Update aoe (when available)"),
                     ("Ctrl+x", "Dismiss update bar (this session)"),
                     ("Shift+drag", "Select text in preview"),
+                    ("Drag", "Select + copy preview (live mode)"),
                     ("Ctrl+K", "Command palette"),
                     ("?", "Toggle help"),
                     ("q", "Quit"),
@@ -451,7 +453,7 @@ mod tests {
             let all = shortcuts(strict);
             let attention = all
                 .iter()
-                .find(|(name, _)| *name == "Attention")
+                .find(|(name, _)| name.starts_with("Attention"))
                 .expect("Attention section should exist");
             let (_, keys) = attention;
             assert!(
@@ -471,7 +473,7 @@ mod tests {
             let all = shortcuts(strict);
             let attention = all
                 .iter()
-                .find(|(name, _)| *name == "Attention")
+                .find(|(name, _)| name.starts_with("Attention"))
                 .expect("Attention section should exist");
             let (_, keys) = attention;
             for needle in ["favorite", "Snooze", "Archive", "waiting"] {

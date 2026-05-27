@@ -38,6 +38,7 @@ import {
   type CockpitContext,
 } from "./CockpitRuntime";
 import { Composer } from "./Composer";
+import { ConfigOptionSwitchFailedNotice } from "./SessionConfigControls";
 import { ContextPrimerBanner } from "./ContextPrimerBanner";
 import { RateLimitRecoveryModal } from "./RateLimitRecoveryModal";
 import { Markdown } from "./Markdown";
@@ -142,6 +143,8 @@ function CockpitChrome({
   clearQueue,
   dismissRejectedPrompt,
   dismissModeSwitchFailed,
+  setConfigOption,
+  dismissConfigOptionSwitchFailed,
 }: CockpitContext & {
   sessionId: string;
   cockpitWorkerState: "absent" | "resuming" | "running";
@@ -380,6 +383,12 @@ function CockpitChrome({
             onDismiss={dismissModeSwitchFailed}
           />
 
+          <ConfigOptionSwitchFailedNotice
+            failure={state.configOptionSwitchFailed}
+            configOptions={state.configOptions}
+            onDismiss={dismissConfigOptionSwitchFailed}
+          />
+
           <ContextPrimerBanner
             sessionId={sessionId}
             available={state.contextPrimerAvailable}
@@ -397,6 +406,9 @@ function CockpitChrome({
             availableModes={state.availableModes}
             currentModeId={state.currentModeId}
             legacyMode={state.mode}
+            configOptions={state.configOptions}
+            pendingConfigOption={state.pendingConfigOption}
+            setConfigOption={setConfigOption}
             sessionUsage={state.sessionUsage}
             availableCommands={state.availableCommands}
             connected={status === "open" && !state.workerStopped && !state.workerRestarting}

@@ -84,6 +84,14 @@ impl HomeView {
         self.save()?;
 
         self.reload()?;
+        // Same rationale as the async branch in apply_creation_results:
+        // reload()'s restore-previous-selection fallback lands the cursor
+        // on whichever flat_items index is closest to the previously-
+        // selected row, which in project-grouped layouts is often the
+        // new session's group folder. Pin selection here so the caller
+        // (Action::AttachAfterCreate) sees the new session as the
+        // visible row and the user's not staring at the wrong preview.
+        self.select_and_reveal_session(&session_id);
         Ok(session_id)
     }
 
@@ -93,9 +101,14 @@ impl HomeView {
     /// Guards (apply to bare `e` / `E` / `F5` and dialog-submitted restarts):
     /// - No selection: no-op.
     /// - Transient lifecycle (`Creating` / `Deleting`): drop.
-    /// - Sunk rows (`is_archived`, `is_snoozed`, `pane_dead_observed`):
-    ///   drop. Archive's contract is "do not auto-revive"; the user must
-    ///   unarchive or send first. Dead panes have a dedicated revive path.
+    /// - Sunk rows: archived and pane-dead always drop (archive's contract
+    ///   is "do not auto-revive"; dead panes have a dedicated revive path).
+    ///   Snoozed rows drop only when `sort_order == Attention`; in other
+    ///   sort modes the snooze surface is hidden, so silently swallowing
+    ///   the press would leave the user staring at a row that looks
+    ///   restartable but isn't. Outside Attention we clear the snooze flag
+    ///   and let the restart proceed so behavior matches what the user
+    ///   sees on screen.
     /// - Spam-debounce: if the same session was restarted within the last
     ///   1.5s, the press is dropped. Without this guard rapid `e` presses
     ///   would each spawn a wake-up worker AND tear down the still-booting
@@ -133,14 +146,18 @@ impl HomeView {
 
         // Skip transient + sunk rows. Pull the snapshot details we need on
         // the worker thread in the same borrow so we don't re-look up the
-        // instance under different conditions later.
-        let (skip, title, tool) = match self.get_instance(&id) {
+        // instance under different conditions later. Snoozed rows only
+        // skip when the user is in Attention sort; see method doc.
+        let in_attention = self.sort_order == crate::session::config::SortOrder::Attention;
+        let (skip, wake_snooze, title, tool) = match self.get_instance(&id) {
             Some(inst) => {
+                let snoozed = inst.is_snoozed();
                 let skip = matches!(inst.status, Status::Creating | Status::Deleting)
                     || inst.is_archived()
-                    || inst.is_snoozed()
+                    || (snoozed && in_attention)
                     || inst.pane_dead_observed;
-                (skip, inst.title.clone(), inst.tool.clone())
+                let wake_snooze = snoozed && !in_attention;
+                (skip, wake_snooze, inst.title.clone(), inst.tool.clone())
             }
             None => return Ok(()),
         };
@@ -157,6 +174,15 @@ impl HomeView {
             }
         }
         self.restart_cooldown_at.insert(id.clone(), now);
+
+        // Outside Attention sort, restart on a snoozed row clears the
+        // snooze flag so the persisted state matches what the user sees
+        // after the wake-up (a Running row, no snooze badge). Sequenced
+        // after the debounce so a press dropped by the cooldown doesn't
+        // clear snooze without restarting.
+        if wake_snooze {
+            self.mutate_instance(&id, |inst| inst.unsnooze());
+        }
 
         // Apply tool swap before restart so the new binary starts on the
         // next launch.

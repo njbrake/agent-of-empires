@@ -4,7 +4,7 @@ The web dashboard lets you monitor and interact with agent sessions from any bro
 
 ## Availability
 
-The web dashboard is included in all release binaries: [GitHub Releases](https://github.com/njbrake/agent-of-empires/releases), the [quick install script](../installation.md#quick-install-recommended), and Homebrew (`brew install aoe`). No extra build steps needed, just run `aoe serve`.
+The web dashboard is included in all release binaries: [GitHub Releases](https://github.com/agent-of-empires/agent-of-empires/releases), the [quick install script](../installation.md#quick-install-recommended), and Homebrew (`brew install aoe`). No extra build steps needed, just run `aoe serve`.
 
 ## Building from source
 
@@ -229,6 +229,14 @@ aoe serve --daemon
 - **Multi-profile** support (shows sessions from all profiles)
 - **Connected Devices** view in Settings > Security
 - **Push notifications** on Waiting / Idle / Error transitions, with per-session overrides ([guide](push-notifications.md))
+
+### Sidebar sort
+
+By default the sidebar shows your manually-ordered list. Drag a row with a press-and-hold gesture to move it; the new order persists across browsers and devices via `workspace-ordering.json`.
+
+A sort toggle next to the filter button in the sidebar header switches to **Recent activity** mode, which orders workspaces by the most recent of `last_accessed_at`, `idle_entered_at`, and `created_at` across each workspace's sessions, descending. Drag-to-reorder is disabled while Recent activity is selected, because the order is computed; the press-and-hold gesture does nothing in that mode.
+
+The toggle's state is per-browser (localStorage), not synced across devices and not tied to your profile. Toggling back to manual restores the stored manual order and re-enables drag. The multi-repo group stays pinned at the bottom in both modes.
 
 ## Architecture
 

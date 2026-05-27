@@ -45,6 +45,14 @@ pub struct UnifiedDeleteDialog {
     options: DeleteOptions,
     focus: FocusElement,
     focusable_elements: Vec<FocusElement>,
+    /// Screen rect of the rendered `[Yes]` button. Captured during
+    /// `render` so `handle_click` can hit-test the same cells the user
+    /// sees. `Rect::default()` until the dialog has been rendered at
+    /// least once.
+    yes_button_area: Rect,
+    /// Screen rect of the rendered `[No]` button, paired with
+    /// `yes_button_area`.
+    no_button_area: Rect,
 }
 
 impl UnifiedDeleteDialog {
@@ -81,7 +89,26 @@ impl UnifiedDeleteDialog {
             options,
             focus: initial_focus,
             focusable_elements,
+            yes_button_area: Rect::default(),
+            no_button_area: Rect::default(),
         }
+    }
+
+    /// Route a left-click. Returns `Some(Submit)` when the user clicked
+    /// the `[Yes]` button, `Some(Cancel)` for `[No]`, and `None` for
+    /// clicks that landed elsewhere inside the dialog (those are
+    /// silently absorbed by the modal, no fall-through to the list).
+    /// Rects are written during `render`; before the first render both
+    /// rects are zero-sized so `contains()` returns false.
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<DeleteOptions>> {
+        let pos = ratatui::layout::Position::from((col, row));
+        if self.yes_button_area.contains(pos) {
+            return Some(DialogResult::Submit(self.options.clone()));
+        }
+        if self.no_button_area.contains(pos) {
+            return Some(DialogResult::Cancel);
+        }
+        None
     }
 
     fn build_focusable_elements(
@@ -228,7 +255,7 @@ impl UnifiedDeleteDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_worktree = self.config.worktree_branch.is_some();
         let has_sandbox = self.config.has_sandbox;
         let show_force = has_worktree && self.options.delete_worktree;
@@ -398,8 +425,10 @@ impl UnifiedDeleteDialog {
         frame.render_widget(Paragraph::new(line), area);
     }
 
-    fn render_buttons(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        render_yes_no(frame, area, theme, self.focus == FocusElement::YesButton);
+    fn render_buttons(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let (yes, no) = render_yes_no(frame, area, theme, self.focus == FocusElement::YesButton);
+        self.yes_button_area = yes;
+        self.no_button_area = no;
     }
 
     fn render_hints(&self, frame: &mut Frame, area: Rect, theme: &Theme, has_checkboxes: bool) {
@@ -591,6 +620,46 @@ mod tests {
         dialog.focus = FocusElement::YesButton;
         dialog.handle_key(key(KeyCode::Right));
         assert_eq!(dialog.focus, FocusElement::NoButton);
+    }
+
+    #[test]
+    fn test_click_before_render_is_noop() {
+        // Both button rects default to Rect::default() (zero-sized) so
+        // the contains() check returns false until the dialog has been
+        // painted at least once.
+        let dialog = simple_dialog();
+        assert!(dialog.handle_click(5, 5).is_none());
+    }
+
+    #[test]
+    fn test_click_on_yes_button_submits() {
+        let mut dialog = simple_dialog();
+        // Stage the button rects manually since the real coordinates
+        // come from render(), which a unit test can't easily invoke.
+        dialog.yes_button_area = Rect::new(10, 8, 5, 1);
+        dialog.no_button_area = Rect::new(19, 8, 4, 1);
+
+        let result = dialog.handle_click(12, 8).expect("yes hit");
+        assert!(matches!(result, DialogResult::Submit(_)));
+    }
+
+    #[test]
+    fn test_click_on_no_button_cancels() {
+        let mut dialog = simple_dialog();
+        dialog.yes_button_area = Rect::new(10, 8, 5, 1);
+        dialog.no_button_area = Rect::new(19, 8, 4, 1);
+
+        let result = dialog.handle_click(20, 8).expect("no hit");
+        assert!(matches!(result, DialogResult::Cancel));
+    }
+
+    #[test]
+    fn test_click_between_buttons_misses() {
+        let mut dialog = simple_dialog();
+        dialog.yes_button_area = Rect::new(10, 8, 5, 1);
+        dialog.no_button_area = Rect::new(19, 8, 4, 1);
+        // The four-space gap between "[Yes]" and "[No]" is dead space.
+        assert!(dialog.handle_click(16, 8).is_none());
     }
 
     #[test]

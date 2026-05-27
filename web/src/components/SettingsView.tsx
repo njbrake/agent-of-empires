@@ -123,7 +123,17 @@ export function SettingsView({
   );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [selectedProfile, setSelectedProfile] = useState("default");
+  // Seed empty rather than "default" so the initial
+  // useEffect-gated loadSettings doesn't fire a wasted
+  // fetchSettings("default") against a profile that may not exist.
+  // Once fetchProfiles resolves the seed flips to the real default
+  // profile (e.g. "main") and a single loadSettings fires. The
+  // previous "default" seed caused two fetchSettings calls (one for
+  // the placeholder and one for the resolved name), and the second
+  // setSettings could race ahead of an optimistic user edit and
+  // clobber it. See #1383 (profile-settings-isolation / settings-
+  // tmux-* flakes).
+  const [selectedProfile, setSelectedProfile] = useState("");
   const sidebar = buildSidebar();
   const tabs = sidebar.filter(
     (s): s is { kind: "tab"; id: TabId; label: string } => s.kind === "tab",
@@ -146,6 +156,7 @@ export function SettingsView({
   };
 
   const loadSettings = useCallback(() => {
+    if (!selectedProfile) return;
     fetchSettings(selectedProfile).then((s) => {
       if (s) setSettings(s);
     });
@@ -157,6 +168,7 @@ export function SettingsView({
 
   const sendSave = useCallback(
     async (section: string, data: Record<string, unknown>) => {
+      if (!selectedProfile) return;
       setSaving(true);
       setSaveError(null);
       const ok = await updateProfileSettings(selectedProfile, { [section]: data });
@@ -256,7 +268,7 @@ export function SettingsView({
               label="Default container image"
               value={(sandbox.default_image as string) ?? ""}
               onChange={(v) => saveField("sandbox", sandbox, "default_image", v)}
-              placeholder="ghcr.io/njbrake/aoe-sandbox:latest"
+              placeholder="ghcr.io/agent-of-empires/aoe-sandbox:latest"
               mono
             />
             <SelectField

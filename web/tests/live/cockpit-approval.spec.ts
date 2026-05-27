@@ -13,7 +13,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
-import { waitForCockpitReady } from "../helpers/cockpit";
+import { enableCockpitAndWait } from "../helpers/cockpit";
 
 const APPROVAL_SCRIPT = {
   turns: [
@@ -69,14 +69,10 @@ base("permission_request flows through to the server", async ({}, testInfo) => {
     const sessions = await listSessions(serve.baseUrl);
     const sessionId = sessions[0]!.id;
 
-    // `cockpit/enable` implicitly spawns the cockpit supervisor.
-    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
-      method: "POST",
-    });
-    // Wait for the supervisor to finish its ACP handshake before prompting,
-    // by polling replay for any frame. The previous `setTimeout(2_000)` race
-    // proved tight under CI load.
-    await waitForCockpitReady(serve.baseUrl, sessionId);
+    // `cockpit/enable` implicitly spawns the cockpit supervisor;
+    // `enableCockpitAndWait` POSTs it and blocks until the ACP
+    // handshake (initialize + session/new) completes.
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
     await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -89,25 +85,29 @@ base("permission_request flows through to the server", async ({}, testInfo) => {
     // build_approval), so the spec must read it back instead of
     // hard-coding a value.
     let nonce: string | undefined;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const replay = await fetch(
-        `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-      ).then((r) => r.json());
-      const frames: Array<{ event?: ApprovalRequestedEvent }> = Array.isArray(
-        replay,
+    await expect
+      .poll(
+        async () => {
+          const replay = await fetch(
+            `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
+          ).then((r) => r.json());
+          const frames: Array<{ event?: ApprovalRequestedEvent }> = Array.isArray(
+            replay,
+          )
+            ? replay
+            : replay.frames ?? [];
+          for (const frame of frames) {
+            const candidate = frame.event?.ApprovalRequested?.approval?.nonce;
+            if (candidate) {
+              nonce = candidate;
+              return true;
+            }
+          }
+          return false;
+        },
+        { timeout: 15_000, intervals: [100, 200, 500, 1000] },
       )
-        ? replay
-        : replay.frames ?? [];
-      for (const frame of frames) {
-        const candidate = frame.event?.ApprovalRequested?.approval?.nonce;
-        if (candidate) {
-          nonce = candidate;
-          break;
-        }
-      }
-      if (nonce) break;
-      await new Promise((r) => setTimeout(r, 200));
-    }
+      .toBe(true);
     expect(nonce).toBeDefined();
 
     // Resolve via the explicit endpoint (UI click path is covered by a

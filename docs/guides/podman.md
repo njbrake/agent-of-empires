@@ -43,7 +43,7 @@ To switch your sandbox runtime from Docker (the default) to Podman, update `~/.c
 ```toml
 [sandbox]
 container_runtime = "podman"
-default_image = "ghcr.io/njbrake/aoe-sandbox:latest"
+default_image = "ghcr.io/agent-of-empires/aoe-sandbox:latest"
 ```
 
 ### Profile-Specific Runtime
@@ -83,7 +83,7 @@ Podman is treated as a Docker-compatible runtime by AoE, which means:
 
 A few practical differences to keep in mind:
 
-- **Image store is separate.** Podman maintains its own local image cache. If you previously pulled images with Docker, run `podman pull ghcr.io/njbrake/aoe-sandbox:latest` (or let AoE pull on first use).
+- **Image store is separate.** Podman maintains its own local image cache. If you previously pulled images with Docker, run `podman pull ghcr.io/agent-of-empires/aoe-sandbox:latest` (or let AoE pull on first use).
 - **Rootless networking.** Rootless Podman uses `slirp4netns` or `pasta` for networking by default. Published ports above 1024 work without extra configuration; binding to a privileged port (<1024) requires either rootful Podman or `sysctl net.ipv4.ip_unprivileged_port_start`.
 - **Daemonless.** There is no daemon process to keep running. If you previously used `systemctl start docker`, the Podman equivalent is unnecessary.
 
@@ -101,7 +101,7 @@ If AoE reports the Podman runtime as unavailable, run `podman info` directly. Co
 Podman uses a local image store separate from Docker. Pull the sandbox image once to seed the cache:
 
 ```bash
-podman pull ghcr.io/njbrake/aoe-sandbox:latest
+podman pull ghcr.io/agent-of-empires/aoe-sandbox:latest
 ```
 
 ### Permission Denied on Bind Mounts

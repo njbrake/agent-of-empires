@@ -20,6 +20,10 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
+import {
+  enableCockpitAndWait,
+  waitForReplayContains,
+} from "../helpers/cockpit";
 
 const SLOW_TURN_SCRIPT = {
   turns: [
@@ -57,11 +61,7 @@ base.skip("cockpit/cancel publishes Stopped reason:cancelled mid-turn", async ({
     const sessions = await listSessions(serve.baseUrl);
     const sessionId = sessions[0]!.id;
 
-    await fetch(
-      `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`,
-      { method: "POST" },
-    );
-    await new Promise((r) => setTimeout(r, 2_000));
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`, {
       method: "POST",
@@ -75,18 +75,7 @@ base.skip("cockpit/cancel publishes Stopped reason:cancelled mid-turn", async ({
     );
     expect(cancelRes.status).toBe(202);
 
-    let sawCancelled = false;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const replay = await fetch(
-        `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-      ).then((r) => r.json());
-      if (JSON.stringify(replay).includes("cancelled")) {
-        sawCancelled = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    expect(sawCancelled).toBe(true);
+    await waitForReplayContains(serve.baseUrl, sessionId, "cancelled");
   } finally {
     await serve.stop();
   }

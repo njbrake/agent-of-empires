@@ -228,6 +228,22 @@ fn parse_pane_metadata(output: &str) -> HashMap<String, PaneMetadata> {
     map
 }
 
+/// Test-only: inject a synthetic session name into the cache so
+/// callers of `session_exists_from_cache` see it as present. Used
+/// by live-send tests that install a fake `LiveSendState` without a
+/// real tmux pane; without this the per-keystroke drift check
+/// (which calls `session_exists_from_cache`) trips in CI runs that
+/// have already populated the cache via the e2e suite, causing the
+/// drift detector to flag the fake session as gone.
+#[cfg(test)]
+pub fn test_inject_session_into_cache(name: &str) {
+    if let Ok(mut cache) = SESSION_CACHE.write() {
+        let map = cache.data.get_or_insert_with(HashMap::new);
+        map.insert(name.to_string(), 0);
+        cache.time = Some(Instant::now());
+    }
+}
+
 pub fn session_exists_from_cache(name: &str) -> Option<bool> {
     let cache = SESSION_CACHE.read().ok()?;
 

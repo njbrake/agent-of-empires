@@ -144,7 +144,7 @@ impl RuntimeBase {
     }
 
     pub fn default_sandbox_image(&self) -> &'static str {
-        "ghcr.io/njbrake/aoe-sandbox:latest"
+        "ghcr.io/agent-of-empires/aoe-sandbox:latest"
     }
 
     pub fn effective_default_image(&self) -> String {

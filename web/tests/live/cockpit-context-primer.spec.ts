@@ -59,21 +59,26 @@ test("cockpit/context-primer renders the seeded turn", async ({}, testInfo) => {
     );
 
     let highestSeq = 0;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const replay = await fetch(
-        `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-      ).then((r) => r.json());
-      const json = JSON.stringify(replay.frames);
-      if (
-        json.includes(PRIMER_TEXT) &&
-        json.includes("user_forced") &&
-        replay.highest_seq !== null
-      ) {
-        highestSeq = replay.highest_seq;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 200));
-    }
+    await expect
+      .poll(
+        async () => {
+          const replay = await fetch(
+            `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
+          ).then((r) => r.json());
+          const json = JSON.stringify(replay.frames);
+          if (
+            json.includes(PRIMER_TEXT) &&
+            json.includes("user_forced") &&
+            replay.highest_seq !== null
+          ) {
+            highestSeq = replay.highest_seq;
+            return true;
+          }
+          return false;
+        },
+        { timeout: 15_000, intervals: [100, 200, 500, 1000] },
+      )
+      .toBe(true);
     expect(highestSeq).toBeGreaterThan(0);
 
     const primerRes = await fetch(

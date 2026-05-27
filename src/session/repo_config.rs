@@ -971,7 +971,7 @@ pub fn execute_hooks_in_container_streamed(
 /// Template content for `aoe init`.
 pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 # This file configures aoe behavior for this repository.
-# See: https://github.com/njbrake/agent-of-empires
+# See: https://github.com/agent-of-empires/agent-of-empires
 
 # [hooks]
 # Commands run once when a session is first created
@@ -986,7 +986,7 @@ pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 
 # [sandbox]
 # enabled_by_default = true
-# default_image = "ghcr.io/njbrake/aoe-dev-sandbox:0.10"
+# default_image = "ghcr.io/agent-of-empires/aoe-dev-sandbox:0.10"
 # List fields below replace (not append to) global settings when set:
 # environment = ["NODE_ENV", "DATABASE_URL"]
 # volume_ignores = ["node_modules", ".next"]
