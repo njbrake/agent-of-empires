@@ -7715,6 +7715,71 @@ mod default_attach_mode {
         );
     }
 
+    #[test]
+    #[serial]
+    fn help_live_on_enter_returns_none_when_no_session_selected() {
+        // Cursor parked off any session row: the help overlay shouldn't
+        // claim a session-attach behavior, so `help_live_on_enter`
+        // signals "no row" with None and the render path falls back to
+        // the cached profile default.
+        let env = create_test_env_empty();
+        assert!(
+            env.view.selected_session.is_none(),
+            "fresh empty view should have no session selected"
+        );
+        assert_eq!(env.view.help_live_on_enter(), None);
+    }
+
+    #[test]
+    #[serial]
+    fn help_live_on_enter_returns_some_for_selected_session() {
+        // With the historical Tmux default, a selected session row maps
+        // to Some(false): Enter goes to tmux attach, Tab to live mode.
+        let mut env = create_test_env_empty();
+        let _id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        assert_eq!(env.view.help_live_on_enter(), Some(false));
+    }
+
+    #[test]
+    #[serial]
+    fn help_live_on_enter_reflects_live_send_setting() {
+        // Flipping the user's default to LiveSend must propagate to
+        // help_live_on_enter so the help overlay relabels Enter as
+        // live mode and Tab as tmux attach.
+        let mut env = create_test_env_empty();
+        write_global_default_attach_mode(NewSessionAttachMode::LiveSend);
+        let _id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        assert_eq!(env.view.help_live_on_enter(), Some(true));
+    }
+
+    #[test]
+    #[serial]
+    fn profile_default_attach_mode_cache_refreshes_with_config() {
+        // The render path falls back to `profile_default_attach_mode`
+        // when no session is selected, so it has to track the saved
+        // config without re-reading from disk per paint. Saving a new
+        // mode + calling `refresh_from_config` must update the cache.
+        let mut env = create_test_env_empty();
+        assert_eq!(
+            env.view.profile_default_attach_mode,
+            NewSessionAttachMode::Tmux,
+            "cache should initialize to the historical Tmux default"
+        );
+        write_global_default_attach_mode(NewSessionAttachMode::LiveSend);
+        env.view.refresh_from_config();
+        assert_eq!(
+            env.view.profile_default_attach_mode,
+            NewSessionAttachMode::LiveSend,
+            "refresh_from_config must pick up the saved LiveSend default"
+        );
+    }
+
     /// Cockpit sessions short-circuit before the setting is consulted
     /// (the cockpit branch in `activate_selected_session` returns
     /// `OpenCockpit`/transient-status before we get to the view-mode

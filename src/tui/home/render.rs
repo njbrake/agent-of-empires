@@ -530,7 +530,10 @@ impl HomeView {
 
         // Render dialogs on top
         if self.show_help {
-            let live_on_enter = self.help_live_on_enter();
+            let live_on_enter = self.help_live_on_enter().unwrap_or(matches!(
+                self.profile_default_attach_mode,
+                crate::session::NewSessionAttachMode::LiveSend
+            ));
             HelpOverlay::render(
                 frame,
                 area,

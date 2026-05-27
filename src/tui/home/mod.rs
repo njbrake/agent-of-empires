@@ -343,6 +343,11 @@ pub struct HomeView {
     /// the render layer reads this rather than re-resolving the config on
     /// every paint.
     pub(super) row_tag_mode: crate::session::config::RowTagMode,
+    /// Active profile's `default_attach_mode`, cached at construction and
+    /// refreshed by `refresh_from_config` / `switch_profile`. The help
+    /// overlay falls back to this when no session row is selected so the
+    /// render path never touches disk for the Enter/Tab labels.
+    pub(super) profile_default_attach_mode: crate::session::NewSessionAttachMode,
     /// Collapsed state for project-mode groups (persists across rebuilds)
     pub(super) project_group_collapsed: HashMap<String, bool>,
 
@@ -714,6 +719,7 @@ impl HomeView {
             sort_order,
             group_by,
             row_tag_mode: resolved.session.row_tag,
+            profile_default_attach_mode: resolved.session.default_attach_mode,
             project_group_collapsed: HashMap::new(),
             show_help: false,
             help_scroll: 0,
@@ -3482,23 +3488,19 @@ impl HomeView {
             .map(|s| s.default_attach_mode)
     }
 
-    /// True when Enter on the current row would enter live-send mode
-    /// (and Tab would swap to a tmux attach). Prefers the selected
-    /// session's resolved config so per-profile overrides are honored;
-    /// otherwise falls back to the active profile's config so an empty
-    /// list still describes what would happen on the next create. Drives
-    /// the Enter/Tab labels in the help overlay.
-    pub(super) fn help_live_on_enter(&self) -> bool {
-        if let Some(id) = self.selected_session.as_deref() {
-            if let Some(mode) = self.default_attach_mode(id) {
-                return matches!(mode, crate::session::NewSessionAttachMode::LiveSend);
-            }
-        }
-        let cfg = crate::session::resolve_config_or_warn(&self.config_profile());
-        matches!(
-            cfg.session.default_attach_mode,
+    /// True when Enter on the *currently selected session row* would
+    /// enter live-send mode (and Tab would swap to a tmux attach).
+    /// Returns `None` when the cursor is not on a session row (group or
+    /// nothing selected) so the help overlay can fall back to a stable
+    /// default rather than mislabel keys that don't apply. Honors per-
+    /// profile overrides via `default_attach_mode(id)`.
+    pub(super) fn help_live_on_enter(&self) -> Option<bool> {
+        let id = self.selected_session.as_deref()?;
+        let mode = self.default_attach_mode(id)?;
+        Some(matches!(
+            mode,
             crate::session::NewSessionAttachMode::LiveSend
-        )
+        ))
     }
 
     /// Pin selection to `session_id` and place the cursor on its row.
@@ -3568,6 +3570,7 @@ impl HomeView {
         self.refresh_status_hook_config_cache();
         self.strict_hotkeys = config.session.strict_hotkeys;
         self.row_tag_mode = config.session.row_tag;
+        self.profile_default_attach_mode = config.session.default_attach_mode;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
         self.tool_configs = config.tools;
