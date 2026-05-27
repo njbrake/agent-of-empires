@@ -37,10 +37,13 @@ impl<'a> CachedPreview<'a> {
 /// Exposed at the module level so callers outside `Preview::render_with_cache`
 /// can compute the same split. In particular, the live-send sync resize
 /// in `HomeView::finalize_live_send_resize` needs to size the tmux pane
-/// to the OUTPUT portion (inner minus this header), not the full inner.
-/// If the agent renders into the full inner while the output portion is
-/// shorter by `agent_info_height` rows, the top of the agent's output
-/// gets clipped on every frame and the user sees content shifted up.
+/// to the OUTPUT portion, not the full inner. The output portion is
+/// `inner.height - agent_info_height(inst) - 1`: subtract the info
+/// header, then subtract one more row for the inner ` Output ` banner
+/// that `render_output_cached` draws on top of the output sub-rect (a
+/// `Borders::TOP` block consumes one row). If the agent renders into a
+/// taller pane than the visible output area, the top of its output gets
+/// clipped on every frame and the user sees content shifted up.
 pub fn agent_info_height(instance: &Instance) -> u16 {
     let base: u16 = 3; // profile+tool / path / status
     let sandbox_lines: u16 = if instance.is_sandboxed() { 1 } else { 0 };
@@ -51,6 +54,24 @@ pub fn agent_info_height(instance: &Instance) -> u16 {
     } else {
         base + sandbox_lines
     }
+}
+
+/// Row count of the Terminal-view (and Tool-view) info header
+/// (title / path / status, plus one optional sandbox row) for
+/// `instance`.
+///
+/// Symmetric with [`agent_info_height`]: the live-send sync resize
+/// against a terminal target needs the OUTPUT portion of the preview
+/// pane, which is `inner.height - terminal_info_height(inst) - 1`
+/// (info header + one row for the inner ` Terminal Output ` banner).
+pub fn terminal_info_height(instance: &Instance) -> u16 {
+    let base: u16 = 3; // title / path / status
+    let sandbox_lines: u16 = if instance.sandbox_info.as_ref().is_some_and(|s| s.enabled) {
+        1
+    } else {
+        0
+    };
+    base + sandbox_lines
 }
 
 pub struct Preview;
@@ -66,18 +87,17 @@ impl Preview {
         scroll_offset: u16,
         theme: &Theme,
         compact: bool,
+        show_info: bool,
     ) {
         // Compact mode (narrow viewports) skips the info header entirely:
         // the outer block title already carries the session name + status,
-        // and on a phone every row of vertical space matters.
-        let output_area = if compact {
-            area
-        } else {
-            let info_height = if instance.sandbox_info.as_ref().is_some_and(|s| s.enabled) {
-                4 // title + path + status + sandbox
-            } else {
-                3 // title + path + status
-            };
+        // and on a phone every row of vertical space matters. The user
+        // toggle `show_info` collapses the same chrome on a normal-width
+        // viewport so the output area can claim the rows the header would
+        // have taken. Symmetric with `render_with_cache` in the Agent view.
+        let render_info_section = !compact && show_info;
+        let output_area = if render_info_section {
+            let info_height = terminal_info_height(instance);
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
@@ -126,6 +146,8 @@ impl Preview {
             let paragraph = Paragraph::new(info_lines);
             frame.render_widget(paragraph, chunks[0]);
             chunks[1]
+        } else {
+            area
         };
 
         // Output section
@@ -140,11 +162,13 @@ impl Preview {
         };
         let line_count = parsed_output.map_or(0, |t| t.lines.len());
 
-        // Compact mode: no inner separator/title; the outer block already
-        // names the session. Scroll indicator is dropped to save a row.
-        let inner = if compact {
-            output_area
-        } else {
+        // Inner ` Terminal Output ` banner is paired with the info
+        // section: when the info section is hidden (compact or the user
+        // toggled it off), the outer block title already names the view
+        // and the scroll indicator is hoisted to that outer title by the
+        // caller, so we drop the inner banner here too. Drops one row of
+        // chrome and frees it for output.
+        let inner = if render_info_section {
             let mut block = Block::default()
                 .borders(Borders::TOP)
                 .border_style(Style::default().fg(theme.border))
@@ -162,6 +186,8 @@ impl Preview {
             let inner = block.inner(output_area);
             frame.render_widget(block, output_area);
             inner
+        } else {
+            output_area
         };
 
         if !terminal_running {
@@ -673,6 +699,64 @@ mod tests {
             sandbox.enabled = false;
             inst.sandbox_info = Some(sandbox);
             assert_eq!(agent_info_height(&inst), 3);
+        }
+    }
+
+    // Terminal-view counterpart of `agent_info_height`. Same drift-guard
+    // motivation: the live-send sync resize against a terminal target
+    // sizes the tmux pane to `inner - terminal_info_height - 1`. A wrong
+    // formula here brings the shifted-preview bug back in Terminal view.
+    mod terminal_info_height {
+        use super::super::terminal_info_height;
+        use crate::session::{Instance, SandboxInfo, WorktreeInfo};
+        use chrono::Utc;
+
+        fn enabled_sandbox() -> SandboxInfo {
+            SandboxInfo {
+                enabled: true,
+                container_id: None,
+                image: "img".into(),
+                container_name: "ctr".into(),
+                extra_env: None,
+                custom_instruction: None,
+            }
+        }
+
+        #[test]
+        fn plain_session_is_three_rows() {
+            let inst = Instance::new("plain", "/tmp/plain");
+            assert_eq!(terminal_info_height(&inst), 3);
+        }
+
+        #[test]
+        fn sandboxed_adds_one_row() {
+            let mut inst = Instance::new("sandboxed", "/tmp/sandboxed");
+            inst.sandbox_info = Some(enabled_sandbox());
+            assert_eq!(terminal_info_height(&inst), 4);
+        }
+
+        #[test]
+        fn disabled_sandbox_does_not_count() {
+            let mut inst = Instance::new("disabled", "/tmp/disabled");
+            let mut sandbox = enabled_sandbox();
+            sandbox.enabled = false;
+            inst.sandbox_info = Some(sandbox);
+            assert_eq!(terminal_info_height(&inst), 3);
+        }
+
+        #[test]
+        fn worktree_info_does_not_count() {
+            // Worktree info is an Agent-view-only block; the terminal
+            // view doesn't render it, so the height stays at 3.
+            let mut inst = Instance::new("wt", "/tmp/wt");
+            inst.worktree_info = Some(WorktreeInfo {
+                branch: "feature/x".into(),
+                main_repo_path: "/repo".into(),
+                managed_by_aoe: true,
+                created_at: Utc::now(),
+                base_branch: Some("main".into()),
+            });
+            assert_eq!(terminal_info_height(&inst), 3);
         }
     }
 }

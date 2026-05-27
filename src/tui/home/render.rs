@@ -62,6 +62,33 @@ fn compose_list_title(
 /// requested scroll.
 const CAPTURE_BUFFER: u16 = 20;
 
+/// Shrink `inner` to the OUTPUT sub-rect that sits below the info
+/// header AND below the inner ` Output ` / ` Terminal Output ` banner.
+///
+/// `info_height` is the row count of the rendered info header
+/// (computed by `preview::agent_info_height` for Agent view or
+/// `preview::terminal_info_height` for Terminal/Tool view). The
+/// banner is a single `Borders::TOP` row above the agent's actual
+/// output, so the OUTPUT pane is `info_height + 1` rows shorter than
+/// `inner`, not `info_height` as a naive split would suggest.
+///
+/// This matches what `render_with_cache` / `render_terminal_preview`
+/// actually paint into; live-send sizes the tmux pane to the returned
+/// rect so the agent's content lands pixel-aligned with the visible
+/// Paragraph instead of bleeding off the bottom row.
+fn split_off_info_section(inner: Rect, info_height: u16) -> Rect {
+    // `+ 1` for the inner banner row. Clamp so a tiny pane (smaller
+    // than the chrome it would draw) returns a zero-height rect rather
+    // than wrapping past zero.
+    let chrome = info_height.saturating_add(1).min(inner.height);
+    Rect {
+        x: inner.x,
+        y: inner.y + chrome,
+        width: inner.width,
+        height: inner.height - chrome,
+    }
+}
+
 /// Trim `text` to fit within `max_width` display cells, appending '…'
 /// if anything was dropped. Used by the live-send banners so a long
 /// session title never pushes the exit-chord hint off-screen on a
@@ -1233,6 +1260,16 @@ impl HomeView {
         // vs. tmux writing bytes straight into your terminal.
         const PREVIEW_REFRESH_MS_IDLE: u128 = 250;
         let in_live = self.live_send.is_some();
+        // The per-frame resize only fires when live-send's target IS
+        // the agent pane this refresh is named after. Without the
+        // target gate, viewing Agent view while live-on-Terminal would
+        // resize the *terminal* pane (the worker is bound to it) to
+        // Agent-view dimensions, mis-fitting the shell that the user
+        // is actually typing into.
+        let resize_target_matches = self
+            .live_send
+            .as_ref()
+            .is_some_and(|s| matches!(s.target, live_send::LiveSendTarget::Agent));
 
         // While in live-send mode, keep the tmux pane geometry in sync
         // with the preview's actual cell dimensions so the agent
@@ -1240,7 +1277,7 @@ impl HomeView {
         // UI). Deduped against live_send_last_resize so we only fire
         // when the user first enters live mode or the preview pane is
         // resized (terminal resize, divider drag, layout flip).
-        if in_live && width > 0 && height > 0 {
+        if resize_target_matches && width > 0 && height > 0 {
             let next = (width, height);
             if self.live_send_last_resize != Some(next) {
                 if let Some(worker) = &self.live_send_worker {
@@ -1351,6 +1388,25 @@ impl HomeView {
     fn refresh_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250;
 
+        // Symmetric with `refresh_preview_cache_if_needed`: when live-send
+        // is pointed at the host-terminal pane, keep the tmux pane sized
+        // to the visible output area on every render so a window resize
+        // or info-header toggle reflows the shell instead of waiting for
+        // the user to re-enter live mode.
+        let resize_target_matches = self
+            .live_send
+            .as_ref()
+            .is_some_and(|s| matches!(s.target, live_send::LiveSendTarget::Terminal));
+        if resize_target_matches && width > 0 && height > 0 {
+            let next = (width, height);
+            if self.live_send_last_resize != Some(next) {
+                if let Some(worker) = &self.live_send_worker {
+                    worker.resize(width, height);
+                }
+                self.live_send_last_resize = Some(next);
+            }
+        }
+
         let scroll_offset = self.preview_scroll_offset;
         let needs_refresh = match &self.selected_session {
             Some(id) => {
@@ -1398,6 +1454,24 @@ impl HomeView {
     /// Refresh container terminal preview cache if needed
     fn refresh_container_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250;
+
+        // Symmetric with `refresh_preview_cache_if_needed`: when
+        // live-send is pointed at the in-container shell, keep the
+        // tmux pane sized to the visible output area so a window
+        // resize or info-header toggle reflows immediately.
+        let resize_target_matches = self
+            .live_send
+            .as_ref()
+            .is_some_and(|s| matches!(s.target, live_send::LiveSendTarget::ContainerTerminal));
+        if resize_target_matches && width > 0 && height > 0 {
+            let next = (width, height);
+            if self.live_send_last_resize != Some(next) {
+                if let Some(worker) = &self.live_send_worker {
+                    worker.resize(width, height);
+                }
+                self.live_send_last_resize = Some(next);
+            }
+        }
 
         let scroll_offset = self.preview_scroll_offset;
         let needs_refresh = match &self.selected_session {
@@ -1566,44 +1640,66 @@ impl HomeView {
                 .title(title)
                 .title_style(Style::default().fg(title_color));
 
-            // Advertise the info-header toggle. Only meaningful in Agent view
-            // (Terminal/Tool views have their own minimal header that isn't
-            // bound to `show_preview_info`), and the compact branch above
-            // already owns the title slot.
-            if matches!(self.view_mode, ViewMode::Agent) {
-                let key = if self.strict_hotkeys { "I" } else { "i" };
-                let hint_text = if self.show_preview_info {
-                    format!(" hide info with {key} ")
-                } else {
-                    format!(" show info with {key} ")
-                };
-                let hint_style = Style::default().fg(theme.dimmed).italic();
+            // Advertise the info-header toggle. The `i` key toggles
+            // `show_preview_info`, which gates the info header in every
+            // view mode now (Agent uses the worktree-flavored header,
+            // Terminal/Tool use the minimal header in `render_terminal_preview`),
+            // so the hint applies everywhere except the compact branch
+            // above, where the outer title is already taken.
+            let key = if self.strict_hotkeys { "I" } else { "i" };
+            let hint_text = if self.show_preview_info {
+                format!(" hide info with {key} ")
+            } else {
+                format!(" show info with {key} ")
+            };
+            let hint_style = Style::default().fg(theme.dimmed).italic();
 
-                // When the info section is hidden, the inner " Output " banner
-                // (which usually carries the scroll indicator) is also gone.
-                // Surface the indicator here so users still see how far back
-                // they've scrolled. With borders::ALL the inner is area - 2;
-                // render_output_cached then drops one more row before painting
-                // (its compact branch uses height-1 for visible_height), so we
-                // match that to keep the count stable as the user scrolls.
-                let scroll_indicator = if !self.show_preview_info {
-                    let inner_height = area.height.saturating_sub(2);
-                    let visible_height = inner_height.saturating_sub(1) as usize;
-                    format_scroll_indicator(
-                        self.preview_cache.captured_lines,
-                        visible_height,
-                        self.preview_scroll_offset,
-                    )
-                } else {
-                    None
+            // When the info section is hidden, the inner ` Output ` /
+            // ` Terminal Output ` banner (which usually carries the
+            // scroll indicator) is also gone. Surface the indicator
+            // here so users still see how far back they've scrolled.
+            // With borders::ALL the inner is area - 2; render_output_cached
+            // / render_terminal_preview then drops one more row before
+            // painting (their compact / info-hidden branches use
+            // height-1 for visible_height), so we match that to keep the
+            // count stable as the user scrolls.
+            let scroll_indicator = if !self.show_preview_info {
+                let inner_height = area.height.saturating_sub(2);
+                let visible_height = inner_height.saturating_sub(1) as usize;
+                let captured_lines = match &self.view_mode {
+                    ViewMode::Agent => self.preview_cache.captured_lines,
+                    ViewMode::Tool(_) => self.tool_preview_cache.captured_lines,
+                    ViewMode::Terminal => {
+                        let mode = self
+                            .selected_session
+                            .as_ref()
+                            .and_then(|id| self.get_instance(id).map(|inst| (id, inst)))
+                            .map(|(id, inst)| {
+                                if inst.is_sandboxed() {
+                                    self.get_terminal_mode(id)
+                                } else {
+                                    TerminalMode::Host
+                                }
+                            })
+                            .unwrap_or(TerminalMode::Host);
+                        match mode {
+                            TerminalMode::Container => {
+                                self.container_terminal_preview_cache.captured_lines
+                            }
+                            TerminalMode::Host => self.terminal_preview_cache.captured_lines,
+                        }
+                    }
                 };
+                format_scroll_indicator(captured_lines, visible_height, self.preview_scroll_offset)
+            } else {
+                None
+            };
 
-                let mut hint_spans = vec![Span::styled(hint_text, hint_style)];
-                if let Some(ind) = scroll_indicator {
-                    hint_spans.push(Span::styled(ind, hint_style));
-                }
-                block = block.title_top(Line::from(hint_spans).right_aligned());
+            let mut hint_spans = vec![Span::styled(hint_text, hint_style)];
+            if let Some(ind) = scroll_indicator {
+                hint_spans.push(Span::styled(ind, hint_style));
             }
+            block = block.title_top(Line::from(hint_spans).right_aligned());
         }
 
         let inner = block.inner(area);
@@ -1643,6 +1739,14 @@ impl HomeView {
                     // leaves the top `info_height` rows of the agent's
                     // pane outside the displayed window, where they get
                     // tail-clipped on every frame.
+                    //
+                    // After the info header, `render_output_cached` wraps
+                    // the output in a `Borders::TOP` block (the ` Output `
+                    // banner) which consumes one more row from the top.
+                    // The pane therefore shrinks by `info_h + 1` rows so
+                    // the tmux pane matches the visible Paragraph area
+                    // exactly; off by one and the agent's content scrolls
+                    // up by a row on every frame.
                     let pane_area = if compact || !self.show_preview_info {
                         inner
                     } else {
@@ -1650,13 +1754,7 @@ impl HomeView {
                             .as_ref()
                             .and_then(|id| self.get_instance(id))
                             .map(|inst| {
-                                let info_h = preview::agent_info_height(inst).min(inner.height);
-                                Rect {
-                                    x: inner.x,
-                                    y: inner.y + info_h,
-                                    width: inner.width,
-                                    height: inner.height - info_h,
-                                }
+                                split_off_info_section(inner, preview::agent_info_height(inst))
                             })
                             .unwrap_or(inner)
                     };
@@ -1708,6 +1806,26 @@ impl HomeView {
                         TerminalMode::Host
                     };
 
+                    // Compute the output sub-rect symmetric with Agent
+                    // view: when the info header is visible we strip the
+                    // header rows + one banner row off `inner`, so the
+                    // tmux pane resizes match what the user actually
+                    // sees. Without this, live-send against a terminal
+                    // pane sizes tmux to `inner.height` while only
+                    // `inner.height - info_h - 1` rows are visible, and
+                    // the top of the shell output gets clipped on every
+                    // frame.
+                    let pane_area = if compact || !self.show_preview_info {
+                        inner
+                    } else {
+                        self.get_instance(&id)
+                            .map(|inst| {
+                                split_off_info_section(inner, preview::terminal_info_height(inst))
+                            })
+                            .unwrap_or(inner)
+                    };
+                    self.preview_pane_area = pane_area;
+
                     // Refresh the appropriate cache, then warm the
                     // matching `parsed_text` so the render call below
                     // can read it via a shared borrow alongside
@@ -1715,15 +1833,15 @@ impl HomeView {
                     match terminal_mode {
                         TerminalMode::Container => {
                             self.refresh_container_terminal_preview_cache_if_needed(
-                                inner.width,
-                                inner.height,
+                                pane_area.width,
+                                pane_area.height,
                             );
                             self.container_terminal_preview_cache.ensure_parsed();
                         }
                         TerminalMode::Host => {
                             self.refresh_terminal_preview_cache_if_needed(
-                                inner.width,
-                                inner.height,
+                                pane_area.width,
+                                pane_area.height,
                             );
                             self.terminal_preview_cache.ensure_parsed();
                         }
@@ -1760,6 +1878,7 @@ impl HomeView {
                             self.preview_scroll_offset,
                             theme,
                             compact,
+                            self.show_preview_info,
                         );
                     }
                 } else {
@@ -1774,9 +1893,20 @@ impl HomeView {
                 let selected_id = self.selected_session.clone();
 
                 if let Some(id) = selected_id {
+                    let pane_area = if compact || !self.show_preview_info {
+                        inner
+                    } else {
+                        self.get_instance(&id)
+                            .map(|inst| {
+                                split_off_info_section(inner, preview::terminal_info_height(inst))
+                            })
+                            .unwrap_or(inner)
+                    };
+                    self.preview_pane_area = pane_area;
+
                     self.refresh_tool_preview_cache_if_needed(
-                        inner.width,
-                        inner.height,
+                        pane_area.width,
+                        pane_area.height,
                         &tool_name,
                     );
                     self.tool_preview_cache.ensure_parsed();
@@ -1795,6 +1925,7 @@ impl HomeView {
                             self.preview_scroll_offset,
                             theme,
                             compact,
+                            self.show_preview_info,
                         );
                     }
                 } else {
@@ -2272,6 +2403,46 @@ impl HomeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_off_info_section_subtracts_header_plus_banner() {
+        // The split must drop info_h ROWS for the info section AND one
+        // more row for the inner ` Output ` / ` Terminal Output ` banner
+        // that the renderer draws on top of the output area. Off by one
+        // here resurrects the "agent output scrolled up by a row" bug
+        // that lived before this helper existed.
+        let inner = Rect {
+            x: 2,
+            y: 3,
+            width: 80,
+            height: 30,
+        };
+        let out = split_off_info_section(inner, 4);
+        assert_eq!(out.x, 2);
+        assert_eq!(out.width, 80);
+        // y shifts down past 4 header rows + 1 banner row.
+        assert_eq!(out.y, 3 + 5);
+        // height shrinks by the same 5 rows.
+        assert_eq!(out.height, 30 - 5);
+    }
+
+    #[test]
+    fn split_off_info_section_clamps_when_pane_smaller_than_chrome() {
+        // A pane shorter than the chrome it would draw must return a
+        // zero-height rect rather than wrapping past zero. Without the
+        // clamp, a very narrow vertical layout (split panes, popped
+        // toasts) would panic on subtraction overflow during live mode.
+        let inner = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 3,
+        };
+        // Info header alone is 4 rows; combined chrome (5) exceeds
+        // inner.height (3). The helper should clamp to height 0.
+        let out = split_off_info_section(inner, 4);
+        assert_eq!(out.height, 0);
+    }
 
     #[test]
     fn truncate_to_width_passthrough_when_fits() {

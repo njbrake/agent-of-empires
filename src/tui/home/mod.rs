@@ -2748,12 +2748,16 @@ impl HomeView {
     /// for why the two are split.
     ///
     /// `preview_pane_area` is the cached OUTPUT sub-rect: the full inner
-    /// (after border + padding) minus the Agent-view info header when the
-    /// user has it expanded. Sizing to the full inner instead would leave
-    /// the top `info_height` rows of the agent's output outside the
-    /// visible window; tail-clip semantics in the preview's `Paragraph`
-    /// render then drop those rows on every frame, which the user
-    /// perceives as content shifted up.
+    /// (after border + padding) minus the info header AND minus the
+    /// inner ` Output ` / ` Terminal Output ` banner row when the user
+    /// has the header expanded. Sizing to the full inner instead would
+    /// leave the top `info_height + 1` rows of the agent's output
+    /// outside the visible window; tail-clip semantics in the preview's
+    /// `Paragraph` render then drop those rows on every frame, which
+    /// the user perceives as content shifted up. The math is shared
+    /// with the per-frame resize in `refresh_preview_cache_if_needed`
+    /// and friends; the helper that computes it lives in
+    /// `tui::home::render::split_off_info_section`.
     pub fn finalize_live_send_resize(&mut self) {
         let Some(state) = self.live_send.as_ref() else {
             return;
