@@ -893,12 +893,16 @@ impl NewSessionDialog {
         }
 
         // Ctrl+T toggles the scratch-session mode from anywhere in the
-        // form. Mutually exclusive with worktrees; turning on scratch
-        // clears the worktree toggle.
+        // form. Mutually exclusive with worktrees AND with extra-repo
+        // workspaces; turning on scratch clears all three so the
+        // submit payload mirrors the user's intent if they toggle
+        // scratch off again later.
         if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.scratch = !self.scratch;
             if self.scratch {
                 self.worktree_enabled = false;
+                self.workspace_repos.clear();
+                self.workspace_repos_expanded = false;
             }
             self.error_message = None;
             return DialogResult::Continue;
