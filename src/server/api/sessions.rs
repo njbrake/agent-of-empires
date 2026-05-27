@@ -1200,6 +1200,20 @@ pub async fn create_session(
         )
             .into_response();
     }
+    // The builder ignores `path` in scratch mode (provisions its own
+    // directory), but accepting both silently is a surprising contract
+    // for API callers and can make repo-aware tool validation consult
+    // config from a repo the session will never use. Fail loudly.
+    if body.scratch && !body.path.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "validation_failed",
+                "message": "Cannot combine scratch with path"
+            })),
+        )
+            .into_response();
+    }
 
     // Validate user inputs for shell injection. For scratch sessions the
     // `path` field is server-provisioned (and clients typically send an
