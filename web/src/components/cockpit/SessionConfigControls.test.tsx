@@ -126,6 +126,24 @@ describe("SessionConfigControls", () => {
     expect(screen.getByTestId("config-option-effort")).toBeTruthy();
   });
 
+  it("model trigger exposes aria-expanded + aria-controls toggling open state", () => {
+    render(
+      <SessionConfigControls
+        configOptions={[modelOption()]}
+        pendingConfigOption={null}
+        onSetConfigOption={vi.fn()}
+      />,
+    );
+    const chip = screen.getByTestId("config-option-model");
+    expect(chip.getAttribute("aria-haspopup")).toBe("menu");
+    expect(chip.getAttribute("aria-expanded")).toBe("false");
+    expect(chip.getAttribute("aria-controls")).toBeNull();
+    fireEvent.click(chip);
+    expect(chip.getAttribute("aria-expanded")).toBe("true");
+    expect(chip.getAttribute("aria-controls")).toBe("config-option-menu-model");
+    expect(document.getElementById("config-option-menu-model")).not.toBeNull();
+  });
+
   it("clicking a model option invokes onSetConfigOption with config_id and value", () => {
     const fn = vi.fn();
     render(

@@ -103,6 +103,7 @@ interface SubProps {
 function ModelDropdown({ option, pending, onSelect }: SubProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+  const menuId = `config-option-menu-${option.id}`;
   const current =
     option.options.find((o) => o.value === option.current_value) ??
     option.options[0];
@@ -129,6 +130,9 @@ function ModelDropdown({ option, pending, onSelect }: SubProps) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
         title={`${option.name}: ${label}`}
         aria-label={`${option.name}: ${label}`}
         data-testid={`config-option-${option.id}`}
@@ -143,6 +147,7 @@ function ModelDropdown({ option, pending, onSelect }: SubProps) {
       </button>
       {open && (
         <div
+          id={menuId}
           className="absolute bottom-full left-0 z-30 mb-1 w-64 overflow-hidden rounded-md border border-surface-700 bg-surface-850 shadow-xl"
           role="menu"
         >
