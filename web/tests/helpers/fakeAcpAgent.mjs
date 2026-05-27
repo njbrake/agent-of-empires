@@ -392,23 +392,22 @@ async function handleRequest(msg) {
 
     case "session/set_config_option": {
       // Mirrors claude-agent-acp's setSessionConfigOption: accept the
-      // new value, emit a follow-up config_option_update with the
-      // updated currentValue for that option. Tests opt into a
-      // rejected response by setting FAKE_ACP_REJECT_CONFIG_OPTION.
-      // See #1403.
-      const sessionId = params?.sessionId;
+      // new value, return the updated configOptions list in the
+      // response payload. Real claude-agent-acp's setSessionConfigOption
+      // does NOT emit a follow-up config_option_update notification
+      // (acp-agent.js:1003-1057); the response carries the new state
+      // and aoe synthesizes Event::ConfigOptionsUpdated from it. Tests
+      // opt into a rejected response by setting
+      // FAKE_ACP_REJECT_CONFIG_OPTION. See #1403.
       const configId = params?.configId;
       const value = params?.value;
       if (process.env.FAKE_ACP_REJECT_CONFIG_OPTION) {
         sendError(id, -32000, process.env.FAKE_ACP_REJECT_CONFIG_OPTION);
         return;
       }
-      sendResult(id, {});
-      if (sessionId && configId && value) {
-        await emitSessionUpdates(sessionId, [
-          {
-            sessionUpdate: "config_option_update",
-            configOptions: [
+      const configOptions =
+        configId && value
+          ? [
               {
                 id: configId,
                 name: configId === "model" ? "Model" : "Reasoning Effort",
@@ -428,10 +427,9 @@ async function handleRequest(msg) {
                         { value: "high", name: "High" },
                       ],
               },
-            ],
-          },
-        ]);
-      }
+            ]
+          : [];
+      sendResult(id, { configOptions });
       return;
     }
 

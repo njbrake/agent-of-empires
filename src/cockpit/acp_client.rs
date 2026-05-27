@@ -3934,26 +3934,38 @@ async fn run_connection_task<W, R>(
                                             );
                                             let tx = event_tx_for_block.clone();
                                             tokio::spawn(async move {
-                                                if let Err(e) = sent.block_task().await {
-                                                    let reason = format!("{e}");
-                                                    warn!(
-                                                        target: "cockpit.acp",
-                                                        "session/set_config_option failed mid-turn: {reason}"
-                                                    );
-                                                    let _ = tx
-                                                        .send(Event::ConfigOptionSwitchFailed {
-                                                            config_id,
-                                                            value,
-                                                            reason,
-                                                        })
-                                                        .await;
+                                                match sent.block_task().await {
+                                                    Ok(resp) => {
+                                                        // claude-agent-acp's setSessionConfigOption
+                                                        // returns the full updated config_options
+                                                        // list in the response but does NOT emit a
+                                                        // follow-up `config_option_update`
+                                                        // notification (see acp-agent.js:1003-1057).
+                                                        // Synthesize ConfigOptionsUpdated from the
+                                                        // response so the frontend reducer clears
+                                                        // pending state and shows the new current
+                                                        // value. See #1403.
+                                                        if let Some(event) =
+                                                            config_options_event(Some(resp.config_options))
+                                                        {
+                                                            let _ = tx.send(event).await;
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        let reason = format!("{e}");
+                                                        warn!(
+                                                            target: "cockpit.acp",
+                                                            "session/set_config_option failed mid-turn: {reason}"
+                                                        );
+                                                        let _ = tx
+                                                            .send(Event::ConfigOptionSwitchFailed {
+                                                                config_id,
+                                                                value,
+                                                                reason,
+                                                            })
+                                                            .await;
+                                                    }
                                                 }
-                                                // On success the adapter
-                                                // emits a ConfigOptionUpdate
-                                                // notification which the
-                                                // ingest path turns into
-                                                // ConfigOptionsUpdated. No
-                                                // synthetic event needed.
                                             });
                                         }
                                         Some(ClientCmd::SetMode(mode_id)) => {
@@ -4158,19 +4170,35 @@ async fn run_connection_task<W, R>(
                         ));
                         let tx = event_tx_for_block.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = sent.block_task().await {
-                                let reason = format!("{e}");
-                                warn!(
-                                    target: "cockpit.acp",
-                                    "session/set_config_option failed: {reason}"
-                                );
-                                let _ = tx
-                                    .send(Event::ConfigOptionSwitchFailed {
-                                        config_id,
-                                        value,
-                                        reason,
-                                    })
-                                    .await;
+                            match sent.block_task().await {
+                                Ok(resp) => {
+                                    // claude-agent-acp's setSessionConfigOption returns the
+                                    // full updated config_options list in the response but
+                                    // does NOT emit a follow-up `config_option_update`
+                                    // notification (see acp-agent.js:1003-1057). Synthesize
+                                    // ConfigOptionsUpdated from the response so the frontend
+                                    // reducer clears pending state and shows the new
+                                    // current value. See #1403.
+                                    if let Some(event) =
+                                        config_options_event(Some(resp.config_options))
+                                    {
+                                        let _ = tx.send(event).await;
+                                    }
+                                }
+                                Err(e) => {
+                                    let reason = format!("{e}");
+                                    warn!(
+                                        target: "cockpit.acp",
+                                        "session/set_config_option failed: {reason}"
+                                    );
+                                    let _ = tx
+                                        .send(Event::ConfigOptionSwitchFailed {
+                                            config_id,
+                                            value,
+                                            reason,
+                                        })
+                                        .await;
+                                }
                             }
                         });
                     }
