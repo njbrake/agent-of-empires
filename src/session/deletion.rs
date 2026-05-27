@@ -349,12 +349,21 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                 }
             }
         } else {
+            // Tampered `project_path` (e.g. JSON edited by hand to claim
+            // `scratch: true` while pointing outside the scratch root)
+            // is the only path that reaches this branch in normal use.
+            // The session record will still be deleted, so callers need
+            // a visible signal that on-disk cleanup was skipped.
             tracing::warn!(
                 target: "session.delete",
                 session_id = %request.session_id,
                 path = %path.display(),
                 "scratch flag set but project_path failed the guard; refusing to remove"
             );
+            errors.push(format!(
+                "Scratch directory: refused to remove {} (path failed scratch guard)",
+                path.display()
+            ));
         }
     }
 
@@ -1220,7 +1229,7 @@ mod tests {
                 detach_hooks: true,
                 keep_scratch: false,
             };
-            let _ = perform_deletion(&request);
+            let result = perform_deletion(&request);
 
             assert!(
                 bystander.exists(),
@@ -1229,6 +1238,15 @@ mod tests {
             assert!(
                 bystander.join("file.txt").exists(),
                 "bystander contents must survive"
+            );
+            // The guard refusal must also surface as an error on the
+            // deletion result, so callers can report the partial
+            // cleanup instead of silently treating it as a clean
+            // delete.
+            assert!(
+                result.errors.iter().any(|e| e.contains("scratch guard")),
+                "guard refusal must be reported in result.errors, got: {:?}",
+                result.errors
             );
             let _ = fs::remove_dir_all(&bystander);
         }
