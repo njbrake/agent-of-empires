@@ -293,6 +293,19 @@ pub(in crate::tui) enum LiveSendTarget {
     ContainerTerminal,
 }
 
+/// Format a display label for a `(title, target)` pair so the compose
+/// dialog header and the live-mode status banner stay in lockstep.
+/// Agent keeps the bare title (historical look); terminal variants
+/// get a short parenthetical so the user sees which pane the
+/// keystrokes will land on without having to read the preview chrome.
+pub(in crate::tui) fn format_target_label(title: &str, target: LiveSendTarget) -> String {
+    match target {
+        LiveSendTarget::Agent => title.to_string(),
+        LiveSendTarget::Terminal => format!("{title} (terminal)"),
+        LiveSendTarget::ContainerTerminal => format!("{title} (container)"),
+    }
+}
+
 /// One coalesced unit of work the worker hands to tmux. `Literal` runs
 /// fold together; named keys, hex-byte runs, and resizes break the run
 /// because their order vs. surrounding text matters (an Up arrow between

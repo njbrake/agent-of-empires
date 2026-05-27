@@ -3205,7 +3205,7 @@ impl HomeView {
         // throw voice text on the floor; losing dictation is worse than
         // silently catching it.
         if let Some((id, title, target)) = self.resolve_send_target() {
-            let label = dialog_label_for_target(&title, target);
+            let label = live_send::format_target_label(&title, target);
             self.pending_send_session = Some(id);
             self.pending_send_target = target;
             let mut dialog = SendMessageDialog::new(&label);
@@ -3464,7 +3464,7 @@ impl HomeView {
         let Some((id, title, target)) = self.resolve_send_target() else {
             return;
         };
-        let label = dialog_label_for_target(&title, target);
+        let label = live_send::format_target_label(&title, target);
         self.pending_send_session = Some(id);
         self.pending_send_target = target;
         let mut dialog = SendMessageDialog::new(&label);
@@ -3546,7 +3546,7 @@ impl HomeView {
         }
 
         if let Some((id, title, target)) = self.resolve_send_target() {
-            let label = dialog_label_for_target(&title, target);
+            let label = live_send::format_target_label(&title, target);
             self.pending_send_session = Some(id);
             self.pending_send_target = target;
             let mut dialog = SendMessageDialog::new(&label);
@@ -3781,39 +3781,29 @@ impl HomeView {
     }
 }
 
-/// Render the dialog title suffix for a given live-send target so the
-/// user can tell at a glance which pane the compose dialog will send
-/// to. Agent uses the bare title (historical look); terminal variants
-/// append a short suffix.
-fn dialog_label_for_target(title: &str, target: live_send::LiveSendTarget) -> String {
-    match target {
-        live_send::LiveSendTarget::Agent => title.to_string(),
-        live_send::LiveSendTarget::Terminal => format!("{title} (terminal)"),
-        live_send::LiveSendTarget::ContainerTerminal => format!("{title} (container)"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session::config::{SessionConfig, ToolSessionConfig};
 
     #[test]
-    fn dialog_label_for_target_distinguishes_terminal_panes() {
+    fn format_target_label_distinguishes_terminal_panes() {
         // Users firing 'm' from Terminal view should see the dialog
-        // title call out the target pane so they don't accidentally
-        // send agent prompts into a shell (or vice versa).
-        use live_send::LiveSendTarget;
+        // title (and the live-mode banner) call out the target pane so
+        // they don't accidentally send agent prompts into a shell (or
+        // vice versa). Both the compose dialog and the status-bar
+        // banner route through the same helper so the label can't drift.
+        use live_send::{format_target_label, LiveSendTarget};
         assert_eq!(
-            dialog_label_for_target("my-session", LiveSendTarget::Agent),
+            format_target_label("my-session", LiveSendTarget::Agent),
             "my-session",
         );
         assert_eq!(
-            dialog_label_for_target("my-session", LiveSendTarget::Terminal),
+            format_target_label("my-session", LiveSendTarget::Terminal),
             "my-session (terminal)",
         );
         assert_eq!(
-            dialog_label_for_target("my-session", LiveSendTarget::ContainerTerminal),
+            format_target_label("my-session", LiveSendTarget::ContainerTerminal),
             "my-session (container)",
         );
     }

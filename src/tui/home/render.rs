@@ -1998,16 +1998,10 @@ impl HomeView {
             } else {
                 state.title.as_str()
             };
-            // Surface which pane keystrokes are landing on (Agent stays
-            // bare so the historical look survives unchanged for users
-            // who never enter Terminal/container live mode).
-            let raw_title: String = match state.target {
-                live_send::LiveSendTarget::Agent => base_title.to_string(),
-                live_send::LiveSendTarget::Terminal => format!("{base_title} (terminal)"),
-                live_send::LiveSendTarget::ContainerTerminal => {
-                    format!("{base_title} (container)")
-                }
-            };
+            // Surface which pane keystrokes are landing on; the shared
+            // formatter keeps this label in lockstep with the compose
+            // dialog's title.
+            let raw_title = live_send::format_target_label(base_title, state.target);
             let chip = " \u{25CF} LIVE \u{2192} ";
             // The chord display is built from the user's configured
             // exit-chord list so the hint always shows what actually
