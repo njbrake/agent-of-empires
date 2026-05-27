@@ -6651,8 +6651,9 @@ mod live_send_mode {
         //! Single-line pastes stay on the simple `Literal` + `Named("Tab")`
         //! path so raw shells and bracketed-paste-unaware agents keep
         //! working. Multi-line pastes get wrapped in xterm bracketed-
-        //! paste markers (#1546) so receiving agents see one paste
-        //! instead of one `Enter` per line.
+        //! paste markers (#1546) and dispatched as a single `HexBytes`
+        //! payload so the receiving agent sees one paste instead of one
+        //! `Enter` per line.
 
         use crate::tui::home::input::split_paste_for_live_send;
         use crate::tui::home::live_send::TmuxKey;
@@ -6663,19 +6664,23 @@ mod live_send_mode {
         fn named(name: &str) -> TmuxKey {
             TmuxKey::Named(name.to_string())
         }
-        fn hex(bytes: &[u8]) -> TmuxKey {
-            TmuxKey::HexBytes(bytes.to_vec())
-        }
 
         /// xterm bracketed-paste start: `ESC [ 2 0 0 ~`.
         const BP_START: &[u8] = &[0x1b, b'[', b'2', b'0', b'0', b'~'];
         /// xterm bracketed-paste end: `ESC [ 2 0 1 ~`.
         const BP_END: &[u8] = &[0x1b, b'[', b'2', b'0', b'1', b'~'];
-        /// CR (0x0d) is the xterm convention for line break inside a paste.
-        const CR: &[u8] = &[0x0d];
-        /// TAB (0x09) rides as raw bytes inside a bracketed paste so the
-        /// agent sees a literal tab character in its input buffer.
-        const TAB: &[u8] = &[0x09];
+
+        /// Build the expected `HexBytes` payload for a multi-line
+        /// paste: start marker, then the per-line `body` bytes, then
+        /// end marker. Keeps each test focused on the *shape* of the
+        /// paste content rather than on hand-rolled byte arithmetic.
+        fn wrap(body: &[u8]) -> Vec<TmuxKey> {
+            let mut out = Vec::with_capacity(BP_START.len() + body.len() + BP_END.len());
+            out.extend_from_slice(BP_START);
+            out.extend_from_slice(body);
+            out.extend_from_slice(BP_END);
+            vec![TmuxKey::HexBytes(out)]
+        }
 
         #[test]
         fn printable_paste_stays_one_literal() {
@@ -6693,13 +6698,7 @@ mod live_send_mode {
             // posts each line as its own user message (#1546).
             assert_eq!(
                 split_paste_for_live_send("first\nsecond"),
-                vec![
-                    hex(BP_START),
-                    lit("first"),
-                    hex(CR),
-                    lit("second"),
-                    hex(BP_END),
-                ],
+                wrap(b"first\x0dsecond"),
             );
         }
 
@@ -6711,34 +6710,25 @@ mod live_send_mode {
             // review before sending.
             assert_eq!(
                 split_paste_for_live_send("only line\n"),
-                vec![hex(BP_START), lit("only line"), hex(CR), hex(BP_END)],
+                wrap(b"only line\x0d"),
             );
         }
 
         #[test]
         fn leading_newline_stays_inside_bracketed_paste() {
-            assert_eq!(
-                split_paste_for_live_send("\nbody"),
-                vec![hex(BP_START), hex(CR), lit("body"), hex(BP_END)],
-            );
+            assert_eq!(split_paste_for_live_send("\nbody"), wrap(b"\x0dbody"));
         }
 
         #[test]
         fn crlf_coalesces_to_single_cr() {
             // Windows-style line endings collapse to one CR inside the
             // bracketed paste so the agent doesn't see a double newline.
-            assert_eq!(
-                split_paste_for_live_send("a\r\nb"),
-                vec![hex(BP_START), lit("a"), hex(CR), lit("b"), hex(BP_END)],
-            );
+            assert_eq!(split_paste_for_live_send("a\r\nb"), wrap(b"a\x0db"));
         }
 
         #[test]
         fn bare_cr_becomes_cr_inside_bracketed_paste() {
-            assert_eq!(
-                split_paste_for_live_send("a\rb"),
-                vec![hex(BP_START), lit("a"), hex(CR), lit("b"), hex(BP_END)],
-            );
+            assert_eq!(split_paste_for_live_send("a\rb"), wrap(b"a\x0db"));
         }
 
         #[test]
@@ -6755,18 +6745,7 @@ mod live_send_mode {
             // Inside a bracketed paste, tab is a literal character of
             // the paste content, not a key event, so we send it as a
             // raw 0x09 byte alongside the rest of the payload.
-            assert_eq!(
-                split_paste_for_live_send("a\tb\nc"),
-                vec![
-                    hex(BP_START),
-                    lit("a"),
-                    hex(TAB),
-                    lit("b"),
-                    hex(CR),
-                    lit("c"),
-                    hex(BP_END),
-                ],
-            );
+            assert_eq!(split_paste_for_live_send("a\tb\nc"), wrap(b"a\x09b\x0dc"),);
         }
 
         #[test]
@@ -6784,11 +6763,9 @@ mod live_send_mode {
             // Same drop policy applies inside the bracketed paste: an
             // embedded ESC could prematurely close the paste sequence
             // on the agent's side, so we strip it rather than forward.
-            // Adjacent printables stay in one literal run because a
-            // dropped control byte never flushes the running buffer.
             assert_eq!(
                 split_paste_for_live_send("a\x07b\x1bc\nd"),
-                vec![hex(BP_START), lit("abc"), hex(CR), lit("d"), hex(BP_END)],
+                wrap(b"abc\x0dd"),
             );
         }
 
@@ -6800,15 +6777,33 @@ mod live_send_mode {
             // agent sees one paste instead of three Enter keypresses.
             assert_eq!(
                 split_paste_for_live_send("alpha beta\nsecond line\nthird"),
-                vec![
-                    hex(BP_START),
-                    lit("alpha beta"),
-                    hex(CR),
-                    lit("second line"),
-                    hex(CR),
-                    lit("third"),
-                    hex(BP_END),
-                ],
+                wrap(b"alpha beta\x0dsecond line\x0dthird"),
+            );
+        }
+
+        #[test]
+        fn multiline_paste_dispatches_as_one_hex_payload() {
+            // Single-fork dispatch: the entire paste (markers, content,
+            // CRs) is one `HexBytes` so the worker fires exactly one
+            // `tmux send-keys -H` subprocess. Verifies the length-of-1
+            // invariant the worker relies on for paste latency.
+            let out = split_paste_for_live_send("a\nb\nc\nd");
+            assert_eq!(out.len(), 1, "multiline paste must be one TmuxKey");
+            match &out[0] {
+                TmuxKey::HexBytes(_) => {}
+                other => panic!("expected HexBytes, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn multiline_paste_with_utf8_preserves_bytes() {
+            // Non-ASCII chars (emoji, accented letters) ride as their
+            // UTF-8 byte sequences so the agent receives the same text
+            // the user copied. Regression guard for any future "ASCII
+            // only" filter.
+            assert_eq!(
+                split_paste_for_live_send("café\n🚀"),
+                wrap("café\x0d🚀".as_bytes()),
             );
         }
 

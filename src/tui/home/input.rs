@@ -54,12 +54,13 @@ const BRACKETED_PASTE_END: &[u8] = &[0x1b, b'[', b'2', b'0', b'1', b'~'];
 /// payload as one paste rather than as N independent Enter keypresses.
 /// Without the wrapping, agents that submit on Enter (Claude Code,
 /// Codex, OpenCode, ...) post one user message per pasted line, which
-/// is the bug behind #1546. Inside the markers, interior newlines and
-/// tabs ride as raw bytes (CR=0x0d, TAB=0x09) via `send-keys -H`, and
-/// printable runs ride as `Literal` via `send-keys -l`. `\r\n` pairs
-/// coalesce to a single CR so Windows-line-ending pastes don't double
-/// up. Other control bytes (BEL, ESC, ...) are dropped rather than
-/// risking that an embedded escape corrupts the agent's input.
+/// is the bug behind #1546. The whole payload (markers, printable
+/// runs, interior CRs, and tabs) goes through as a single `HexBytes`,
+/// so the worker fires one `tmux send-keys -H` subprocess per paste
+/// instead of one per chunk. `\r\n` pairs coalesce to a single CR so
+/// Windows-line-ending pastes don't double up; other control bytes
+/// (BEL, ESC, ...) are dropped rather than risk that an embedded
+/// escape closes the bracketed-paste sequence on the agent's side.
 pub(super) fn split_paste_for_live_send(text: &str) -> Vec<live_send::TmuxKey> {
     let has_newline = text.contains('\n') || text.contains('\r');
     if !has_newline {
@@ -93,45 +94,40 @@ fn split_inline_paste(text: &str) -> Vec<live_send::TmuxKey> {
 }
 
 fn split_bracketed_paste(text: &str) -> Vec<live_send::TmuxKey> {
-    let mut out = Vec::new();
-    out.push(live_send::TmuxKey::HexBytes(BRACKETED_PASTE_START.to_vec()));
+    // Build one contiguous byte payload: start marker, then the paste
+    // content with printables as their UTF-8 bytes / interior newlines
+    // as CR (0x0d) / tabs as 0x09, then the end marker. Sending it as
+    // one `HexBytes` means the worker fires exactly one `tmux send-keys
+    // -H` subprocess per paste rather than one per chunk.
+    let mut bytes = Vec::with_capacity(text.len() + BRACKETED_PASTE_START.len() * 2);
+    bytes.extend_from_slice(BRACKETED_PASTE_START);
 
-    let mut buf = String::new();
-    let flush = |out: &mut Vec<live_send::TmuxKey>, buf: &mut String| {
-        if !buf.is_empty() {
-            out.push(live_send::TmuxKey::Literal(std::mem::take(buf)));
-        }
-    };
     let mut chars = text.chars().peekable();
+    let mut utf8_buf = [0u8; 4];
     while let Some(ch) = chars.next() {
         match ch {
-            '\n' => {
-                flush(&mut out, &mut buf);
-                out.push(live_send::TmuxKey::HexBytes(vec![0x0d]));
-            }
+            '\n' => bytes.push(0x0d),
             '\r' => {
                 if chars.peek() == Some(&'\n') {
                     chars.next();
                 }
-                flush(&mut out, &mut buf);
-                out.push(live_send::TmuxKey::HexBytes(vec![0x0d]));
+                bytes.push(0x0d);
             }
-            '\t' => {
-                flush(&mut out, &mut buf);
-                out.push(live_send::TmuxKey::HexBytes(vec![0x09]));
-            }
+            '\t' => bytes.push(0x09),
             c if (c as u32) < 0x20 || c == '\x7f' => {
                 // Embedded ESC / BEL / etc. has no safe encoding
                 // inside the paste payload; drop rather than risk a
                 // bogus terminal escape closing the paste early.
             }
-            c => buf.push(c),
+            c => {
+                let s = c.encode_utf8(&mut utf8_buf);
+                bytes.extend_from_slice(s.as_bytes());
+            }
         }
     }
-    flush(&mut out, &mut buf);
 
-    out.push(live_send::TmuxKey::HexBytes(BRACKETED_PASTE_END.to_vec()));
-    out
+    bytes.extend_from_slice(BRACKETED_PASTE_END);
+    vec![live_send::TmuxKey::HexBytes(bytes)]
 }
 
 fn resolve_hook_install_agent(

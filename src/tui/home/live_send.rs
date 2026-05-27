@@ -1007,10 +1007,12 @@ mod tests {
     }
 
     #[test]
-    fn coalesce_bracketed_paste_shape() {
-        // End-to-end shape of a two-line bracketed paste: start marker,
-        // first literal, CR, second literal, end marker. Verifies the
-        // ordering the live-send paste path relies on.
+    fn coalesce_preserves_order_when_hex_bytes_and_literals_interleave() {
+        // A future caller could send `HexBytes` and `Literal` payloads
+        // back to back (e.g. a typed-then-pasted burst the worker
+        // drained in one tick). Coalesce must keep wire ordering
+        // intact: each `Literal` flushes the run, and only adjacent
+        // `HexBytes` pairs merge.
         let start = vec![0x1b, b'[', b'2', b'0', b'0', b'~'];
         let end = vec![0x1b, b'[', b'2', b'0', b'1', b'~'];
         let out = coalesce(vec![
