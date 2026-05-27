@@ -14,7 +14,7 @@ Run the install script:
 
 ```bash
 curl -fsSL \
-  https://raw.githubusercontent.com/njbrake/agent-of-empires/main/scripts/install.sh \
+  https://raw.githubusercontent.com/agent-of-empires/agent-of-empires/main/scripts/install.sh \
   | bash
 ```
 
@@ -27,7 +27,7 @@ brew install aoe
 ### Build from Source
 
 ```bash
-git clone https://github.com/njbrake/agent-of-empires
+git clone https://github.com/agent-of-empires/agent-of-empires
 cd agent-of-empires
 cargo build --release
 ```

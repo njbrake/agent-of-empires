@@ -7,7 +7,7 @@ metadata:
       bins:
         - aoe
         - tmux
-    homepage: https://github.com/njbrake/agent-of-empires
+    homepage: https://github.com/agent-of-empires/agent-of-empires
 ---
 
 # Agent of Empires (aoe) Skill

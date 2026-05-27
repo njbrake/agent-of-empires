@@ -41,8 +41,6 @@ updates:
       include: "scope"
     cooldown:
       default-days: 7
-      semver-minor-days: 14
-      semver-major-days: 28
 
   # github-actions
   - package-ecosystem: "github-actions"
@@ -61,8 +59,6 @@ updates:
       include: "scope"
     cooldown:
       default-days: 7
-      semver-minor-days: 14
-      semver-major-days: 28
     groups:
       actions-minor-patch:
         patterns: ["*"]

@@ -476,7 +476,7 @@ gone until the next `session/load` failure. See #1004.
 The bundled `aoe-agent` doesn't yet support context restoration; its
 transcript still replays from disk, but the model starts fresh on each
 spawn. Tracked in
-[#1005](https://github.com/njbrake/agent-of-empires/issues/1005).
+[#1005](https://github.com/agent-of-empires/agent-of-empires/issues/1005).
 
 ## Permission modes and YOLO
 
