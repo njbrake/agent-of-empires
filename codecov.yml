@@ -12,6 +12,7 @@
 # merges will run well below this, so the report-only philosophy lives
 # in the Codecov "informational" flag at the project level until the
 # follow-ups (#1217-#1224) lift the baseline.
+# Touched 2026-05-27 to force a YAML re-resolve after the org transfer to agent-of-empires.
 
 comment:
   after_n_builds: 1
