@@ -33,7 +33,7 @@ import type {
   SessionStatus,
   Workspace,
 } from "../lib/types";
-import { MULTI_REPO_GROUP_ID } from "../hooks/useRepoGroups";
+import { MULTI_REPO_GROUP_ID, SCRATCH_GROUP_ID } from "../hooks/useRepoGroups";
 import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 import {
   REPO_COLOR_OPTIONS,
@@ -1294,7 +1294,8 @@ export function WorkspaceSidebar({
                     onClick={() => !q && onToggleRepo(group.id)}
                     onUpdateAppearance={onUpdateRepoAppearance}
                     onNewSession={() =>
-                      group.id === MULTI_REPO_GROUP_ID
+                      group.id === MULTI_REPO_GROUP_ID ||
+                      group.id === SCRATCH_GROUP_ID
                         ? onNew()
                         : onCreateSession(group.repoPath)
                     }

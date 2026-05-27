@@ -342,6 +342,16 @@
       ]
     },
     {
+      "id": "sidebar.scratch-group",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/wizard-scratch-grouping.spec.ts"],
+      "components": [
+        "web/src/hooks/useRepoGroups.ts",
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
       "id": "directory-browser",
       "kind": "live-playwright",
       "risk": "medium",

@@ -62,6 +62,16 @@ wizard with scratch already enabled and jumped to the Review step.
 A follow-up `Cmd+Enter` / `Ctrl+Enter` launches the session, so two
 keystrokes is enough to spin up a fresh scratch session.
 
+**Sidebar grouping.** Every scratch session has its own
+`scratch/<id>/` directory on disk, so the dashboard sidebar would
+otherwise render each one as its own one-session group. Scratch
+sessions are bucketed into a single synthetic **Scratch** group at
+the bottom of the sidebar instead, mirroring how multi-repo
+workspaces are collapsed into one **Multi-repo** group. Clicking the
+"+" on the Scratch group header opens the wizard with no path
+prefilled, so you can flip on **Skip project folder** to add another
+one.
+
 ### TUI new-session dialog
 
 Press `Ctrl+T` from any field in the new-session dialog. The Path

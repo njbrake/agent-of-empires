@@ -15,6 +15,7 @@ import {
 
 const COLLAPSED_KEY_PREFIX = "aoe-repo-collapsed-";
 export const MULTI_REPO_GROUP_ID = "__multi_repo__";
+export const SCRATCH_GROUP_ID = "__scratch__";
 
 function loadCollapsed(id: string): boolean {
   return safeGetItem(`${COLLAPSED_KEY_PREFIX}${id}`) === "1";
@@ -22,6 +23,16 @@ function loadCollapsed(id: string): boolean {
 
 function isMultiRepoWorkspace(ws: Workspace): boolean {
   return ws.sessions.some((s) => (s.workspace_repos?.length ?? 0) > 1);
+}
+
+// Scratch sessions live under `<app_dir>/scratch/<id>/`, so bucketing
+// by projectPath gives each its own one-session group. Collapse them
+// into a synthetic "Scratch" group instead, mirroring the multi-repo
+// pattern. Detection keys off `SessionResponse.scratch` (which the
+// server already exposes for the recents filter), not the path, so a
+// `--keep-scratch` rename or relocation does not break grouping.
+function isScratchWorkspace(ws: Workspace): boolean {
+  return ws.sessions.some((s) => s.scratch);
 }
 
 // Workspaces and their groups both sort by their position in
@@ -59,8 +70,18 @@ export function useRepoGroups(
 
     const byRepo = new Map<string, Workspace[]>();
     const multiRepo: Workspace[] = [];
+    const scratch: Workspace[] = [];
 
     for (const ws of workspaces) {
+      // Check scratch before multi-repo: a scratch session is
+      // single-repo by construction (no worktrees, no extra repos), so
+      // the order is defensive rather than load-bearing, but it makes
+      // the precedence explicit if someone later widens scratch to
+      // allow extras.
+      if (isScratchWorkspace(ws)) {
+        scratch.push(ws);
+        continue;
+      }
       if (isMultiRepoWorkspace(ws)) {
         multiRepo.push(ws);
         continue;
@@ -115,7 +136,34 @@ export function useRepoGroups(
       });
     }
 
+    if (scratch.length > 0) {
+      const sorted = sortWorkspaces(scratch);
+      const hasActive = sorted.some((ws) => ws.status === "active");
+      const collapsed =
+        collapsedMap[SCRATCH_GROUP_ID] ?? loadCollapsed(SCRATCH_GROUP_ID);
+      const appearance = appearanceMap[SCRATCH_GROUP_ID];
+      const defaultDisplayName = "Scratch";
+      repoGroups.push({
+        id: SCRATCH_GROUP_ID,
+        repoPath: SCRATCH_GROUP_ID,
+        displayName: appearance?.alias ?? defaultDisplayName,
+        defaultDisplayName,
+        alias: appearance?.alias ?? null,
+        color: appearance?.color ?? null,
+        remoteOwner: null,
+        workspaces: sorted,
+        status: hasActive ? "active" : "idle",
+        collapsed,
+      });
+    }
+
     repoGroups.sort((a, b) => {
+      // Synthetic groups pin to the bottom in a stable order:
+      // real repos → multi-repo → scratch. Scratch is "most ad hoc"
+      // so it sits below multi-repo workspaces (which still
+      // represent real work).
+      if (a.id === SCRATCH_GROUP_ID) return 1;
+      if (b.id === SCRATCH_GROUP_ID) return -1;
       if (a.id === MULTI_REPO_GROUP_ID) return 1;
       if (b.id === MULTI_REPO_GROUP_ID) return -1;
       if (sortMode === "lastActivity") {

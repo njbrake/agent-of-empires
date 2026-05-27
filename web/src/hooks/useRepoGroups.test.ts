@@ -18,7 +18,11 @@
 import { renderHook, act } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { useRepoGroups, MULTI_REPO_GROUP_ID } from "./useRepoGroups";
+import {
+  useRepoGroups,
+  MULTI_REPO_GROUP_ID,
+  SCRATCH_GROUP_ID,
+} from "./useRepoGroups";
 import type {
   SessionResponse,
   Workspace,
@@ -56,6 +60,7 @@ function session(over: Partial<SessionResponse> = {}): SessionResponse {
     notify_on_error: null,
     claude_fullscreen: false,
     workspace_repos: [],
+    scratch: false,
     ...over,
   };
 }
@@ -126,6 +131,43 @@ describe("useRepoGroups grouping", () => {
     const w = workspace("a1", "/home/user/code/repo-x", [session()]);
     const { result } = renderHook(() => useRepoGroups([w], ["a1"]));
     expect(result.current.groups[0].displayName).toBe("repo-x");
+  });
+
+  it("buckets scratch workspaces into a synthetic Scratch group pinned below multi-repo", () => {
+    // Three scratch sessions land in three different scratch dirs
+    // (`<app_dir>/scratch/<id>`); without grouping each would render
+    // as its own one-session group. Assert they collapse into a
+    // single Scratch bucket, and that ordering is: real → multi-repo
+    // → scratch.
+    const wReal = workspace("real", "/repo-a", [session({ id: "s-real" })]);
+    const wMulti = workspace("multi", "/repo-a", [
+      session({
+        id: "s-multi",
+        workspace_repos: multiRepos,
+      }),
+    ]);
+    const wScratch1 = workspace("sc1", "/home/u/.agent-of-empires/scratch/aaa", [
+      session({ id: "s-sc1", scratch: true }),
+    ]);
+    const wScratch2 = workspace("sc2", "/home/u/.agent-of-empires/scratch/bbb", [
+      session({ id: "s-sc2", scratch: true }),
+    ]);
+
+    const { result } = renderHook(() =>
+      useRepoGroups(
+        [wReal, wMulti, wScratch1, wScratch2],
+        ["real", "multi", "sc1", "sc2"],
+      ),
+    );
+
+    const groups = result.current.groups;
+    expect(groups.map((g) => g.id)).toEqual([
+      "/repo-a",
+      MULTI_REPO_GROUP_ID,
+      SCRATCH_GROUP_ID,
+    ]);
+    expect(groups[2].displayName).toBe("Scratch");
+    expect(groups[2].workspaces.map((w) => w.id)).toEqual(["sc1", "sc2"]);
   });
 
   it("marks a group active when any workspace is active", () => {
@@ -237,6 +279,41 @@ describe("useRepoGroups sortMode = lastActivity (#1418)", () => {
     expect(result.current.groups.map((g) => g.id)).toEqual([
       "/repo-a",
       "/repo-b",
+    ]);
+  });
+
+  it("keeps the scratch group pinned at the very bottom (below multi-repo) regardless of recency", () => {
+    const wReal = workspace("real", "/repo-a", [
+      session({ id: "s-real", created_at: "2025-01-01T00:00:00Z" }),
+    ]);
+    const wMulti = workspace("multi", "/repo-a", [
+      session({
+        id: "s-multi",
+        created_at: "2025-01-01T00:00:00Z",
+        workspace_repos: multiRepos,
+      }),
+    ]);
+    const wScratch = workspace("sc", "/home/u/.agent-of-empires/scratch/aaa", [
+      session({
+        id: "s-sc",
+        created_at: "2025-01-01T00:00:00Z",
+        last_accessed_at: "2025-12-31T00:00:00Z",
+        scratch: true,
+      }),
+    ]);
+
+    const { result } = renderHook(() =>
+      useRepoGroups(
+        [wScratch, wMulti, wReal],
+        ["sc", "multi", "real"],
+        "lastActivity",
+      ),
+    );
+
+    expect(result.current.groups.map((g) => g.id)).toEqual([
+      "/repo-a",
+      MULTI_REPO_GROUP_ID,
+      SCRATCH_GROUP_ID,
     ]);
   });
 
