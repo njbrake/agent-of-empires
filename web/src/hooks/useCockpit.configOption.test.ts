@@ -273,16 +273,43 @@ describe("useCockpit / setConfigOption", () => {
     expect(result.current.state.lastError).toMatch(/Network error setting effort/);
   });
 
-  it("dismissConfigOptionSwitchFailed clears the notice", async () => {
+  it("dismissConfigOptionSwitchFailed clears a populated notice", async () => {
     const { result } = renderHook(() => useCockpit("sess-cfg-5"), { wrapper });
     await flushAsync();
-    // Seed a notice via the reducer dispatch path.
+
+    // Seed the notice through the WS broadcast path: drive a
+    // ConfigOptionSwitchFailed frame into the hook's reducer so the
+    // dismiss callback has something real to clear. The hook's
+    // onmessage handler expects the raw CockpitFrame shape (session_id
+    // + seq + event); no kind/frame wrapper.
+    const ws = sockets[0]!;
     await act(async () => {
-      // Inject a synthetic frame so applyEvent records the failure
-      // notice and the next call can dismiss it.
+      ws.readyState = FakeWebSocket.OPEN;
+      ws.onopen?.(new Event("open"));
+      ws.onmessage?.(
+        new MessageEvent("message", {
+          data: JSON.stringify({
+            session_id: "sess-cfg-5",
+            seq: 1,
+            event: {
+              ConfigOptionSwitchFailed: {
+                config_id: "model",
+                value: "claude-sonnet-4-6",
+                reason: "rate limited",
+              },
+            },
+          }),
+        }),
+      );
+    });
+    expect(result.current.state.configOptionSwitchFailed).not.toBeNull();
+    expect(result.current.state.configOptionSwitchFailed?.reason).toBe(
+      "rate limited",
+    );
+
+    await act(async () => {
       result.current.dismissConfigOptionSwitchFailed();
     });
-    // Notice was already null; dismiss leaves it null without crashing.
     expect(result.current.state.configOptionSwitchFailed).toBeNull();
   });
 
