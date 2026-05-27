@@ -1,12 +1,12 @@
-// User story: deleting a throwaway session removes its temp directory
-// from disk so users do not accumulate dead `aoe-throwaway-*` folders.
+// User story: deleting a scratch session removes its scratch directory
+// from disk so users do not accumulate dead `scratch/<id>/` folders.
 // Closes #1324.
 
 import { existsSync } from "node:fs";
 import { test as base, expect } from "@playwright/test";
 import { listSessions, spawnAoeServe } from "../helpers/aoeServe";
 
-base("deleting a throwaway session removes its temp dir", async ({ page }, testInfo) => {
+base("deleting a scratch session removes its scratch dir", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
     authMode: "none",
     workerIndex: testInfo.workerIndex,
@@ -63,7 +63,7 @@ base("deleting a throwaway session removes its temp dir", async ({ page }, testI
     const deleteRes = await deletePromise;
     expect(deleteRes.ok()).toBe(true);
 
-    // The session row leaves the sidebar AND the throwaway dir is gone.
+    // The session row leaves the sidebar AND the scratch dir is gone.
     await expect
       .poll(async () => (await listSessions(serve.baseUrl)).length, {
         timeout: 10_000,

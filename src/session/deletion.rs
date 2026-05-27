@@ -311,27 +311,27 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         }
     }
 
-    // Throwaway directory cleanup. Runs unconditionally for throwaway
-    // sessions regardless of `request.delete_worktree`, since the temp
-    // directory is the entire reason the session has any on-disk state.
-    // Guarded by `is_throwaway_path` to refuse to follow a tampered or
+    // Scratch directory cleanup. Runs unconditionally for scratch sessions
+    // regardless of `request.delete_worktree`, since the scratch directory
+    // is the entire reason the session has any on-disk state.
+    // Guarded by `is_scratch_path` to refuse to follow a tampered or
     // corrupted `project_path` (e.g. JSON edited by hand to claim
-    // `throwaway: true` while pointing at `/etc`).
-    if request.instance.throwaway {
+    // `scratch: true` while pointing at `/etc`).
+    if request.instance.scratch {
         let path = PathBuf::from(&request.instance.project_path);
-        if super::throwaway::is_throwaway_path(&path) {
-            tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "throwaway_remove", "perform_deletion: stage");
+        if super::scratch::is_scratch_path(&path) {
+            tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "scratch_remove", "perform_deletion: stage");
             match std::fs::remove_dir_all(&path) {
-                Ok(()) => messages.push("Throwaway directory removed".to_string()),
+                Ok(()) => messages.push("Scratch directory removed".to_string()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     tracing::debug!(target: "session.delete",
                         session_id = %request.session_id,
                         path = %path.display(),
-                        "perform_deletion: throwaway dir already gone, treating as success"
+                        "perform_deletion: scratch dir already gone, treating as success"
                     );
                 }
                 Err(e) => {
-                    errors.push(format!("Throwaway directory: {}", e));
+                    errors.push(format!("Scratch directory: {}", e));
                 }
             }
         } else {
@@ -339,7 +339,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                 target: "session.delete",
                 session_id = %request.session_id,
                 path = %path.display(),
-                "throwaway flag set but project_path failed the guard; refusing to remove"
+                "scratch flag set but project_path failed the guard; refusing to remove"
             );
         }
     }
@@ -1090,22 +1090,33 @@ mod tests {
         }
     }
 
-    mod throwaway_cleanup {
+    mod scratch_cleanup {
         use super::*;
+        use serial_test::serial;
         use std::fs;
 
-        fn throwaway_instance() -> (Instance, PathBuf) {
+        fn isolate_app_dir() -> tempfile::TempDir {
+            let tmp = tempfile::tempdir().expect("create temp home for scratch deletion tests");
+            std::env::set_var("HOME", tmp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+            tmp
+        }
+
+        fn scratch_instance() -> (Instance, PathBuf) {
             let id = format!("delete-test-{}", uuid::Uuid::new_v4());
-            let dir = crate::session::throwaway::provision_throwaway_dir(&id)
-                .expect("provision throwaway dir for test");
-            let mut instance = Instance::new("Throwaway", dir.to_str().unwrap());
-            instance.throwaway = true;
+            let dir = crate::session::scratch::provision_scratch_dir(&id)
+                .expect("provision scratch dir for test");
+            let mut instance = Instance::new("Scratch", dir.to_str().unwrap());
+            instance.scratch = true;
             (instance, dir)
         }
 
         #[test]
-        fn throwaway_session_removes_temp_dir() {
-            let (instance, dir) = throwaway_instance();
+        #[serial]
+        fn scratch_session_removes_dir() {
+            let _tmp = isolate_app_dir();
+            let (instance, dir) = scratch_instance();
             let request = DeletionRequest {
                 session_id: instance.id.clone(),
                 instance,
@@ -1120,24 +1131,25 @@ mod tests {
             assert!(result.success, "deletion errors: {:?}", result.errors);
             assert!(
                 !dir.exists(),
-                "throwaway directory must be gone after perform_deletion"
+                "scratch directory must be gone after perform_deletion"
             );
             assert!(
                 result
                     .messages
                     .iter()
-                    .any(|m| m.contains("Throwaway directory removed")),
-                "expected throwaway-removed message, got {:?}",
+                    .any(|m| m.contains("Scratch directory removed")),
+                "expected scratch-removed message, got {:?}",
                 result.messages
             );
         }
 
         #[test]
-        fn throwaway_session_with_missing_dir_still_succeeds() {
-            let (instance, dir) = throwaway_instance();
-            // Simulate the "directory already gone" race (OS-level temp
-            // cleaner ran, user deleted manually, etc.). Deletion must
-            // not fail.
+        #[serial]
+        fn scratch_session_with_missing_dir_still_succeeds() {
+            let _tmp = isolate_app_dir();
+            let (instance, dir) = scratch_instance();
+            // Simulate the "directory already gone" race (user deleted
+            // manually, FS hiccup, etc.). Deletion must not fail.
             fs::remove_dir_all(&dir).unwrap();
 
             let request = DeletionRequest {
@@ -1152,24 +1164,25 @@ mod tests {
             let result = perform_deletion(&request);
             assert!(
                 result.success,
-                "missing throwaway dir must not fail deletion: {:?}",
+                "missing scratch dir must not fail deletion: {:?}",
                 result.errors
             );
         }
 
         #[test]
+        #[serial]
         fn tampered_project_path_does_not_get_removed() {
             // Defense against an edited or corrupted session JSON that
-            // sets `throwaway: true` while pointing project_path at
-            // something the guard would reject. The directory must
-            // survive deletion.
+            // sets `scratch: true` while pointing project_path at something
+            // the guard would reject. The directory must survive deletion.
+            let _tmp = isolate_app_dir();
             let bystander =
                 std::env::temp_dir().join(format!("important-data-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&bystander).expect("create bystander");
             fs::write(bystander.join("file.txt"), b"keep me").unwrap();
 
             let mut instance = Instance::new("Tampered", bystander.to_str().unwrap());
-            instance.throwaway = true;
+            instance.scratch = true;
 
             let request = DeletionRequest {
                 session_id: instance.id.clone(),
@@ -1184,7 +1197,7 @@ mod tests {
 
             assert!(
                 bystander.exists(),
-                "guard must refuse to remove a temp-dir path that lacks the aoe-throwaway- prefix"
+                "guard must refuse to remove a path outside the scratch root"
             );
             assert!(
                 bystander.join("file.txt").exists(),
@@ -1194,15 +1207,18 @@ mod tests {
         }
 
         #[test]
-        fn non_throwaway_session_under_temp_dir_is_untouched() {
-            // A regular session whose project_path happens to be under
-            // temp_dir (e.g. a test fixture) must not be removed.
-            let dir =
-                std::env::temp_dir().join(format!("aoe-non-throwaway-{}", uuid::Uuid::new_v4()));
-            fs::create_dir(&dir).expect("create non-throwaway test dir");
+        #[serial]
+        fn non_scratch_session_under_app_dir_is_untouched() {
+            // A regular session whose project_path happens to live under
+            // the app dir (e.g. a test fixture) must not be removed.
+            let _tmp = isolate_app_dir();
+            let dir = crate::session::get_app_dir()
+                .unwrap()
+                .join(format!("non-scratch-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&dir).expect("create non-scratch test dir");
 
             let instance = Instance::new("Regular", dir.to_str().unwrap());
-            // throwaway is false by default.
+            // scratch is false by default.
 
             let request = DeletionRequest {
                 session_id: instance.id.clone(),
@@ -1217,7 +1233,7 @@ mod tests {
 
             assert!(
                 dir.exists(),
-                "non-throwaway session must never trip the throwaway cleanup branch"
+                "non-scratch session must never trip the scratch cleanup branch"
             );
             let _ = fs::remove_dir_all(&dir);
         }

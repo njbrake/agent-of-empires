@@ -29,12 +29,13 @@ export interface SessionResponse {
    *  diff header. See #970. */
   base_branch_override?: string | null;
   is_sandboxed: boolean;
-  /** True when the session was created in throwaway mode (`aoe add
-   *  --throwaway` or the wizard toggle). The `project_path` points
-   *  at an auto-provisioned `aoe-throwaway-*` directory under the OS
-   *  temp dir, and the deletion path removes it. The wizard's
-   *  Recent-projects list filters these out. */
-  throwaway: boolean;
+  /** True when the session was created in scratch mode (`aoe add
+   *  --scratch` or the wizard toggle). The `project_path` points
+   *  at an auto-provisioned directory under `<app_dir>/scratch/<id>/`,
+   *  and the deletion path removes it (unless the user opts in to
+   *  keeping the directory). The wizard's Recent-projects list filters
+   *  scratch sessions out. */
+  scratch: boolean;
   /** True when the session is marked as a user favorite. Mirrors
    *  `Instance::is_favorited()` server-side. The sidebar pins favorited
    *  rows and prepends a `*` marker. Toggled via the TUI `f`/`F` keybind
@@ -315,10 +316,11 @@ export interface CreateSessionRequest {
    *  false → tmux passthrough (legacy). Server defaults to true on
    *  web-created sessions; the wizard may override. */
   cockpit_mode?: boolean;
-  /** Throwaway mode: server provisions a fresh temp directory and
-   *  ignores `path` (clients send `""`). Mutually exclusive with
-   *  `worktree_branch`; the server returns 400 on the combination. */
-  throwaway?: boolean;
+  /** Scratch mode: server provisions a fresh directory under
+   *  `<app_dir>/scratch/<id>/` and ignores `path` (clients send `""`).
+   *  Mutually exclusive with `worktree_branch` and `extra_repo_paths`;
+   *  the server returns 400 on either combination. */
+  scratch?: boolean;
 }
 
 /** Live cockpit worker lifecycle, mirrored from

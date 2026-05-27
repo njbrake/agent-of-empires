@@ -40,13 +40,13 @@ export interface WizardData {
   commandOverride: string;
   /** Tracks whether the user has manually edited fields after a profile selection */
   profileDirty: boolean;
-  /** Throwaway-session mode. When true, the wizard skips the project-path
+  /** Scratch-session mode. When true, the wizard skips the project-path
    *  picker, hides the worktree controls, and submits `path: ""` so the
-   *  server provisions a fresh temp directory. The reducer enforces
-   *  mutual exclusion bidirectionally: enabling `throwaway` clears
-   *  `path`/`useWorktree`/`extraRepoPaths`; setting any of those
-   *  back to a non-empty value clears `throwaway`. */
-  throwaway: boolean;
+   *  server provisions a fresh directory under `<app_dir>/scratch/<id>/`.
+   *  The reducer enforces mutual exclusion bidirectionally: enabling
+   *  `scratch` clears `path`/`useWorktree`/`extraRepoPaths`; setting any
+   *  of those back to a non-empty value clears `scratch`. */
+  scratch: boolean;
   [key: string]: unknown;
 }
 
@@ -93,7 +93,7 @@ export const initialData: WizardData = {
   extraRepoPaths: [],
   advancedEnabled: false, profileDirty: false,
   customInstruction: "", extraArgs: "", commandOverride: "",
-  throwaway: false,
+  scratch: false,
 };
 
 export function reducer(state: WizardState, action: Action): WizardState {
@@ -111,12 +111,11 @@ export function reducer(state: WizardState, action: Action): WizardState {
         newData.worktreeBranch = override.worktreeBranch;
         newData.worktreeBranchDirty = override.worktreeBranchDirty;
       }
-      // Throwaway mutual exclusion. Enabling throwaway clears the
-      // path-source fields so a stale "Recent" selection cannot leak
-      // into the submit payload; conversely, setting a real path or
-      // extra repos turns throwaway off so the wizard can never claim
-      // both.
-      if (action.field === "throwaway" && action.value === true) {
+      // Scratch mutual exclusion. Enabling scratch clears the path-source
+      // fields so a stale "Recent" selection cannot leak into the submit
+      // payload; conversely, setting a real path or extra repos turns
+      // scratch off so the wizard can never claim both.
+      if (action.field === "scratch" && action.value === true) {
         newData.path = "";
         newData.extraRepoPaths = [];
         newData.useWorktree = false;
@@ -125,7 +124,7 @@ export function reducer(state: WizardState, action: Action): WizardState {
         (action.field === "path" && typeof action.value === "string" && action.value.length > 0) ||
         (action.field === "extraRepoPaths" && Array.isArray(action.value) && action.value.length > 0)
       ) {
-        newData.throwaway = false;
+        newData.scratch = false;
       }
       // Mark dirty whenever the user manually edits an agent-step
       // field. Guarded against `state.data.profile` previously, but the

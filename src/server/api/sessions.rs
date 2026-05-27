@@ -46,11 +46,11 @@ pub struct SessionResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_branch_override: Option<String>,
     pub is_sandboxed: bool,
-    /// True when the session was created with `--throwaway`; the
-    /// `project_path` points at an auto-provisioned temp directory that
-    /// the deletion path removes. The web wizard filters these out of
-    /// the Recent-projects list.
-    pub throwaway: bool,
+    /// True when the session was created with `--scratch`; the
+    /// `project_path` points at an auto-provisioned directory under
+    /// `<app_dir>/scratch/<id>/` that the deletion path removes. The web
+    /// wizard filters these out of the Recent-projects list.
+    pub scratch: bool,
     /// True when the session is marked as a user favorite. Mirrors
     /// `Instance::is_favorited()`; surfaced so the web sidebar can pin
     /// favorited rows and render the `*` marker without re-implementing
@@ -196,7 +196,7 @@ impl SessionResponse {
                 .and_then(|w| w.base_branch.clone()),
             base_branch_override: inst.base_branch_override.clone(),
             is_sandboxed: inst.is_sandboxed(),
-            throwaway: inst.throwaway,
+            scratch: inst.scratch,
             favorited: inst.is_favorited(),
             has_managed_worktree: inst
                 .worktree_info
@@ -1119,11 +1119,12 @@ pub struct CreateSessionBody {
     #[cfg(feature = "serve")]
     #[serde(default)]
     pub cockpit_model: Option<String>,
-    /// Throwaway session: server provisions a fresh directory under
-    /// `std::env::temp_dir()` and ignores `path`. Mutually exclusive with
-    /// `worktree_branch`; the handler returns 400 on the combination.
+    /// Scratch session: server provisions a fresh directory under
+    /// `<app_dir>/scratch/<id>/` and ignores `path`. Mutually exclusive with
+    /// `worktree_branch` and `extra_repo_paths`; the handler returns 400
+    /// on either combination.
     #[serde(default)]
-    pub throwaway: bool,
+    pub scratch: bool,
 }
 
 fn validate_session_tool_identity(
@@ -1169,22 +1170,32 @@ pub async fn create_session(
         Err(rej) => return rej.into_response(),
     };
 
-    // Throwaway sessions are server-provisioned; the worktree path is the
+    // Scratch sessions are server-provisioned; the worktree path is the
     // wrong model for them. Reject the combination before reaching the
     // builder so misbehaving clients get a clear 400 instead of a
     // less-specific builder bail surfaced as 500.
-    if body.throwaway && body.worktree_branch.is_some() {
+    if body.scratch && body.worktree_branch.is_some() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "error": "validation_failed",
-                "message": "Cannot combine throwaway with worktree_branch"
+                "message": "Cannot combine scratch with worktree_branch"
+            })),
+        )
+            .into_response();
+    }
+    if body.scratch && !body.extra_repo_paths.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "validation_failed",
+                "message": "Cannot combine scratch with extra_repo_paths"
             })),
         )
             .into_response();
     }
 
-    // Validate user inputs for shell injection. For throwaway sessions the
+    // Validate user inputs for shell injection. For scratch sessions the
     // `path` field is server-provisioned (and clients typically send an
     // empty string), so skip the path entry in that case.
     let mut shell_checks: Vec<(&str, &str)> = vec![
@@ -1192,7 +1203,7 @@ pub async fn create_session(
         (body.tool.as_str(), "tool"),
         (body.group.as_str(), "group"),
     ];
-    if !body.throwaway {
+    if !body.scratch {
         shell_checks.push((body.path.as_str(), "path"));
     }
     for (value, name) in shell_checks {
@@ -1357,7 +1368,7 @@ pub async fn create_session(
             extra_args: body.extra_args,
             command_override: body.command_override,
             extra_repo_paths,
-            throwaway: body.throwaway,
+            scratch: body.scratch,
         };
 
         let build_result = builder::build_instance(params, &title_refs, &branch_refs, &profile)?;
@@ -3555,7 +3566,7 @@ mod workspace_ordering_tests {
             base_branch: None,
             base_branch_override: None,
             is_sandboxed: false,
-            throwaway: false,
+            scratch: false,
             has_managed_worktree: false,
             has_terminal: false,
             profile: "default".to_string(),

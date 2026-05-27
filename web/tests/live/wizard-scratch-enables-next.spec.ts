@@ -1,4 +1,4 @@
-// User story: enabling the throwaway toggle makes the wizard's Next
+// User story: enabling the scratch toggle makes the wizard's Next
 // button activate without picking a project path. The Recent/Browse/
 // Clone-URL tab strip and the directory browser disappear so the user
 // has no path source to choose. Closes #1324.
@@ -6,7 +6,7 @@
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../helpers/aoeServe";
 
-base("throwaway toggle enables Next without a path", async ({ page }, testInfo) => {
+base("scratch toggle enables Next without a path", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
     authMode: "none",
     workerIndex: testInfo.workerIndex,
@@ -37,9 +37,9 @@ base("throwaway toggle enables Next without a path", async ({ page }, testInfo) 
 
     await expect(nextButton).toBeEnabled({ timeout: 5_000 });
 
-    // The throwaway confirmation card replaces the path picker.
-    await expect(wizard.getByText(/Throwaway session/)).toBeVisible();
-    // The Browse tab button must NOT be visible while throwaway is on.
+    // The scratch confirmation card replaces the path picker.
+    await expect(wizard.getByText(/Scratch session/)).toBeVisible();
+    // The Browse tab button must NOT be visible while scratch is on.
     await expect(
       wizard.getByRole("button", { name: "Browse" }),
     ).toBeHidden();

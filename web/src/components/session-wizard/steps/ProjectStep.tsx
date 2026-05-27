@@ -7,7 +7,7 @@ import { ExtraReposPicker } from "./ExtraReposPicker";
 interface WizardData {
   path: string;
   extraRepoPaths: string[];
-  throwaway: boolean;
+  scratch: boolean;
   [key: string]: unknown;
 }
 
@@ -63,10 +63,11 @@ interface RecentProject {
 function collectRecentProjects(sessions: SessionResponse[]): RecentProject[] {
   const map = new Map<string, RecentProject>();
   for (const s of sessions) {
-    // Throwaway sessions live in transient `aoe-throwaway-*` temp dirs
-    // that get deleted with the session. They must not appear in the
-    // Recent list, where they would be re-selectable as a project.
-    if (s.throwaway) continue;
+    // Scratch sessions live in transient `<app_dir>/scratch/<id>/`
+    // directories that get deleted with the session (unless the user opts
+    // in to keeping the dir). They must not appear in the Recent list,
+    // where they would be re-selectable as a project.
+    if (s.scratch) continue;
     const path = s.main_repo_path || s.project_path;
     if (!path) continue;
     const existing = map.get(path);
@@ -178,7 +179,7 @@ export function ProjectStep({ data, onChange, initialTab }: Props) {
         Pick a recent project, browse for one, or clone from a URL.
       </p>
 
-      {/* Throwaway-session toggle. Sits above the project-source tabs
+      {/* Scratch-session toggle. Sits above the project-source tabs
           because it is a mode (skip the path picker entirely) rather
           than another path source. The reducer enforces mutual
           exclusion with path/extraRepoPaths/useWorktree; see
@@ -189,32 +190,32 @@ export function ProjectStep({ data, onChange, initialTab }: Props) {
           // Avoid double-toggle when the user clicks the switch itself:
           // both the label and the inner button fire onChange otherwise.
           if ((e.target as HTMLElement).closest('button[role="switch"]')) return;
-          onChange("throwaway", !data.throwaway);
+          onChange("scratch", !data.scratch);
         }}
       >
         <div className="flex-1">
           <div className="text-sm font-medium text-text-primary">Skip project folder</div>
           <div className="text-xs text-text-dim mt-0.5 leading-snug">
-            Run the agent in a fresh temporary directory. The folder is removed when you delete the session.
+            Run the agent in a fresh scratch directory under <span className="font-mono">~/.agent-of-empires/scratch/</span>. The folder is removed when you delete the session.
           </div>
         </div>
         <Toggle
-          checked={data.throwaway}
-          onChange={(v) => onChange("throwaway", v)}
+          checked={data.scratch}
+          onChange={(v) => onChange("scratch", v)}
           ariaLabel="Skip project folder"
         />
       </label>
 
-      {data.throwaway && (
+      {data.scratch && (
         <div className="px-3 py-2.5 bg-surface-900 border border-brand-600/30 rounded-md">
-          <p className="text-[10px] font-mono uppercase tracking-wider text-text-dim mb-1">Throwaway session</p>
+          <p className="text-[10px] font-mono uppercase tracking-wider text-text-dim mb-1">Scratch session</p>
           <p className="text-sm text-text-primary">
-            A fresh <span className="font-mono">aoe-throwaway-&lt;id&gt;</span> directory is created when you launch this session.
+            A fresh directory under <span className="font-mono">~/.agent-of-empires/scratch/&lt;id&gt;/</span> is created when you launch this session.
           </p>
         </div>
       )}
 
-      {!data.throwaway && (
+      {!data.scratch && (
       <>
       {/* Tab bar */}
       {!loading && (

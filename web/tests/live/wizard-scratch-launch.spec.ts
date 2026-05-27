@@ -1,12 +1,11 @@
-// User story: launching a throwaway session from the wizard creates a
-// real session on the server with `throwaway: true` and a `project_path`
-// under the OS temp directory. Closes #1324.
+// User story: launching a scratch session from the wizard creates a
+// real session on the server with `scratch: true` and a `project_path`
+// under the app data dir's scratch root. Closes #1324.
 
-import { tmpdir } from "node:os";
 import { test as base, expect } from "@playwright/test";
 import { listSessions, spawnAoeServe } from "../helpers/aoeServe";
 
-base("throwaway happy path: launch creates a temp-dir session", async ({ page }, testInfo) => {
+base("scratch happy path: launch creates a scratch-dir session", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
     authMode: "none",
     workerIndex: testInfo.workerIndex,
@@ -25,7 +24,7 @@ base("throwaway happy path: launch creates a temp-dir session", async ({ page },
     );
     await expect(wizard).toBeVisible({ timeout: 15_000 });
 
-    // ProjectStep: enable throwaway, advance.
+    // ProjectStep: enable scratch, advance.
     await wizard
       .getByRole("switch", { name: "Skip project folder" })
       .click();
@@ -40,14 +39,16 @@ base("throwaway happy path: launch creates a temp-dir session", async ({ page },
     // AgentStep: claude default; advance.
     await wizard.getByRole("button", { name: "Next" }).click();
 
-    // ReviewStep: project label must say "Temporary directory ..."; Launch.
+    // ReviewStep: project label must say "Scratch directory ..."; Launch.
     await expect(
-      wizard.getByText(/Temporary directory \(provisioned on create\)/),
+      wizard.getByText(/Scratch directory \(provisioned on create\)/),
     ).toBeVisible({ timeout: 10_000 });
     await wizard.getByRole("button", { name: /Launch session/ }).click();
 
-    // Server-side: a session exists, marked throwaway, with a project_path
-    // under tmpdir() and the aoe-throwaway- basename prefix.
+    // Server-side: a session exists, marked scratch, with a project_path
+    // whose parent directory basename is "scratch" (the harness isolates
+    // the app dir under a per-worker temp tree, so we assert structure
+    // rather than absolute location).
     await expect
       .poll(async () => (await listSessions(serve.baseUrl)).length, {
         timeout: 15_000,
@@ -57,10 +58,10 @@ base("throwaway happy path: launch creates a temp-dir session", async ({ page },
     const sessions = await listSessions(serve.baseUrl);
     expect(sessions).toHaveLength(1);
     const session = sessions[0]!;
-    expect(session.throwaway).toBe(true);
+    expect(session.scratch).toBe(true);
     const projectPath = session.project_path as string;
-    expect(projectPath.startsWith(tmpdir())).toBe(true);
-    expect(projectPath).toContain("aoe-throwaway-");
+    const parts = projectPath.split("/");
+    expect(parts[parts.length - 2]).toBe("scratch");
   } finally {
     await serve.stop();
   }

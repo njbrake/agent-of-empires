@@ -42,11 +42,11 @@ pub struct InstanceParams {
     pub command_override: String,
     /// Additional repository paths for multi-repo workspace mode
     pub extra_repo_paths: Vec<String>,
-    /// Throwaway session: ignore `path`, provision a fresh directory under
-    /// `std::env::temp_dir()`, and persist `instance.throwaway = true` so
+    /// Scratch session: ignore `path`, provision a fresh directory under
+    /// `<app_dir>/scratch/<id>/`, and persist `instance.scratch = true` so
     /// the deletion path removes the directory. Mutually exclusive with
     /// worktree/workspace and with non-empty `extra_repo_paths`.
-    pub throwaway: bool,
+    pub scratch: bool,
 }
 
 /// Result of building an instance, tracking what was created for cleanup purposes.
@@ -305,12 +305,12 @@ pub fn build_instance(
         bail!("{} does not support worktree mode.", params.tool);
     }
 
-    if params.throwaway {
+    if params.scratch {
         if params.worktree_enabled {
-            bail!("Cannot combine --throwaway with worktree mode");
+            bail!("Cannot combine --scratch with worktree mode");
         }
         if !params.extra_repo_paths.is_empty() {
-            bail!("Cannot combine --throwaway with extra repository paths");
+            bail!("Cannot combine --scratch with extra repository paths");
         }
     }
 
@@ -324,10 +324,10 @@ pub fn build_instance(
         }
     }
 
-    // Throwaway sessions have no project repo, so config resolution falls
+    // Scratch sessions have no project repo, so config resolution falls
     // back to global+profile defaults (`Path::new("")` makes
     // `resolve_config_with_repo` skip the repo-config layer cleanly).
-    let config_path = if params.throwaway {
+    let config_path = if params.scratch {
         std::path::PathBuf::new()
     } else {
         std::path::PathBuf::from(&params.path)
@@ -338,11 +338,11 @@ pub fn build_instance(
             Config::default()
         });
 
-    let mut final_path = if params.throwaway {
-        // Provisioning happens after `Instance::new` so we can use the
-        // generated instance id as the directory's basename suffix. Leave
-        // `final_path` empty for now; the worktree/workspace and
-        // path-existence blocks below are gated on the same flag.
+    let mut final_path = if params.scratch {
+        // Provisioning happens after `Instance::new` so we can key the
+        // directory on the generated instance id. Leave `final_path` empty
+        // for now; the worktree/workspace and path-existence blocks below
+        // are gated on the same flag.
         String::new()
     } else {
         PathBuf::from(&params.path)
@@ -497,12 +497,12 @@ pub fn build_instance(
         }
     }
 
-    // For throwaway sessions, `final_path` is intentionally empty here; the
-    // temp directory is provisioned below after `Instance::new` runs (we
+    // For scratch sessions, `final_path` is intentionally empty here; the
+    // scratch directory is provisioned below after `Instance::new` runs (we
     // need the instance id to name the directory). For all other sessions,
     // catch the typed-a-bad-path case before tmux silently falls back to
     // the home directory.
-    if !params.throwaway {
+    if !params.scratch {
         let final_path_buf = PathBuf::from(&final_path);
         if !final_path_buf.exists() {
             bail!("Project path does not exist: {}", final_path);
@@ -513,10 +513,10 @@ pub fn build_instance(
     }
 
     let mut instance = Instance::new(&final_title, &final_path);
-    if params.throwaway {
-        let dir = super::throwaway::provision_throwaway_dir(&instance.id)?;
+    if params.scratch {
+        let dir = super::scratch::provision_scratch_dir(&instance.id)?;
         instance.project_path = dir.to_string_lossy().to_string();
-        instance.throwaway = true;
+        instance.scratch = true;
     }
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
@@ -1129,7 +1129,7 @@ mod tests {
             extra_args: String::new(),
             command_override: String::new(),
             extra_repo_paths: Vec::new(),
-            throwaway: false,
+            scratch: false,
         }
     }
 
@@ -1261,7 +1261,7 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn build_instance_throwaway_provisions_temp_dir() {
+    fn build_instance_scratch_provisions_app_dir() {
         let temp_home = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", temp_home.path());
         let app_dir = isolated_app_dir(temp_home.path());
@@ -1271,27 +1271,26 @@ mod tests {
         let mut params = custom_agent_params(std::path::Path::new(""), "claude");
         params.tool = "claude".to_string();
         params.path = String::new();
-        params.throwaway = true;
+        params.scratch = true;
         params.sandbox = false;
 
         let result = build_instance(params, &[], &[], "default")
-            .expect("throwaway build must succeed without a project path");
+            .expect("scratch build must succeed without a project path");
 
         assert!(
-            result.instance.throwaway,
-            "throwaway flag must be persisted on the instance"
+            result.instance.scratch,
+            "scratch flag must be persisted on the instance"
         );
         let provisioned = std::path::PathBuf::from(&result.instance.project_path);
         assert!(provisioned.exists());
-        assert!(provisioned.starts_with(std::env::temp_dir()));
-        assert!(super::super::throwaway::is_throwaway_path(&provisioned));
+        assert!(super::super::scratch::is_scratch_path(&provisioned));
 
         let _ = std::fs::remove_dir_all(&provisioned);
     }
 
     #[test]
     #[serial_test::serial]
-    fn build_instance_rejects_throwaway_with_worktree() {
+    fn build_instance_rejects_scratch_with_worktree() {
         let temp_home = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", temp_home.path());
         let app_dir = isolated_app_dir(temp_home.path());
@@ -1300,17 +1299,17 @@ mod tests {
 
         let mut params = custom_agent_params(std::path::Path::new(""), "claude");
         params.tool = "claude".to_string();
-        params.throwaway = true;
+        params.scratch = true;
         params.worktree_enabled = true;
         params.worktree_branch = Some("feat".to_string());
 
         let err = match build_instance(params, &[], &[], "default") {
-            Ok(_) => panic!("throwaway + worktree must error"),
+            Ok(_) => panic!("scratch + worktree must error"),
             Err(e) => e,
         };
         assert!(
             err.to_string()
-                .contains("Cannot combine --throwaway with worktree mode"),
+                .contains("Cannot combine --scratch with worktree mode"),
             "unexpected error: {err}"
         );
     }

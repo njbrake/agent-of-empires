@@ -5,7 +5,7 @@ import { getReviewSummary } from "../sessionNames";
 import { useServerDown, OFFLINE_TITLE } from "../../../lib/connectionState";
 import type { AgentInfo } from "../../../lib/types";
 
-interface WizardData { path: string; title: string; worktreeBranch: string; useWorktree: boolean; attachExisting: boolean; baseBranch: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; throwaway: boolean; [key: string]: unknown; }
+interface WizardData { path: string; title: string; worktreeBranch: string; useWorktree: boolean; attachExisting: boolean; baseBranch: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; scratch: boolean; [key: string]: unknown; }
 interface Props { data: WizardData; onChange: (field: string, value: unknown) => void; agents: AgentInfo[]; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -111,11 +111,11 @@ function EditableRow({ label, value, displayValue, placeholder, onChange, accent
 export function ReviewStep({ data, onChange, agents, isSubmitting, error, onSubmit, onJumpTo, steps }: Props) {
   const hasStep = (id: StepId) => steps.some((s) => s.id === id);
   const offline = useServerDown();
-  // Throwaway sessions intentionally carry no path until the server
+  // Scratch sessions intentionally carry no path until the server
   // provisions one on submit; treat that as satisfying the "need a
   // project" gate so the user can launch.
   const canSubmit =
-    !isSubmitting && !offline && (data.throwaway || !!data.path) && !!data.tool;
+    !isSubmitting && !offline && (data.scratch || !!data.path) && !!data.tool;
   const summary = getReviewSummary(data.title, data.worktreeBranch);
   const selectedAgent = agents.find((agent) => agent.name === data.tool);
   const selectedCustomAgent = selectedAgent?.kind === "custom";
@@ -139,8 +139,8 @@ export function ReviewStep({ data, onChange, agents, isSubmitting, error, onSubm
         <Row
           label="Project"
           value={
-            data.throwaway
-              ? "Temporary directory (provisioned on create)"
+            data.scratch
+              ? "Scratch directory (provisioned on create)"
               : data.path || "(not set)"
           }
           stepId="project"
@@ -153,7 +153,7 @@ export function ReviewStep({ data, onChange, agents, isSubmitting, error, onSubm
           placeholder="Auto-generated"
           onChange={(v) => onChange("title", v)}
         />
-        {!data.throwaway && data.useWorktree ? (
+        {!data.scratch && data.useWorktree ? (
           <>
             <EditableRow
               label="Branch / worktree"
@@ -171,8 +171,8 @@ export function ReviewStep({ data, onChange, agents, isSubmitting, error, onSubm
               <Row label="Base branch" value={data.baseBranch.trim()} />
             )}
           </>
-        ) : data.throwaway ? (
-          <Row label="Worktree" value="Not applicable (throwaway session)" />
+        ) : data.scratch ? (
+          <Row label="Worktree" value="Not applicable (scratch session)" />
         ) : (
           <Row label="Worktree" value="None, runs in repo folder" />
         )}

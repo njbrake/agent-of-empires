@@ -1,11 +1,11 @@
-// User story: enabling throwaway on ProjectStep hides the worktree
-// controls on SessionStep. A throwaway directory is not a git repo, so
+// User story: enabling scratch on ProjectStep hides the worktree
+// controls on SessionStep. A scratch directory is not a git repo, so
 // the worktree concept does not apply. Closes #1324.
 
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../helpers/aoeServe";
 
-base("throwaway hides the worktree section on the Session step", async ({ page }, testInfo) => {
+base("scratch hides the worktree section on the Session step", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
     authMode: "none",
     workerIndex: testInfo.workerIndex,
@@ -35,7 +35,7 @@ base("throwaway hides the worktree section on the Session step", async ({ page }
 
     // Explanatory note appears in place of the worktree controls.
     await expect(
-      wizard.getByText(/Throwaway sessions do not use git worktrees/),
+      wizard.getByText(/Scratch sessions do not use git worktrees/),
     ).toBeVisible();
     // The "Create a worktree" switch must NOT be in the DOM at all.
     await expect(

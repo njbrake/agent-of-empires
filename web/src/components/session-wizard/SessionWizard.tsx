@@ -169,29 +169,29 @@ export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnable
   const handleSubmit = async () => {
     dispatch({ type: "SUBMIT_START" });
     const d = state.data;
-    // Throwaway sessions: server provisions the working directory and
+    // Scratch sessions: server provisions the working directory and
     // ignores `path`. Force-omit every worktree-related field so a
     // stale reducer state cannot make the server return 400 on the
-    // `throwaway + worktree_branch` mutex.
+    // `scratch + worktree_branch` mutex.
     const body: CreateSessionRequest = {
-      path: d.throwaway ? "" : d.path,
+      path: d.scratch ? "" : d.path,
       tool: d.tool,
       title: d.title || undefined, group: d.group || undefined,
       yolo_mode: d.yoloMode,
       worktree_branch:
-        !d.throwaway && d.useWorktree
+        !d.scratch && d.useWorktree
           ? getSubmittedBranch(d.title, d.worktreeBranch)
           : undefined,
-      create_new_branch: !d.throwaway && d.useWorktree && !d.attachExisting,
+      create_new_branch: !d.scratch && d.useWorktree && !d.attachExisting,
       base_branch:
-        !d.throwaway && d.useWorktree && !d.attachExisting && d.baseBranch.trim()
+        !d.scratch && d.useWorktree && !d.attachExisting && d.baseBranch.trim()
           ? d.baseBranch.trim()
           : undefined,
       sandbox: d.sandboxEnabled,
       sandbox_image: d.sandboxEnabled ? d.sandboxImage : undefined,
       extra_env: d.sandboxEnabled && d.extraEnv.length > 0 ? d.extraEnv.filter(Boolean) : undefined,
       extra_repo_paths:
-        !d.throwaway && d.extraRepoPaths.length > 0 ? d.extraRepoPaths : undefined,
+        !d.scratch && d.extraRepoPaths.length > 0 ? d.extraRepoPaths : undefined,
       extra_args: d.extraArgs || undefined,
       command_override: d.commandOverride || undefined,
       custom_instruction: d.customInstruction || undefined,
@@ -202,7 +202,7 @@ export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnable
       // switch (see src/server/api/sessions.rs), so a tampered
       // client request can't escalate cockpit on.
       cockpit_mode: cockpitMasterEnabled && ACP_CAPABLE_TOOLS.has(d.tool),
-      throwaway: d.throwaway || undefined,
+      scratch: d.scratch || undefined,
     };
     const result = await createSession(body);
     if (result.ok) {
@@ -245,12 +245,12 @@ export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnable
     }
   };
 
-  // Throwaway selection satisfies the project-step "need a project" gate
+  // Scratch selection satisfies the project-step "need a project" gate
   // without a path: the server provisions the working directory on
   // submit. Otherwise require a path as before.
   const nextDisabled =
     currentStepDef?.id === "project" &&
-    !state.data.throwaway &&
+    !state.data.scratch &&
     !state.data.path;
 
   return (

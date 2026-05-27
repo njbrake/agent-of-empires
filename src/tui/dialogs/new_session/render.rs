@@ -77,14 +77,18 @@ impl NewSessionDialog {
         constraints.push(Constraint::Length(2)); // Group (always, at the bottom)
 
         // For errors, calculate how many lines we need based on the text length.
-        // Inner width = dialog_width - 2 (border) - 2 (margin) = 76
+        // Inner width = dialog_width - 2 (border) - 2 (margin) = 76.
+        // The regular hint line reserves 2 rows so the per-field keybind
+        // hints can wrap (e.g. when both path-shortcut hints and the global
+        // Ctrl+T scratch chip are present at once) instead of getting
+        // truncated mid-word at the modal edge.
         let error_lines: u16 = if let Some(error) = &self.error_message {
             let inner_width = (dialog_width - 4) as usize;
             let error_text = format!("✗ Error: {}", error);
             let needed = (error_text.len() as u16).div_ceil(inner_width as u16);
             needed.clamp(2, 6)
         } else {
-            1
+            2
         };
         constraints.push(Constraint::Min(error_lines)); // Hints/errors
 
@@ -428,13 +432,36 @@ impl NewSessionDialog {
                 hint_spans.push(Span::styled("Ctrl+P", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" configure  "));
             }
+            // Ctrl+T scratch chip. Always present so the binding is
+            // discoverable without opening the `?` overlay. When focus is on
+            // the Path row the chip is emphasized (bold accent) so users
+            // about to type a path can see "you can skip this entirely with
+            // Ctrl+T". When scratch is already on, the chip flips to the
+            // undo verb and styles as accent so it reads as the active state.
+            let path_focused = self.focused_field == self.path_field();
+            let (scratch_key_style, scratch_label) = if self.scratch {
+                (
+                    Style::default().fg(theme.accent).bold(),
+                    " scratch on (undo)  ",
+                )
+            } else if path_focused {
+                (Style::default().fg(theme.accent).bold(), " scratch  ")
+            } else {
+                (Style::default().fg(theme.hint), " scratch  ")
+            };
+            hint_spans.push(Span::styled("Ctrl+T", scratch_key_style));
+            hint_spans.push(Span::raw(scratch_label));
+
             hint_spans.push(Span::styled("Enter", Style::default().fg(theme.hint)));
             hint_spans.push(Span::raw(" create  "));
             hint_spans.push(Span::styled("?", Style::default().fg(theme.hint)));
             hint_spans.push(Span::raw(" help  "));
             hint_spans.push(Span::styled("Esc", Style::default().fg(theme.hint)));
             hint_spans.push(Span::raw(" cancel"));
-            frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[hint_chunk]);
+            frame.render_widget(
+                Paragraph::new(Line::from(hint_spans)).wrap(Wrap { trim: true }),
+                chunks[hint_chunk],
+            );
         }
 
         if self.show_help {
@@ -516,13 +543,12 @@ impl NewSessionDialog {
         let value = self.path.value();
         let mut spans = vec![Span::styled("Path:", label_style), Span::raw(" ")];
 
-        // When throwaway is active the path input is meaningless: the
-        // session lives in a server-provisioned temp dir. Replace the
-        // value with a dim marker so the user does not edit a value
-        // that will be discarded on submit.
-        if self.throwaway {
+        // Scratch mode disables this field. The undo hint lives in the
+        // bottom hint chip (`Ctrl+T scratch on (undo)`), so the marker
+        // here can be terse.
+        if self.scratch {
             spans.push(Span::styled(
-                "(throwaway directory, Ctrl+T to undo)",
+                "(scratch directory)",
                 Style::default().fg(theme.dimmed),
             ));
             frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1219,8 +1245,8 @@ impl NewSessionDialog {
 
         let dialog_width: u16 = HELP_DIALOG_WIDTH;
         let has_profile_selection = self.has_profile_selection();
-        // Base fields: Title, Path, YOLO, Worktree, Group + close hint
-        let base_height: u16 = 17;
+        // Base fields: Scratch, Title, Path, YOLO, Worktree, Group + close hint
+        let base_height: u16 = 20;
         let dialog_height: u16 = base_height
             + if has_profile_selection { 3 } else { 0 }
             + if has_tool_selection { 3 } else { 0 }
@@ -1243,26 +1269,20 @@ impl NewSessionDialog {
 
         let mut lines: Vec<Line> = Vec::new();
 
-        for (idx, help) in FIELD_HELP.iter().enumerate() {
-            if idx == 0 && !has_profile_selection {
-                continue; // Profile
+        // Gate by name (not index) so inserting a new FIELD_HELP entry does
+        // not silently shift every condition by one.
+        for help in FIELD_HELP {
+            let show = match help.name {
+                "Profile" => has_profile_selection,
+                "Tool" => has_tool_selection,
+                "YOLO Mode" => !self.selected_tool_always_yolo(),
+                "Sandbox" => has_sandbox,
+                "Image" | "Environment" => show_sandbox_options_help,
+                _ => true,
+            };
+            if !show {
+                continue;
             }
-            // idx 1 (Title), idx 2 (Path) always shown
-            if idx == 3 && !has_tool_selection {
-                continue; // Tool
-            }
-            if idx == 4 && self.selected_tool_always_yolo() {
-                continue; // YOLO (hidden for AlwaysYolo agents)
-            }
-            // idx 5 (Worktree) always shown
-            if idx == 6 && !has_sandbox {
-                continue; // Sandbox
-            }
-            if (7..=8).contains(&idx) && !show_sandbox_options_help {
-                continue; // Image, Env
-            }
-            // idx 9 (Group) always shown
-
             lines.push(Line::from(Span::styled(
                 help.name,
                 Style::default().fg(theme.accent).bold(),

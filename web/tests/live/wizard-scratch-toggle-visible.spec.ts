@@ -5,7 +5,7 @@
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../helpers/aoeServe";
 
-base("wizard throwaway toggle is visible above the project tabs", async ({ page }, testInfo) => {
+base("wizard scratch toggle is visible above the project tabs", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
     authMode: "none",
     workerIndex: testInfo.workerIndex,
@@ -24,7 +24,7 @@ base("wizard throwaway toggle is visible above the project tabs", async ({ page 
     );
     await expect(wizard).toBeVisible({ timeout: 15_000 });
 
-    // The throwaway toggle uses the existing role="switch" pattern and
+    // The scratch toggle uses the existing role="switch" pattern and
     // carries the aria-label set in `ProjectStep.tsx`.
     const toggle = wizard.getByRole("switch", { name: "Skip project folder" });
     await expect(toggle).toBeVisible({ timeout: 10_000 });

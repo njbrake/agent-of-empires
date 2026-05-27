@@ -90,11 +90,11 @@ const PAGES = [
       "Drive a single Agent of Empires session across several git repositories with the project registry and multi-select pickers.",
   },
   {
-    source: "docs/guides/throwaway-sessions.md",
-    dest: "guides/throwaway-sessions.md",
-    title: "Throwaway Sessions",
+    source: "docs/guides/scratch-sessions.md",
+    dest: "guides/scratch-sessions.md",
+    title: "Scratch Sessions",
     description:
-      "Launch a session in a fresh temporary directory with no project path. The directory is removed when the session is deleted.",
+      "Launch a session in a fresh scratch directory under ~/.agent-of-empires/scratch/ with no project path. The directory is removed when the session is deleted.",
   },
 
   // --- Docs pages (docs/ → pages/docs/) ---
@@ -262,7 +262,7 @@ const URL_MAP = {
   "docs/guides/agent-override.md": "/guides/agent-override/",
   "docs/guides/session-resume.md": "/guides/session-resume/",
   "docs/guides/multi-repo-workspaces.md": "/guides/multi-repo-workspaces/",
-  "docs/guides/throwaway-sessions.md": "/guides/throwaway-sessions/",
+  "docs/guides/scratch-sessions.md": "/guides/scratch-sessions/",
   "docs/guides/tool-sessions.md": "/guides/tool-sessions/",
   "docs/guides/podman.md": "/guides/podman/",
   "docs/guides/apple-containers.md": "/guides/apple-containers/",

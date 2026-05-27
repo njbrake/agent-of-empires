@@ -282,19 +282,19 @@
       ]
     },
     {
-      "id": "wizard.throwaway-toggle-visible",
+      "id": "wizard.scratch-toggle-visible",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/wizard-throwaway-toggle-visible.spec.ts"],
+      "specs": ["tests/live/wizard-scratch-toggle-visible.spec.ts"],
       "components": [
         "web/src/components/session-wizard/steps/ProjectStep.tsx"
       ]
     },
     {
-      "id": "wizard.throwaway-enables-next",
+      "id": "wizard.scratch-enables-next",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/wizard-throwaway-enables-next.spec.ts"],
+      "specs": ["tests/live/wizard-scratch-enables-next.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/steps/ProjectStep.tsx",
@@ -302,19 +302,19 @@
       ]
     },
     {
-      "id": "wizard.throwaway-hides-worktree",
+      "id": "wizard.scratch-hides-worktree",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/wizard-throwaway-hides-worktree.spec.ts"],
+      "specs": ["tests/live/wizard-scratch-hides-worktree.spec.ts"],
       "components": [
         "web/src/components/session-wizard/steps/SessionStep.tsx"
       ]
     },
     {
-      "id": "wizard.throwaway-launch",
+      "id": "wizard.scratch-launch",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/wizard-throwaway-launch.spec.ts"],
+      "specs": ["tests/live/wizard-scratch-launch.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/steps/ProjectStep.tsx",
@@ -322,10 +322,10 @@
       ]
     },
     {
-      "id": "wizard.throwaway-delete-cleans-tempdir",
+      "id": "wizard.scratch-delete-cleans-dir",
       "kind": "live-playwright",
       "risk": "high",
-      "specs": ["tests/live/wizard-throwaway-delete-cleans-tempdir.spec.ts"],
+      "specs": ["tests/live/wizard-scratch-delete-cleans-tempdir.spec.ts"],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx"
       ]

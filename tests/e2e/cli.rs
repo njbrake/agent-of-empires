@@ -1070,20 +1070,20 @@ fn test_cli_add_attaches_to_existing_worktree() {
 
 #[test]
 #[serial]
-fn test_cli_add_throwaway_provisions_temp_dir() {
-    let h = TuiTestHarness::new("cli_add_throwaway");
+fn test_cli_add_scratch_provisions_dir() {
+    let h = TuiTestHarness::new("cli_add_scratch");
 
-    let add_output = h.run_cli(&["add", "--throwaway", "-t", "QuickThrowaway"]);
+    let add_output = h.run_cli(&["add", "--scratch", "-t", "QuickScratch"]);
     assert!(
         add_output.status.success(),
-        "aoe add --throwaway failed:\nstdout: {}\nstderr: {}",
+        "aoe add --scratch failed:\nstdout: {}\nstderr: {}",
         String::from_utf8_lossy(&add_output.stdout),
         String::from_utf8_lossy(&add_output.stderr),
     );
     let stdout = String::from_utf8_lossy(&add_output.stdout);
     assert!(
-        stdout.contains("Throwaway: yes"),
-        "expected 'Throwaway: yes' summary line; got:\n{}",
+        stdout.contains("Scratch:") && stdout.contains("yes"),
+        "expected scratch yes summary line; got:\n{}",
         stdout
     );
 
@@ -1091,31 +1091,30 @@ fn test_cli_add_throwaway_provisions_temp_dir() {
     let sessions = json.as_array().expect("sessions array");
     let session = sessions
         .iter()
-        .find(|s| s["title"].as_str() == Some("QuickThrowaway"))
-        .expect("QuickThrowaway must exist");
-    assert_eq!(session["throwaway"].as_bool(), Some(true));
+        .find(|s| s["title"].as_str() == Some("QuickScratch"))
+        .expect("QuickScratch must exist");
+    assert_eq!(session["scratch"].as_bool(), Some(true));
     let project_path = session["project_path"]
         .as_str()
         .expect("project_path must be a string");
     let path = Path::new(project_path);
-    assert!(path.exists(), "throwaway dir must exist: {}", project_path);
+    assert!(path.exists(), "scratch dir must exist: {}", project_path);
+    // Lives under <app_dir>/scratch/<id>/. The harness isolates app_dir
+    // under its own temp tree, so we assert the structural shape rather than
+    // a hard-coded location.
     assert!(
-        path.starts_with(std::env::temp_dir()),
-        "throwaway dir must live under temp_dir(): {}",
-        project_path
-    );
-    assert!(
-        path.file_name()
+        path.parent()
+            .and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("aoe-throwaway-")),
-        "throwaway dir basename must use the aoe-throwaway- prefix: {}",
+            == Some("scratch"),
+        "scratch dir must sit under a `scratch/` parent: {}",
         project_path
     );
 
     // Capture path before rm so we can assert cleanup.
     let captured = path.to_path_buf();
 
-    let rm_output = h.run_cli(&["rm", "QuickThrowaway"]);
+    let rm_output = h.run_cli(&["rm", "QuickScratch"]);
     assert!(
         rm_output.status.success(),
         "aoe rm failed:\nstdout: {}\nstderr: {}",
@@ -1124,25 +1123,25 @@ fn test_cli_add_throwaway_provisions_temp_dir() {
     );
     assert!(
         !captured.exists(),
-        "throwaway dir must be removed after aoe rm: {}",
+        "scratch dir must be removed after aoe rm: {}",
         captured.display(),
     );
 }
 
 #[test]
 #[serial]
-fn test_cli_add_throwaway_rejects_explicit_path() {
-    let h = TuiTestHarness::new("cli_add_throwaway_path");
+fn test_cli_add_scratch_rejects_explicit_path() {
+    let h = TuiTestHarness::new("cli_add_scratch_path");
     let project = h.project_path();
 
-    let output = h.run_cli(&["add", project.to_str().unwrap(), "--throwaway"]);
+    let output = h.run_cli(&["add", project.to_str().unwrap(), "--scratch"]);
     assert!(
         !output.status.success(),
-        "aoe add <path> --throwaway must error"
+        "aoe add <path> --scratch must error"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Cannot specify a project path with --throwaway"),
+        stderr.contains("Cannot specify a project path with --scratch"),
         "unexpected error output:\n{}",
         stderr,
     );
@@ -1150,18 +1149,18 @@ fn test_cli_add_throwaway_rejects_explicit_path() {
 
 #[test]
 #[serial]
-fn test_cli_add_throwaway_conflicts_with_worktree_flag() {
-    let h = TuiTestHarness::new("cli_add_throwaway_worktree");
+fn test_cli_add_scratch_conflicts_with_worktree_flag() {
+    let h = TuiTestHarness::new("cli_add_scratch_worktree");
 
-    let output = h.run_cli(&["add", "--throwaway", "-w", "feat/x"]);
+    let output = h.run_cli(&["add", "--scratch", "-w", "feat/x"]);
     assert!(
         !output.status.success(),
-        "aoe add --throwaway -w must error at clap layer"
+        "aoe add --scratch -w must error at clap layer"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     // clap's mutex error wording mentions one of the two flag names.
     assert!(
-        stderr.contains("--throwaway")
+        stderr.contains("--scratch")
             || stderr.contains("--worktree")
             || stderr.contains("cannot be used"),
         "unexpected error output:\n{}",
