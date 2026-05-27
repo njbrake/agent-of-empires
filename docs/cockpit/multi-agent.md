@@ -9,7 +9,7 @@ are first-class but lighter on per-tool polish.
 
 | Agent | ACP entry | Install |
 |-------|-----------|---------|
-| Claude | `claude-agent-acp` (Zed adapter, requires >=0.37.0) | `npm install -g @agentclientprotocol/claude-agent-acp@0.37.0` |
+| Claude | `claude-agent-acp` (Zed adapter, requires >=0.37.0) | `npm install -g @agentclientprotocol/claude-agent-acp@latest` |
 | Codex (OpenAI) | `codex-acp` (Zed adapter) | `npm install -g @zed-industries/codex-acp` |
 | OpenCode (SST) | `opencode acp` (native) | `curl -fsSL https://opencode.ai/install \| bash` |
 | Gemini (Google) | `gemini --acp` (native) | `npm install -g @google/gemini-cli` |
