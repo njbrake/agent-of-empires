@@ -99,10 +99,15 @@ export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnable
     : baseInitial;
 
   const [state, dispatch] = useReducer(reducer, {
-    // Scratch prefill jumps directly to Review so Cmd+Shift+N then
-    // Cmd+Enter creates a session in two keystrokes.
+    // Only `skipToReview` jumps directly to Review. The fast-create
+    // shortcut sets both `scratch: true` and `skipToReview: true`, so
+    // pairing them is still a single keystroke flow; gating on the
+    // scratch flag alone conflicted with WizardPrefill's documented
+    // contract (a wizard opened with `scratch: true` for "open at
+    // ProjectStep with scratch pre-enabled" would have skipped past
+    // the project step entirely).
     currentStep:
-      prefill?.skipToReview || prefill?.scratch
+      prefill?.skipToReview
         ? 3
         : (prefill?.path ? 1 : 0),
     data: prefillData, isSubmitting: false, error: null,
