@@ -325,7 +325,14 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     // `scratch: true` while pointing at `/etc`).
     if request.instance.scratch {
         let path = PathBuf::from(&request.instance.project_path);
-        if request.keep_scratch {
+        // keep_scratch + tampered project_path used to surface
+        // "Scratch directory kept at: /etc" which implied AoE was
+        // intentionally leaving a path it never owned. Gate the
+        // keep-scratch message on the same `is_scratch_path` guard
+        // the remove branch uses so the message only fires for
+        // paths AoE actually controls.
+        let guard_ok = path.exists() && super::scratch::is_scratch_path(&path);
+        if request.keep_scratch && guard_ok {
             tracing::info!(
                 target: "session.delete",
                 session_id = %request.session_id,
@@ -333,6 +340,15 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                 "keep-scratch opted in; leaving scratch directory on disk"
             );
             messages.push(format!("Scratch directory kept at: {}", path.display()));
+        } else if request.keep_scratch {
+            // Tampered or missing path with keep_scratch on: still nothing
+            // to remove, but we cannot claim ownership of the path either.
+            tracing::warn!(
+                target: "session.delete",
+                session_id = %request.session_id,
+                path = %path.display(),
+                "keep-scratch requested but project_path failed the guard or is missing"
+            );
         } else if !path.exists() {
             // Already gone (user removed it manually, FS hiccup, prior
             // partial cleanup). Nothing to do, and we must not reach the
