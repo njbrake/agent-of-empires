@@ -68,6 +68,37 @@ pub(super) fn wrap_description_lines(text: &str, width: u16) -> Vec<String> {
     lines
 }
 
+/// Allocation-free twin of [`wrap_description_lines`]: walks the same
+/// greedy word-wrap and returns the line count. Used by
+/// `field_height`, which runs in the render hot path once per field
+/// and only cares about the row count, not the wrapped text.
+pub(super) fn wrap_description_height(text: &str, width: u16) -> u16 {
+    if text.is_empty() {
+        return 0;
+    }
+    if width == 0 {
+        return 1;
+    }
+    let max_width = width as usize;
+    let mut lines: u16 = 0;
+    let mut current_w: usize = 0;
+    for word in text.split_whitespace() {
+        let w = word.width();
+        if current_w == 0 {
+            current_w = w;
+        } else if current_w + 1 + w <= max_width {
+            current_w += 1 + w;
+        } else {
+            lines = lines.saturating_add(1);
+            current_w = w;
+        }
+    }
+    if current_w > 0 {
+        lines = lines.saturating_add(1);
+    }
+    lines.max(1)
+}
+
 impl SettingsView {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Clear the area
@@ -415,11 +446,7 @@ impl SettingsView {
     /// the fields panel width. Empty descriptions reserve zero rows so
     /// section headers without a subtitle don't waste a blank line.
     pub(super) fn description_height(&self, description: &str) -> u16 {
-        if description.is_empty() {
-            return 0;
-        }
-        let width = self.fields_content_width.max(1);
-        wrap_description_lines(description, width).len() as u16
+        wrap_description_height(description, self.fields_content_width.max(1))
     }
 
     fn render_field(
@@ -1192,7 +1219,7 @@ impl SettingsView {
 
 #[cfg(test)]
 mod tests {
-    use super::wrap_description_lines;
+    use super::{wrap_description_height, wrap_description_lines};
 
     #[test]
     fn wrap_description_lines_returns_empty_for_empty_input() {
@@ -1254,5 +1281,119 @@ mod tests {
     fn wrap_description_lines_zero_width_returns_single_line() {
         let lines = wrap_description_lines("anything", 0);
         assert_eq!(lines, vec!["anything".to_string()]);
+    }
+
+    /// `wrap_description_height` must agree with `wrap_description_lines().len()`
+    /// for every input; it is the allocation-free shortcut the render hot
+    /// path uses. If they ever drift, `field_height` will paint values on
+    /// top of (or below) the description in real renders.
+    #[test]
+    fn wrap_description_height_matches_wrap_description_lines() {
+        let cases: &[(&str, u16)] = &[
+            ("", 40),
+            ("short text", 40),
+            ("one two three four", 8),
+            ("hello      world      again", 40),
+            ("anything", 0),
+            (
+                "What Enter (and double-click) does on a session row in \
+                 the Agent view: attach to tmux (default, historical \
+                 behavior) or enter live-send mode so the home list stays \
+                 visible and keystrokes pipe through to the agent.",
+                40,
+            ),
+        ];
+        for (text, width) in cases {
+            let expected = wrap_description_lines(text, *width).len() as u16;
+            let actual = wrap_description_height(text, *width);
+            assert_eq!(
+                actual, expected,
+                "height mismatch for text {text:?} width {width}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod field_height_tests {
+    use super::super::{FieldKey, FieldValue, SettingField, SettingsCategory, SettingsView};
+    use crate::session::Storage;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    fn setup_test_home(temp: &TempDir) {
+        std::env::set_var("HOME", temp.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+    }
+
+    fn fresh_view() -> (TempDir, SettingsView) {
+        let temp = TempDir::new().unwrap();
+        setup_test_home(&temp);
+        let _ = Storage::new("test").unwrap();
+        let view = SettingsView::new("test", None).unwrap();
+        (temp, view)
+    }
+
+    /// At a normal panel width, a short description fits on one row, so
+    /// `field_height` returns the historical `1 + 1 + 1`. At a width
+    /// narrow enough to force two wrap lines, the height grows by exactly
+    /// the extra row. Locks the contract between `description_height`
+    /// (consumed by the scroll math) and what the render pass paints.
+    #[test]
+    #[serial]
+    fn field_height_grows_with_wrapped_description() {
+        let (_temp, mut view) = fresh_view();
+
+        let field = SettingField {
+            key: FieldKey::DefaultAttachMode,
+            label: "Test Label",
+            description: "alpha beta gamma delta",
+            value: FieldValue::Bool(false),
+            category: SettingsCategory::Interaction,
+            has_override: false,
+            inherited_display: None,
+        };
+
+        view.fields_content_width = 80;
+        assert_eq!(
+            view.field_height(&field, 0),
+            3,
+            "wide panel: label + 1-line desc + value"
+        );
+
+        // Width that fits "alpha beta" (10) but not "alpha beta gamma" (16),
+        // forcing two wrap lines.
+        view.fields_content_width = 12;
+        assert_eq!(
+            view.field_height(&field, 0),
+            4,
+            "narrow panel: label + 2-line desc + value"
+        );
+    }
+
+    /// Section headers have no value row. When the subtitle wraps, the
+    /// reported height must still match `1 + wrapped_subtitle_lines` so
+    /// the surrounding scroll math doesn't drift.
+    #[test]
+    #[serial]
+    fn field_height_section_header_tracks_wrapped_subtitle() {
+        let (_temp, mut view) = fresh_view();
+
+        let header = SettingField {
+            key: FieldKey::SectionMarker,
+            label: "Section",
+            description: "alpha beta gamma delta",
+            value: FieldValue::SectionHeader,
+            category: SettingsCategory::Cockpit,
+            has_override: false,
+            inherited_display: None,
+        };
+
+        view.fields_content_width = 80;
+        assert_eq!(view.field_height(&header, 0), 2);
+
+        view.fields_content_width = 12;
+        assert_eq!(view.field_height(&header, 0), 3);
     }
 }
