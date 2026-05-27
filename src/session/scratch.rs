@@ -47,11 +47,25 @@ pub fn provision_scratch_dir(instance_id: &str) -> Result<PathBuf> {
 /// `session::deletion::perform_deletion` to guard `fs::remove_dir_all`
 /// against accidental or malicious targeting of unrelated paths if a session
 /// JSON is hand-edited.
+///
+/// Both sides are canonicalized before the prefix check so a lexical
+/// `..` cannot escape the scratch root (e.g.
+/// `<scratch_root>/../profiles` lexically `starts_with(<scratch_root>)`
+/// but resolves outside it). A path that does not exist on disk cannot
+/// be canonicalized and is refused; that is acceptable because the only
+/// caller that needs a yes here is the deletion path, which is removing
+/// a directory it just looked up from session state.
 pub fn is_scratch_path(path: &Path) -> bool {
     let Ok(root) = scratch_root() else {
         return false;
     };
-    path.starts_with(root)
+    let Ok(root) = root.canonicalize() else {
+        return false;
+    };
+    let Ok(path) = path.canonicalize() else {
+        return false;
+    };
+    path.starts_with(&root)
 }
 
 #[cfg(test)]
@@ -116,5 +130,29 @@ mod tests {
         // deletion path.
         assert!(!is_scratch_path(Path::new("/etc")));
         assert!(!is_scratch_path(Path::new("/tmp/aoe-scratch-foo")));
+    }
+
+    #[test]
+    #[serial]
+    fn is_scratch_path_rejects_dotdot_traversal() {
+        // A lexical `..` inside an otherwise-under-root path used to slip
+        // past the guard because `Path::starts_with` is string-based.
+        // Canonicalizing both sides resolves the traversal before the
+        // prefix check, so `<scratch_root>/<id>/../../etc` must be
+        // rejected even though it lexically starts with the root.
+        let _tmp = isolate_app_dir();
+        let id = format!("traverse-{}", uuid::Uuid::new_v4());
+        let real = provision_scratch_dir(&id).unwrap();
+
+        // Build a tampered path that lexically lives under the scratch
+        // root but resolves to /etc (a real directory on every host this
+        // test runs on, so canonicalize succeeds and lands outside).
+        let tampered = real.join("..").join("..").join("..").join("etc");
+        assert!(
+            !is_scratch_path(&tampered),
+            "`..` traversal must not escape the scratch root"
+        );
+
+        let _ = fs::remove_dir_all(&real);
     }
 }

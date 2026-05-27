@@ -333,6 +333,18 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                 "keep-scratch opted in; leaving scratch directory on disk"
             );
             messages.push(format!("Scratch directory kept at: {}", path.display()));
+        } else if !path.exists() {
+            // Already gone (user removed it manually, FS hiccup, prior
+            // partial cleanup). Nothing to do, and we must not reach the
+            // guard branch: a canonicalized `is_scratch_path` rejects
+            // missing paths and would otherwise surface this as a guard
+            // refusal even though it is not a tampering case.
+            tracing::debug!(
+                target: "session.delete",
+                session_id = %request.session_id,
+                path = %path.display(),
+                "scratch dir already gone before deletion ran"
+            );
         } else if super::scratch::is_scratch_path(&path) {
             tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "scratch_remove", "perform_deletion: stage");
             match std::fs::remove_dir_all(&path) {
