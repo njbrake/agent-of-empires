@@ -258,10 +258,10 @@ impl HomeView {
         row >= list_y && row < list_bottom
     }
 
-    /// Begin a drag if `(col, row)` is on the divider, or, while
-    /// live-send is active, inside the preview pane. Returns true when
-    /// a drag actually started, so the caller can mark the event
-    /// handled and skip the row-click path.
+    /// Begin a drag if `(col, row)` is on the divider, or inside the
+    /// preview pane (whenever the pane is on screen, in or out of live
+    /// mode). Returns true when a drag actually started, so the caller
+    /// can mark the event handled and skip the row-click path.
     ///
     /// Divider drags resize the list/preview split (the only kind we
     /// had before live-send shipped). Preview-pane drags start an
@@ -277,7 +277,15 @@ impl HomeView {
             });
             return true;
         }
-        if self.live_send.is_some() && self.hit_preview(col, row) {
+        // Modals that aren't live-send sit over the preview, so a
+        // click inside `preview_area` while one is open is meant for
+        // the modal underneath and should not seed a hidden selection
+        // behind it. `handle_drag_move`'s cancel branch covers a modal
+        // that opens mid-drag; this guards the start.
+        if self.has_non_live_send_overlay() {
+            return false;
+        }
+        if self.hit_preview(col, row) {
             self.preview_selection = Some(PreviewSelection {
                 anchor: (col, row),
                 extent: (col, row),
@@ -579,6 +587,15 @@ impl HomeView {
         key: KeyEvent,
         update_info: Option<&crate::update::UpdateInfo>,
     ) -> Option<Action> {
+        // Any keystroke drops a finalized preview-pane selection. The
+        // highlight pins to cell coords, so as soon as the user starts
+        // doing anything else (navigating the list, opening a dialog,
+        // entering live mode, etc.) the cells underneath can change
+        // and the highlight would point at unrelated content.
+        // `handle_live_send_key` repeats this clear inside the
+        // live-send branch so the same dismissal happens there.
+        self.clear_preview_selection();
+
         // Live-send capture wins over every other key handler. While
         // `live_send` is `Some` the home view is acting as a thin relay
         // to the target pane; dialog hotkeys, search, and list navigation
@@ -3286,10 +3303,11 @@ impl HomeView {
         self.live_send = None;
         self.live_send_worker = None;
         self.live_send_last_resize = None;
-        // A preview selection only ever exists in live mode; leaving
-        // live without dropping it would leave a stale highlight on
-        // the regular preview pane. Clear it here so the home view
-        // returns to its pre-live state cleanly.
+        // Preview selections also work outside live mode now, but a
+        // live-mode highlight pins to the live-resized pane coords,
+        // and exiting reflows the preview back to its normal size.
+        // Drop the selection so the highlight can't survive into a
+        // pane it no longer points at.
         self.clear_preview_selection();
     }
 

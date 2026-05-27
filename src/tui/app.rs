@@ -710,12 +710,13 @@ impl App {
                             //
                             // Priority order for `Down(Left)`:
                             //   1. modal dialog click (e.g. delete Yes/No)
-                            //   2. drag-start (divider, or live-mode preview
-                            //      text selection)
+                            //   2. drag-start (divider, or preview text
+                            //      selection)
                             //   3. list row click (existing select/activate)
-                            // A bare click on the preview pane outside live
-                            // mode falls through to the final branch and is
-                            // a no-op aside from clearing any stale highlight.
+                            // A bare press on the preview seeds a 1x1
+                            // PreviewSelect; `handle_drag_end` collapses it
+                            // back to no selection on release if the cursor
+                            // never moved.
                             let click_action = if matches!(
                                 mouse.kind,
                                 MouseEventKind::Down(MouseButton::Left)

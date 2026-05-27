@@ -74,12 +74,13 @@ pub(super) enum DragKind {
     /// `list_width` at that moment. The new requested width is
     /// `start_width + (current_col - start_col)`, clamped on apply.
     ListDivider { start_col: u16, start_width: u16 },
-    /// Drag-selecting text inside the preview pane while live-send is
-    /// active. The anchor cell is where the user pressed; `preview_selection`
-    /// on `HomeView` carries the live extent and is what the renderer
-    /// reads. We keep the kind here (with no payload beyond a marker) so
-    /// `handle_drag_move` / `handle_drag_end` can dispatch by variant
-    /// without re-checking `live_send`.
+    /// Drag-selecting text inside the preview pane. Available whenever
+    /// the pane is on screen (in or out of live-send mode). The anchor
+    /// cell is where the user pressed; `preview_selection` on
+    /// `HomeView` carries the live extent and is what the renderer
+    /// reads. We keep the kind here (with no payload beyond a marker)
+    /// so `handle_drag_move` / `handle_drag_end` can dispatch by
+    /// variant without re-checking `live_send`.
     PreviewSelect,
 }
 

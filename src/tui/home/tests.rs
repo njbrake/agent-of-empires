@@ -5827,11 +5827,13 @@ mod divider_drag {
 }
 
 mod preview_drag_select {
-    //! Click-and-drag on the preview pane while live-send is active
-    //! starts an in-app text selection. The renderer paints a
-    //! reversed-style highlight; release copies the cells through
-    //! OSC 52. Selections only exist in live mode (terminal-native
-    //! drag-select already handles every other surface).
+    //! Click-and-drag on the preview pane starts an in-app text
+    //! selection whenever the pane is on screen (in or out of live
+    //! mode). The renderer paints a reversed-style highlight; release
+    //! copies the cells through OSC 52. We need our own selection
+    //! handler because the TUI captures mouse events to support wheel
+    //! scroll, which keeps terminal-native drag-select from reaching
+    //! the preview.
 
     use super::*;
     use crate::tui::home::{live_send::LiveSendState, DragKind};
@@ -5853,11 +5855,28 @@ mod preview_drag_select {
 
     #[test]
     #[serial]
-    fn drag_start_outside_live_mode_does_not_start_selection() {
+    fn drag_start_outside_live_mode_installs_selection() {
         let mut env = create_test_env_empty();
         env.view.preview_area = Rect::new(40, 0, 60, 20);
-        // No live_send -> the preview hit is ignored; no selection
-        // installs.
+        // No live_send: a press on the preview pane still seeds a
+        // PreviewSelect so users can copy from a regular session
+        // preview without first entering live mode.
+        assert!(env.view.handle_drag_start(50, 10));
+        assert!(matches!(env.view.drag_state, Some(DragKind::PreviewSelect)));
+        let sel = env.view.preview_selection.expect("selection installed");
+        assert_eq!(sel.anchor, (50, 10));
+        assert_eq!(sel.extent, (50, 10));
+        assert!(!sel.finalized);
+    }
+
+    #[test]
+    #[serial]
+    fn drag_start_blocked_by_non_live_overlay() {
+        // A modal sitting over the preview must swallow the press
+        // instead of seeding a hidden highlight behind the dialog.
+        let mut env = create_test_env_empty();
+        env.view.preview_area = Rect::new(40, 0, 60, 20);
+        env.view.show_help = true;
         assert!(!env.view.handle_drag_start(50, 10));
         assert!(env.view.preview_selection.is_none());
         assert!(env.view.drag_state.is_none());
