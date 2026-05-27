@@ -26,6 +26,48 @@ fn is_ssh_session() -> bool {
         || std::env::var("SSH_TTY").is_ok()
 }
 
+/// Word-wrap `text` to a maximum display width, collapsing runs of
+/// whitespace so the multi-line `\`-continued descriptions in
+/// `fields.rs` (which preserve indentation on each source line) render
+/// without runs of extra spaces. Returns at least one line so callers
+/// can use `lines.len()` as a height directly. A word wider than
+/// `width` is left on its own line and will overflow; descriptions are
+/// natural prose so this isn't a real-world case.
+pub(super) fn wrap_description_lines(text: &str, width: u16) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let max_width = width as usize;
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+    for word in text.split_whitespace() {
+        let w = word.width();
+        if current.is_empty() {
+            current.push_str(word);
+            current_w = w;
+        } else if current_w + 1 + w <= max_width {
+            current.push(' ');
+            current.push_str(word);
+            current_w += 1 + w;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+            current_w = w;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 impl SettingsView {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Clear the area
@@ -213,6 +255,7 @@ impl SettingsView {
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        self.fields_content_width = inner.width;
 
         if self.fields.is_empty() {
             let msg = if self.scope == SettingsScope::Repo {
@@ -352,19 +395,31 @@ impl SettingsView {
     }
 
     pub(super) fn field_height(&self, field: &super::SettingField, index: usize) -> u16 {
+        let desc_height = self.description_height(field.description);
         match &field.value {
             FieldValue::SectionHeader => {
-                // heading line + dimmed subtitle. No value row.
-                1 + 1
+                // heading line + dimmed subtitle (wrapped). No value row.
+                1 + desc_height
             }
             FieldValue::List(items)
                 if self.list_edit_state.is_some() && index == self.selected_field =>
             {
                 // label + description + header + items + add prompt
-                1 + 1 + 1 + items.len() as u16 + 1
+                1 + desc_height + 1 + items.len() as u16 + 1
             }
-            _ => 1 + 1 + 1, // Label + description + value/summary
+            _ => 1 + desc_height + 1, // Label + description + value/summary
         }
+    }
+
+    /// Height in rows of a field's description after word-wrapping to
+    /// the fields panel width. Empty descriptions reserve zero rows so
+    /// section headers without a subtitle don't waste a blank line.
+    pub(super) fn description_height(&self, description: &str) -> u16 {
+        if description.is_empty() {
+            return 0;
+        }
+        let width = self.fields_content_width.max(1);
+        wrap_description_lines(description, width).len() as u16
     }
 
     fn render_field(
@@ -394,16 +449,18 @@ impl SettingsView {
             ]);
             frame.render_widget(Paragraph::new(heading), area);
             if !field.description.is_empty() {
+                let wrapped = wrap_description_lines(field.description, area.width);
                 let subtitle_area = Rect {
                     x: area.x,
                     y: area.y + 1,
                     width: area.width,
-                    height: 1,
+                    height: wrapped.len() as u16,
                 };
-                frame.render_widget(
-                    Paragraph::new(field.description).style(Style::default().fg(theme.dimmed)),
-                    subtitle_area,
-                );
+                let lines: Vec<Line> = wrapped
+                    .into_iter()
+                    .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.dimmed))))
+                    .collect();
+                frame.render_widget(Paragraph::new(lines), subtitle_area);
             }
             return;
         }
@@ -436,19 +493,25 @@ impl SettingsView {
 
         frame.render_widget(Paragraph::new(label), area);
 
+        let wrapped_desc = wrap_description_lines(field.description, area.width);
+        let desc_height = wrapped_desc.len() as u16;
         let description_area = Rect {
             x: area.x,
             y: area.y + 1,
             width: area.width,
-            height: 1,
+            height: desc_height,
         };
-        frame.render_widget(
-            Paragraph::new(field.description).style(Style::default().fg(theme.dimmed)),
-            description_area,
-        );
+        let desc_lines: Vec<Line> = wrapped_desc
+            .into_iter()
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.dimmed))))
+            .collect();
+        frame.render_widget(Paragraph::new(desc_lines), description_area);
 
+        // Inner value renderers paint at `value_area.y + 1`, so shift
+        // by the wrapped description height to keep the value aligned
+        // directly under the (potentially multi-line) description.
         let value_area = Rect {
-            y: area.y + 1,
+            y: area.y + desc_height,
             ..area
         };
 
@@ -1124,5 +1187,72 @@ impl SettingsView {
             Span::styled("close", Style::default().fg(theme.dimmed)),
         ]);
         frame.render_widget(Paragraph::new(footer), layout[3]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_description_lines;
+
+    #[test]
+    fn wrap_description_lines_returns_empty_for_empty_input() {
+        assert!(wrap_description_lines("", 40).is_empty());
+    }
+
+    #[test]
+    fn wrap_description_lines_fits_short_text_on_one_line() {
+        let lines = wrap_description_lines("short text", 40);
+        assert_eq!(lines, vec!["short text".to_string()]);
+    }
+
+    #[test]
+    fn wrap_description_lines_breaks_at_word_boundaries() {
+        let lines = wrap_description_lines("one two three four", 8);
+        // "one two" fits (7 chars), "three" needs new line, "four" fits with "three"
+        assert_eq!(
+            lines,
+            vec![
+                "one two".to_string(),
+                "three".to_string(),
+                "four".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn wrap_description_lines_collapses_runs_of_whitespace() {
+        // Mimics the multi-line `\`-continued descriptions in fields.rs
+        // where the continuation indentation produces runs of spaces.
+        let text = "hello      world      again";
+        let lines = wrap_description_lines(text, 40);
+        assert_eq!(lines, vec!["hello world again".to_string()]);
+    }
+
+    #[test]
+    fn wrap_description_lines_handles_long_setting_description() {
+        // Approximation of the Interaction tab description that
+        // triggered the cutoff bug at narrow widths (issue #1551).
+        let text = "What Enter (and double-click) does on a session row in \
+                    the Agent view: attach to tmux (default, historical \
+                    behavior) or enter live-send mode so the home list stays \
+                    visible and keystrokes pipe through to the agent. \
+                    Terminal/Tool views and cockpit sessions ignore this \
+                    setting.";
+        // At a 120-col-wide settings panel none of the wrapped lines
+        // should exceed the available width.
+        let lines = wrap_description_lines(text, 120);
+        assert!(lines.len() > 1, "long text should wrap to multiple lines");
+        for line in &lines {
+            assert!(
+                line.chars().count() <= 120,
+                "wrapped line {line:?} exceeds width"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_description_lines_zero_width_returns_single_line() {
+        let lines = wrap_description_lines("anything", 0);
+        assert_eq!(lines, vec!["anything".to_string()]);
     }
 }
