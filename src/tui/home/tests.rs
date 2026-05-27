@@ -4768,6 +4768,102 @@ fn prune_empty_group_keeps_source_when_descendant_session_remains() {
     );
 }
 
+/// Prune must keep the source group when the profile's tree carries a
+/// descendant *group* (even with no session under it). Lets users keep
+/// hand-built structure like `work/anchor` that survives moves of every
+/// session out of the parent. Without this guard, `delete_group`'s
+/// `starts_with(prefix)` cascade nukes the anchor sub-group too.
+#[test]
+#[serial]
+fn prune_empty_group_keeps_source_when_descendant_group_remains() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+
+    let mut moved = Instance::new("moved", "/tmp/moved");
+    moved.source_profile = "alpha".to_string();
+    moved.group_path = "work".to_string();
+    view.instances = vec![moved];
+    view.group_trees.clear();
+    let mut alpha_tree = GroupTree::new_with_groups(&view.instances, &[]);
+    alpha_tree.create_group("work/anchor");
+    view.group_trees.insert("alpha".to_string(), alpha_tree);
+    view.group_trees
+        .insert("beta".to_string(), GroupTree::new_with_groups(&[], &[]));
+    assert!(view.group_trees["alpha"].group_exists("work/anchor"));
+
+    view.instances[0].source_profile = "beta".to_string();
+    view.prune_empty_group("alpha", "work");
+
+    assert!(
+        view.group_trees["alpha"].group_exists("work"),
+        "alpha must keep 'work' because of the user-anchored 'work/anchor' sub-group"
+    );
+    assert!(
+        view.group_trees["alpha"].group_exists("work/anchor"),
+        "anchor sub-group must survive the no-op prune"
+    );
+}
+
+/// The prune must persist through save+reload. Without tombstoning in
+/// `pending_group_deletions`, the in-memory delete is reverted on next
+/// startup because `HomeView::new` reloads `existing_groups` from disk
+/// and reseeds the tree with the supposedly-pruned group. Mirrors the
+/// restart_selected_session sequence: seed + persist, then move + prune
+/// + persist.
+#[test]
+#[serial]
+fn prune_empty_group_survives_save_and_reload() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+
+    {
+        let mut view = HomeView::new(None, tools.clone()).unwrap();
+        let moved = {
+            let mut inst = Instance::new("moved", "/tmp/moved");
+            inst.source_profile = "alpha".to_string();
+            inst.group_path = "work".to_string();
+            inst
+        };
+        view.instance_map.insert("moved".to_string(), moved.clone());
+        view.instances.push(moved);
+        view.pending_added
+            .entry("alpha".to_string())
+            .or_default()
+            .insert("moved".to_string());
+        view.group_trees.insert(
+            "alpha".to_string(),
+            GroupTree::new_with_groups(&view.instances, &[]),
+        );
+        view.save().unwrap();
+
+        view.group_trees
+            .entry("beta".to_string())
+            .or_insert_with(|| GroupTree::new_with_groups(&[], &[]));
+        let old_path = view.instance_map["moved"].group_path.clone();
+        view.move_to_profile("moved", "beta", old_path.clone())
+            .unwrap();
+        view.prune_empty_group("alpha", &old_path);
+        view.save().unwrap();
+    }
+
+    let reloaded = HomeView::new(None, tools).unwrap();
+    assert!(
+        reloaded.group_trees.contains_key("alpha"),
+        "alpha tree must still load after the move"
+    );
+    assert!(
+        !reloaded.group_trees["alpha"].group_exists("work"),
+        "pruned 'work' must stay gone after save+reload, not get re-seeded from disk"
+    );
+}
+
 /// Favorite, snooze, and urgent decorations only render in Attention sort.
 /// In Newest (or any other sort), the row paints with its plain title and
 /// status-driven color even when the flags are set, so users who don't

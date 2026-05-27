@@ -2818,10 +2818,13 @@ impl HomeView {
     }
 
     /// Drop `group_path` from `profile`'s tree when no remaining session in
-    /// that profile sits at the path or anywhere underneath it. Used after a
-    /// session moves to a different profile: without this, the source
-    /// profile keeps an empty group header that renders alongside the
-    /// target profile's new copy of the same group, reading as a duplicate.
+    /// that profile sits at the path or anywhere underneath it AND the path
+    /// carries no user-anchored descendant group. Used after a session moves
+    /// to a different profile: without this, the source profile keeps an
+    /// empty group header that renders alongside the target profile's new
+    /// copy of the same group, reading as a duplicate. Delegates to
+    /// `delete_group_in_profile` so the deletion is tombstoned for `save()`
+    /// and survives the next reload.
     pub(super) fn prune_empty_group(&mut self, profile: &str, group_path: &str) {
         if group_path.is_empty() {
             return;
@@ -2834,9 +2837,19 @@ impl HomeView {
         if still_used {
             return;
         }
-        if let Some(tree) = self.group_trees.get_mut(profile) {
-            tree.delete_group(group_path);
+        // Preserve hand-built structure: if the tree carries a descendant
+        // group (e.g. user-anchored `work/anchor`) under this path, leave
+        // the parent alone. The duplicate-header in unified view is the
+        // lesser evil compared to nuking the user's hierarchy.
+        let has_descendant_group = self.group_trees.get(profile).is_some_and(|tree| {
+            tree.get_all_groups()
+                .iter()
+                .any(|g| g.path.starts_with(&prefix))
+        });
+        if has_descendant_group {
+            return;
         }
+        self.delete_group_in_profile(profile, group_path);
     }
 
     /// Determine which profile the item at the given cursor position belongs to.
