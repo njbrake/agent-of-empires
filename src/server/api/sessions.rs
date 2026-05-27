@@ -1422,23 +1422,54 @@ pub async fn create_session(
             instance.cockpit_model = body.cockpit_model;
         }
 
-        let storage = Storage::new(&profile)?;
-        let to_persist = instance.clone();
-        storage.update(|all, _groups| {
-            all.push(to_persist);
-            Ok(())
-        })?;
+        // Anything that fails between here and the final `Ok(..)`
+        // would otherwise orphan the scratch directory `build_instance`
+        // already provisioned (Storage::new, storage.update,
+        // instance.start). Wrap the tail in an IIFE-equivalent closure
+        // so we can run cleanup on Err once, regardless of which step
+        // tripped. Matches the CLI cleanup path in
+        // `cleanup_partial_session(... scratch_dir: Some(...))`.
+        let mut persist_and_start = || -> anyhow::Result<()> {
+            let storage = Storage::new(&profile)?;
+            let to_persist = instance.clone();
+            storage.update(|all, _groups| {
+                all.push(to_persist);
+                Ok(())
+            })?;
 
-        // Cockpit-mode sessions are not backed by tmux; the cockpit
-        // supervisor spawns the ACP agent on demand. Skip the tmux
-        // `start()` to avoid creating an empty pane that no one will
-        // attach to.
-        #[cfg(feature = "serve")]
-        let skip_tmux_start = instance.cockpit_mode;
-        #[cfg(not(feature = "serve"))]
-        let skip_tmux_start = false;
-        if !skip_tmux_start {
-            instance.start()?;
+            // Cockpit-mode sessions are not backed by tmux; the cockpit
+            // supervisor spawns the ACP agent on demand. Skip the tmux
+            // `start()` to avoid creating an empty pane that no one will
+            // attach to.
+            #[cfg(feature = "serve")]
+            let skip_tmux_start = instance.cockpit_mode;
+            #[cfg(not(feature = "serve"))]
+            let skip_tmux_start = false;
+            if !skip_tmux_start {
+                instance.start()?;
+            }
+            Ok(())
+        };
+
+        if let Err(e) = persist_and_start() {
+            // Guarded the same way as the deletion path: only remove a
+            // path that `is_scratch_path` blesses, so a corrupted
+            // `project_path` cannot trick us into wiping unrelated
+            // state.
+            if instance.scratch {
+                let scratch_path = std::path::PathBuf::from(&instance.project_path);
+                if crate::session::scratch::is_scratch_path(&scratch_path) {
+                    if let Err(rm_err) = std::fs::remove_dir_all(&scratch_path) {
+                        tracing::warn!(
+                            target: "http.api.sessions",
+                            "Failed to clean up orphan scratch dir {} after create failure: {}",
+                            scratch_path.display(),
+                            rm_err
+                        );
+                    }
+                }
+            }
+            return Err(e);
         }
 
         Ok::<(Instance, Vec<String>), anyhow::Error>((instance, build_warnings))
