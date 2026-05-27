@@ -78,6 +78,7 @@ vi.mock("@xterm/xterm", () => {
     attachCustomWheelEventHandler(fn: (e: WheelEvent) => boolean): void {
       captured.customWheel = fn;
     }
+    attachCustomKeyEventHandler(_fn: (e: KeyboardEvent) => boolean): void {}
     resize(cols: number, rows: number): void {
       this.cols = cols;
       this.rows = rows;
