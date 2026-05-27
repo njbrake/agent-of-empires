@@ -1247,29 +1247,15 @@ impl HomeView {
                 self.view_mode = ViewMode::Agent;
             }
             KeyCode::Char('q') => return Some(Action::Quit),
-            // `w` / `W` (snooze), `h` / `H` (snooze alias), and `f` / `F`
-            // (favorite) are gated to Attention sort. Snooze and favorite
-            // are triage primitives; they only have a visible effect
-            // (and a sort impact) in Attention mode. Outside Attention,
-            // mutating these flags would silently change persisted state
-            // with no on-screen feedback, so we ignore the press
-            // entirely. Other sort modes fall through to the existing
-            // fallback bindings (`h` collapses; `w` is jump-to-next-
-            // waiting in non-strict mode).
-            KeyCode::Char('w')
-                if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
-            {
-                if let Err(e) = self.toggle_snooze_at_cursor() {
-                    tracing::error!("toggle_snooze_at_cursor failed: {}", e);
-                }
-            }
-            KeyCode::Char('W')
-                if self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
-            {
-                if let Err(e) = self.toggle_snooze_at_cursor() {
-                    tracing::error!("toggle_snooze_at_cursor failed: {}", e);
-                }
-            }
+            // `h` / `H` (snooze) and `f` / `F` (favorite) are gated to
+            // Attention sort. Snooze and favorite are triage primitives; they
+            // only have a visible effect (and a sort impact) in Attention mode.
+            // Outside Attention, mutating these flags would silently change
+            // persisted state with no on-screen feedback, so we ignore the
+            // press entirely (`h` then falls through to the group-collapse
+            // binding). Snooze used to also live on `w` / `W`, which shadowed
+            // the jump-to-next-waiting binding below in Attention sort; #1524
+            // moved it off so `w` is navigation again.
             KeyCode::Char('h')
                 if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
             {
@@ -2247,12 +2233,11 @@ impl HomeView {
                     }
                 }
             }
-            // Upstream PR #796 added `w` for jump-to-next-waiting after the
-            // snooze feature (a19337b) had already taken `w`/`W`. In non-strict
-            // mode the snooze arm at line 707 catches first, so this jump arm
-            // was always dead. In strict mode it leaked through and preempted
-            // the typing-guard below; bare `w` jumped the cursor instead of
-            // opening compose like every other lowercase letter. Gate it.
+            // Jump to the next waiting/idle session (PR #796). Snooze moved off
+            // `w`/`W` onto `h`/`H` (#1524), so in Attention sort `w` is no
+            // longer shadowed by a snooze arm and this finally fires across
+            // every sort mode. Strict mode keeps bare lowercase `w` for the
+            // typing-guard below.
             KeyCode::Char('w') if !self.strict_hotkeys => {
                 self.jump_to_next_waiting();
             }

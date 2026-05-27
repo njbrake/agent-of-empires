@@ -1907,6 +1907,84 @@ fn test_non_strict_h_snoozes_only_in_attention_sort() {
     }
 }
 
+/// Build a flat list of one Running and one Waiting session in the given mode.
+/// Returns the env plus the flat index of each so callers can park the cursor.
+/// Statuses are seeded in storage before construction so both `instances` and
+/// the `instance_map` that `get_instance`/`jump_to_next_waiting` read agree.
+fn attention_env_running_then_waiting() -> (TestEnv, usize, usize) {
+    use crate::session::config::{GroupByMode, SortOrder};
+    use crate::session::Status;
+
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut running = Instance::new("running", "/tmp/running");
+    running.status = Status::Running;
+    let mut waiting = Instance::new("waiting", "/tmp/waiting");
+    waiting.status = Status::Waiting;
+    let instances = vec![running, waiting];
+    storage
+        .update(|i, g| {
+            *i = instances.to_vec();
+            *g = GroupTree::new_with_groups(&instances, &[]).get_all_groups();
+            Ok(())
+        })
+        .unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
+    view.strict_hotkeys = false;
+    view.group_by = GroupByMode::Manual;
+    view.sort_order = SortOrder::Attention;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+    let env = TestEnv { _temp: temp, view };
+
+    let status_at = |env: &TestEnv, idx: usize| match env.view.flat_items.get(idx) {
+        Some(Item::Session { id, .. }) => env.view.get_instance(id).map(|i| i.status),
+        _ => None,
+    };
+    let running = (0..env.view.flat_items.len())
+        .find(|&i| status_at(&env, i) == Some(Status::Running))
+        .expect("a Running session row");
+    let waiting = (0..env.view.flat_items.len())
+        .find(|&i| status_at(&env, i) == Some(Status::Waiting))
+        .expect("a Waiting session row");
+    (env, running, waiting)
+}
+
+#[test]
+#[serial]
+fn test_non_strict_w_jumps_to_next_waiting_in_attention_sort() {
+    // Regression for #1524: in non-strict Attention sort, `w` must jump to the
+    // next waiting/idle session (the #796 behavior) instead of snoozing the
+    // cursor's session. Snooze lives on `h`/`H`; `w` is navigation. Previously
+    // the snooze arm shadowed the jump arm in exactly the sort users triage in,
+    // so `w` never felt like a navigation key.
+    use crate::session::Status;
+
+    let (mut env, running, _waiting) = attention_env_running_then_waiting();
+    env.view.cursor = running;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::Char('w')), None);
+
+    assert!(
+        env.view.snooze_duration_dialog.is_none(),
+        "`w` in Attention sort must jump, not open the snooze dialog"
+    );
+    let landed = match env.view.flat_items.get(env.view.cursor) {
+        Some(Item::Session { id, .. }) => env.view.get_instance(id).map(|i| i.status),
+        _ => None,
+    };
+    assert_eq!(
+        landed,
+        Some(Status::Waiting),
+        "`w` should land the cursor on the Waiting session"
+    );
+}
+
 #[test]
 #[serial]
 fn test_strict_mode_ctrl_g_opens_group_picker() {
