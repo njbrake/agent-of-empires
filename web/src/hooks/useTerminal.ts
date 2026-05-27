@@ -259,13 +259,14 @@ export function useTerminal(
 
     term.open(termEl);
 
-    // Shift+Enter → ESC+CR so tmux/crossterm sees it as a distinct key
-    // (most physical terminals emit this sequence natively; xterm.js does not).
+    // Shift+Enter → CSI 13;2 u (kitty keyboard protocol) so tmux
+    // extended-keys forwards it and the inner app sees Shift+Enter, not
+    // bare Enter. xterm.js does not emit modifier info for Enter natively.
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type === "keydown" && ev.key === "Enter" && ev.shiftKey) {
         const ws = wsRef.current;
         if (ws?.readyState === WebSocket.OPEN) {
-          ws.send(new TextEncoder().encode("\x1b\r"));
+          ws.send(new TextEncoder().encode("\x1b[13;2u"));
         }
         return false;
       }

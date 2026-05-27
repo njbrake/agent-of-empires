@@ -8,8 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::{
     refresh_session_cache, session_exists_from_cache,
     utils::{
-        append_clipboard_passthrough_args, append_mouse_on_args, append_pane_base_index_args,
-        append_remain_on_exit_args, append_window_size_args, is_pane_dead, is_pane_running_shell,
+        append_clipboard_passthrough_args, append_extended_keys_args, append_mouse_on_args,
+        append_pane_base_index_args, append_remain_on_exit_args, append_window_size_args,
+        is_pane_dead, is_pane_running_shell,
     },
     SESSION_PREFIX,
 };
@@ -75,6 +76,7 @@ impl Session {
         append_remain_on_exit_args(&mut args, &self.name);
         append_pane_base_index_args(&mut args, &self.name);
         append_mouse_on_args(&mut args, &self.name);
+        append_extended_keys_args(&mut args, &self.name);
         append_window_size_args(&mut args, &self.name);
         if should_apply_tmux_clipboard() {
             append_clipboard_passthrough_args(&mut args, &self.name);

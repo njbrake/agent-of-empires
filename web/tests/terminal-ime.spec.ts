@@ -100,7 +100,9 @@ test.describe("Terminal IME input", () => {
     expect(sentText(handle, start)).not.toContain("n");
   });
 
-  test("Shift+Enter sends ESC+CR instead of bare CR", async ({ page }) => {
+  test("Shift+Enter sends CSI 13;2u (kitty protocol) instead of bare CR", async ({
+    page,
+  }) => {
     const handle = await mockTerminalApis(page);
     await page.goto("/");
     await openSession(page, handle);
@@ -113,6 +115,6 @@ test.describe("Terminal IME input", () => {
 
     await expect
       .poll(() => sentText(handle, start), { timeout: 5_000 })
-      .toContain("\x1b\r");
+      .toContain("\x1b[13;2u");
   });
 });

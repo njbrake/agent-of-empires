@@ -163,6 +163,23 @@ pub fn append_window_size_args(args: &mut Vec<String>, target: &str) {
 /// `-q` (silently ignore errors) keeps aoe compatible with tmux < 3.3, where
 /// `allow-passthrough` does not exist. On those versions the set-option call
 /// quietly no-ops instead of failing the whole `new-session` invocation.
+/// Append `; set-option -q -t <target> extended-keys on` so tmux forwards
+/// modifier-encoded key sequences (CSI u / kitty keyboard protocol) to the
+/// inner application. Without this, Shift+Enter is indistinguishable from
+/// Enter because tmux strips the modifier. `-q` keeps compatibility with
+/// tmux < 3.2 where the option does not exist.
+pub fn append_extended_keys_args(args: &mut Vec<String>, target: &str) {
+    args.extend([
+        ";".to_string(),
+        "set-option".to_string(),
+        "-q".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        "extended-keys".to_string(),
+        "on".to_string(),
+    ]);
+}
+
 pub fn append_clipboard_passthrough_args(args: &mut Vec<String>, target: &str) {
     args.extend([
         ";".to_string(),
