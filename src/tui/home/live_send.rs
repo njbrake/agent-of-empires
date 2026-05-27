@@ -267,31 +267,67 @@ pub(in crate::tui) struct LiveSendState {
     pub session_id: String,
     pub title: String,
     pub tmux_name: String,
+    /// Which paired pane the live-send is targeting. Captured at entry
+    /// time so the drift check, exit-sizing reset, and view-mode flips
+    /// during live-send don't change where keystrokes are dispatched.
+    pub target: LiveSendTarget,
     /// Chord list parsed from the user's configured exit-chord
     /// setting at entry time. Captured per-entry so config edits
     /// don't change behavior mid-session.
     pub exit_chords: Vec<(KeyCode, KeyModifiers)>,
 }
 
+/// Which paired tmux pane a live-send dispatch targets. The agent
+/// pane is the historical default; terminal panes (host and
+/// container) reuse the same live-send dispatch machinery but route
+/// to the paired terminal's tmux session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(in crate::tui) enum LiveSendTarget {
+    /// The agent's tmux pane (default, pre-existing behavior).
+    #[default]
+    Agent,
+    /// The paired host-shell terminal pane.
+    Terminal,
+    /// The paired container-shell terminal pane (sandboxed sessions
+    /// in container terminal mode).
+    ContainerTerminal,
+}
+
+/// Format a display label for a `(title, target)` pair so the compose
+/// dialog header and the live-mode status banner stay in lockstep.
+/// Agent keeps the bare title (historical look); terminal variants
+/// get a short parenthetical so the user sees which pane the
+/// keystrokes will land on without having to read the preview chrome.
+pub(in crate::tui) fn format_target_label(title: &str, target: LiveSendTarget) -> String {
+    match target {
+        LiveSendTarget::Agent => title.to_string(),
+        LiveSendTarget::Terminal => format!("{title} (terminal)"),
+        LiveSendTarget::ContainerTerminal => format!("{title} (container)"),
+    }
+}
+
 /// One coalesced unit of work the worker hands to tmux. `Literal` runs
-/// fold together; named keys and resizes break the run because their
-/// order vs. surrounding text matters (an Up arrow between "ab" and
-/// "cd" must arrive between, not after; a resize that lands before
-/// keystrokes makes the agent render those keystrokes at the new
-/// geometry).
+/// fold together; named keys, hex-byte runs, and resizes break the run
+/// because their order vs. surrounding text matters (an Up arrow between
+/// "ab" and "cd" must arrive between, not after; a resize that lands
+/// before keystrokes makes the agent render those keystrokes at the new
+/// geometry). Consecutive `HexBytes` payloads do merge with each other
+/// so a multi-blank-line paste collapses into one `send-keys -H` call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TmuxAction {
     Literal(String),
     Named(String),
+    HexBytes(Vec<u8>),
     Resize { cols: u16, rows: u16 },
 }
 
 /// Fold a batch of `WorkerMsg`s into the smallest sequence of
 /// `TmuxAction`s that preserves the original ordering. Consecutive
-/// `Send(Literal)` values merge into one payload (single
-/// `tmux send-keys` call); a `Send(Named)` or `Resize` flushes the
-/// current literal run and goes out on its own. Pure function so tests
-/// can verify ordering without spawning a worker thread.
+/// `Send(Literal)` values merge into one `send-keys -l` payload, and
+/// consecutive `Send(HexBytes)` values merge into one `send-keys -H`
+/// argument list; a `Send(Named)`, `Send(HexBytes)`, or `Resize`
+/// flushes the current literal run. Pure function so tests can verify
+/// ordering without spawning a worker thread.
 pub(super) fn coalesce(batch: Vec<WorkerMsg>) -> Vec<TmuxAction> {
     let mut out: Vec<TmuxAction> = Vec::new();
     let mut run = String::new();
@@ -306,6 +342,13 @@ pub(super) fn coalesce(batch: Vec<WorkerMsg>) -> Vec<TmuxAction> {
             WorkerMsg::Send(TmuxKey::Named(name)) => {
                 flush(&mut out, &mut run);
                 out.push(TmuxAction::Named(name));
+            }
+            WorkerMsg::Send(TmuxKey::HexBytes(bytes)) => {
+                flush(&mut out, &mut run);
+                match out.last_mut() {
+                    Some(TmuxAction::HexBytes(prev)) => prev.extend_from_slice(&bytes),
+                    _ => out.push(TmuxAction::HexBytes(bytes)),
+                }
             }
             WorkerMsg::Resize { cols, rows } => {
                 flush(&mut out, &mut run);
@@ -428,6 +471,16 @@ fn dispatch_via_fork(tmux_name: &str, action: &TmuxAction) -> anyhow::Result<()>
         TmuxAction::Named(name) => {
             cmd.args(["send-keys", "-t", &target, name.as_str()]);
         }
+        TmuxAction::HexBytes(bytes) => {
+            // `-H` sends each subsequent arg as the hex byte value of an
+            // ASCII character. We use this for control bytes (CR, TAB,
+            // ESC) and the bracketed-paste markers, none of which can
+            // ride a `-l` payload safely.
+            cmd.args(["send-keys", "-t", &target, "-H"]);
+            for b in bytes {
+                cmd.arg(format!("{:02x}", b));
+            }
+        }
         TmuxAction::Resize { cols, rows } => {
             cmd.args([
                 "resize-window",
@@ -464,11 +517,15 @@ pub(super) enum LiveDispatch {
 }
 
 /// How the translator wants the keystroke delivered. `Literal` payloads
-/// go through `tmux send-keys -l --`, named keys through `tmux send-keys`.
+/// go through `tmux send-keys -l --`, named keys through `tmux send-keys`,
+/// and `HexBytes` through `tmux send-keys -H <byte> <byte> ...` for raw
+/// bytes that can't ride a literal payload (control bytes like ESC, CR,
+/// TAB, and the bracketed-paste markers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TmuxKey {
     Literal(String),
     Named(String),
+    HexBytes(Vec<u8>),
 }
 
 /// Map one crossterm `KeyEvent` onto a `LiveDispatch`.
@@ -867,6 +924,9 @@ mod tests {
     fn snd_named(s: &str) -> WorkerMsg {
         WorkerMsg::Send(TmuxKey::Named(s.into()))
     }
+    fn snd_hex(bytes: &[u8]) -> WorkerMsg {
+        WorkerMsg::Send(TmuxKey::HexBytes(bytes.to_vec()))
+    }
 
     #[test]
     fn coalesce_empty_batch_is_empty() {
@@ -949,6 +1009,60 @@ mod tests {
             vec![
                 TmuxAction::Named("Tab".into()),
                 TmuxAction::Literal("xy".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn coalesce_hex_bytes_breaks_literal_run() {
+        // A HexBytes payload (bracketed-paste marker, raw CR, etc.)
+        // must dispatch in order, not after surrounding literals.
+        let out = coalesce(vec![snd_lit("a"), snd_hex(&[0x0d]), snd_lit("b")]);
+        assert_eq!(
+            out,
+            vec![
+                TmuxAction::Literal("a".into()),
+                TmuxAction::HexBytes(vec![0x0d]),
+                TmuxAction::Literal("b".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn coalesce_back_to_back_hex_bytes_merge() {
+        // Consecutive HexBytes payloads (e.g. a paste with a blank line
+        // produces two raw-CR sends in a row) collapse into one
+        // `send-keys -H` invocation. Named keys can't merge because
+        // each is a separate key argument; raw bytes have no such
+        // constraint.
+        let out = coalesce(vec![snd_hex(&[0x0d]), snd_hex(&[0x0d])]);
+        assert_eq!(out, vec![TmuxAction::HexBytes(vec![0x0d, 0x0d])]);
+    }
+
+    #[test]
+    fn coalesce_preserves_order_when_hex_bytes_and_literals_interleave() {
+        // A future caller could send `HexBytes` and `Literal` payloads
+        // back to back (e.g. a typed-then-pasted burst the worker
+        // drained in one tick). Coalesce must keep wire ordering
+        // intact: each `Literal` flushes the run, and only adjacent
+        // `HexBytes` pairs merge.
+        let start = vec![0x1b, b'[', b'2', b'0', b'0', b'~'];
+        let end = vec![0x1b, b'[', b'2', b'0', b'1', b'~'];
+        let out = coalesce(vec![
+            snd_hex(&start),
+            snd_lit("a"),
+            snd_hex(&[0x0d]),
+            snd_lit("b"),
+            snd_hex(&end),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                TmuxAction::HexBytes(start),
+                TmuxAction::Literal("a".into()),
+                TmuxAction::HexBytes(vec![0x0d]),
+                TmuxAction::Literal("b".into()),
+                TmuxAction::HexBytes(end),
             ]
         );
     }

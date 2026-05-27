@@ -823,6 +823,8 @@ fn event_kind(event: &crate::cockpit::Event) -> &'static str {
         Event::CurrentModeChanged { .. } => "current_mode_changed",
         Event::ModeSwitchFailed { .. } => "mode_switch_failed",
         Event::AvailableCommandsUpdated { .. } => "available_commands_updated",
+        Event::ConfigOptionsUpdated { .. } => "config_options_updated",
+        Event::ConfigOptionSwitchFailed { .. } => "config_option_switch_failed",
         Event::RawAgentUpdate { .. } => "raw_agent_update",
         Event::AgentMessageChunk { .. } => "agent_message_chunk",
         Event::Stopped { .. } => "stopped",

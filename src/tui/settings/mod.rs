@@ -132,6 +132,12 @@ pub struct SettingsView {
     /// Last known viewport height for the fields panel (set during render)
     pub(super) fields_viewport_height: u16,
 
+    /// Last known content width for the fields panel (set during render).
+    /// Used to compute description wrap heights outside the render pass,
+    /// so `ensure_field_visible` and the scroll math match what the
+    /// next frame will actually paint.
+    pub(super) fields_content_width: u16,
+
     /// Whether there are unsaved changes
     pub(super) has_changes: bool,
 
@@ -214,6 +220,7 @@ impl SettingsView {
             custom_instruction_dialog: None,
             fields_scroll_offset: 0,
             fields_viewport_height: 0,
+            fields_content_width: 0,
             has_changes: false,
             show_help: false,
             error_message: None,

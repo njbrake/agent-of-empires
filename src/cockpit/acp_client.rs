@@ -22,8 +22,9 @@ use agent_client_protocol::schema::{
     KillTerminalResponse, LoadSessionRequest, NewSessionRequest, PermissionOptionKind,
     PromptRequest, ProtocolVersion, ReadTextFileRequest, ReadTextFileResponse,
     ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, SetSessionModeRequest, StopReason, TerminalId,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigId, SessionConfigValueId, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TerminalId,
     TerminalOutputRequest, TerminalOutputResponse, TextContent, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
@@ -40,7 +41,8 @@ use super::approvals::{is_destructive, ApprovalDecision, Nonce};
 use super::fs_handler::{self, FsPolicy, SandboxPathMap};
 use super::permissions::build_approval;
 use super::state::{
-    AvailableCommand, CockpitSessionId, DiffPreview, Event, MemoryRecall, ModeInfo, Plan, PlanStep,
+    AvailableCommand, CockpitSessionId, ConfigOptionCategory, ConfigOptionChoice,
+    ConfigOptionDescriptor, DiffPreview, Event, MemoryRecall, ModeInfo, Plan, PlanStep,
     PlanStepStatus, RateLimitInfo, SessionMode, SessionUsage, StartupErrorDetail, ToolCall,
     UsageCost,
 };
@@ -227,6 +229,14 @@ enum ClientCmd {
     Prompt(String),
     Cancel,
     SetMode(String),
+    /// Send `session/set_config_option` for the given (`config_id`,
+    /// `value`) pair. The connection task fires the request detached so
+    /// the cmd_rx loop keeps polling for Cancel during the round-trip.
+    /// See #1403.
+    SetConfigOption {
+        config_id: String,
+        value: String,
+    },
     Shutdown,
 }
 
@@ -1401,6 +1411,22 @@ impl AcpClient {
         let cmd_tx = self.cmd_tx.as_ref().ok_or(AcpError::NotRunning)?;
         cmd_tx
             .send(ClientCmd::SetMode(mode_id.to_string()))
+            .await
+            .map_err(|_| AcpError::AgentExited)
+    }
+
+    /// Set a per-session selector (model, reasoning effort, etc.) via
+    /// ACP `session/set_config_option`. The cockpit treats every
+    /// adapter-advertised category through this one path; specific
+    /// helpers per category would just duplicate the wiring. See
+    /// #1403.
+    pub async fn set_config_option(&self, config_id: &str, value: &str) -> Result<(), AcpError> {
+        let cmd_tx = self.cmd_tx.as_ref().ok_or(AcpError::NotRunning)?;
+        cmd_tx
+            .send(ClientCmd::SetConfigOption {
+                config_id: config_id.to_string(),
+                value: value.to_string(),
+            })
             .await
             .map_err(|_| AcpError::AgentExited)
     }
@@ -2744,11 +2770,102 @@ fn map_update_to_events(
             );
             vec![Event::AvailableCommandsUpdated { commands }]
         }
+        SessionUpdate::ConfigOptionUpdate(update) => {
+            let options: Vec<ConfigOptionDescriptor> = update
+                .config_options
+                .into_iter()
+                .filter_map(map_acp_config_option)
+                .collect();
+            debug!(
+                target: "cockpit.acp",
+                count = options.len(),
+                "received ConfigOptionUpdate from agent"
+            );
+            vec![Event::ConfigOptionsUpdated { options }]
+        }
         // Variants we don't have a typed mapping for yet pass through as
         // RawAgentUpdate so the UI can render best-effort and we can
         // narrow these as we go.
         other => vec![raw_event(&other)],
     }
+}
+
+/// Map a snapshot of ACP `SessionConfigOption`s (typically pulled
+/// from `NewSessionResponse.config_options` or
+/// `LoadSessionResponse.config_options`) into one
+/// `Event::ConfigOptionsUpdated`. Returns `None` only when the
+/// snapshot itself is absent (the adapter did not include the field).
+/// A present-but-empty snapshot is still a real full replacement and
+/// must be propagated, otherwise stale cached selectors never clear
+/// when an adapter intentionally drops them. See #1403.
+fn config_options_event(
+    options: Option<Vec<agent_client_protocol::schema::SessionConfigOption>>,
+) -> Option<Event> {
+    let raw = options?;
+    let mapped: Vec<ConfigOptionDescriptor> =
+        raw.into_iter().filter_map(map_acp_config_option).collect();
+    Some(Event::ConfigOptionsUpdated { options: mapped })
+}
+
+/// Build a cockpit `ConfigOptionDescriptor` from an ACP
+/// `SessionConfigOption`. Returns `None` when the option has a kind
+/// the cockpit does not yet render (today everything except `Select`).
+/// See #1403.
+fn map_acp_config_option(
+    option: agent_client_protocol::schema::SessionConfigOption,
+) -> Option<ConfigOptionDescriptor> {
+    use agent_client_protocol::schema::{
+        SessionConfigKind, SessionConfigOptionCategory, SessionConfigSelectOptions,
+    };
+
+    let category = option.category.map(|c| match c {
+        SessionConfigOptionCategory::Mode => ConfigOptionCategory::Mode,
+        SessionConfigOptionCategory::Model => ConfigOptionCategory::Model,
+        SessionConfigOptionCategory::ThoughtLevel => ConfigOptionCategory::ThoughtLevel,
+        SessionConfigOptionCategory::Other(s) => ConfigOptionCategory::Other(s),
+        _ => ConfigOptionCategory::Other(String::new()),
+    });
+
+    // Only `Select` is rendered today; future kinds (boolean toggles
+    // behind `unstable_boolean_config`) skip until the cockpit grows a
+    // matching widget. The schema enum is `#[non_exhaustive]` so a
+    // catch-all is required.
+    let select = match option.kind {
+        SessionConfigKind::Select(s) => s,
+        _ => return None,
+    };
+
+    let choices: Vec<ConfigOptionChoice> = match select.options {
+        SessionConfigSelectOptions::Ungrouped(opts) => opts
+            .into_iter()
+            .map(|o| ConfigOptionChoice {
+                value: o.value.0.to_string(),
+                name: o.name,
+                description: o.description,
+            })
+            .collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .into_iter()
+            .flat_map(|g| {
+                g.options.into_iter().map(|o| ConfigOptionChoice {
+                    value: o.value.0.to_string(),
+                    name: o.name,
+                    description: o.description,
+                })
+            })
+            .collect(),
+        // Catch-all for `#[non_exhaustive]` future variants.
+        _ => Vec::new(),
+    };
+
+    Some(ConfigOptionDescriptor {
+        id: option.id.0.to_string(),
+        name: option.name,
+        description: option.description,
+        category: category.unwrap_or(ConfigOptionCategory::Other(String::new())),
+        current_value: select.current_value.0.to_string(),
+        options: choices,
+    })
 }
 
 fn map_plan_status(status: agent_client_protocol::schema::PlanEntryStatus) -> PlanStepStatus {
@@ -3320,7 +3437,7 @@ async fn run_connection_task<W, R>(
                             suppress_for_block.store(true, Ordering::Relaxed);
                             let req = LoadSessionRequest::new(stored.clone(), cwd.clone());
                             match connection.send_request(req).block_task().await {
-                                Ok(_resp) => {
+                                Ok(resp) => {
                                     info!(
                                         target: "cockpit.acp",
                                         session = %session_label,
@@ -3339,6 +3456,15 @@ async fn run_connection_task<W, R>(
                                             acp_session_id: stored.clone(),
                                         })
                                         .await;
+                                    // Per ACP schema 0.12, LoadSessionResponse
+                                    // carries config_options. Surface them so
+                                    // the cockpit picker hydrates on resume
+                                    // without waiting for a notification. See
+                                    // #1403.
+                                    if let Some(event) = config_options_event(resp.config_options)
+                                    {
+                                        let _ = event_tx_for_block.send(event).await;
+                                    }
                                     acp_session_id = Some(SessionId::from(stored));
                                 }
                                 Err(e) => {
@@ -3400,6 +3526,17 @@ async fn run_connection_task<W, R>(
                                     modes: infos,
                                 })
                                 .await;
+                        }
+
+                        // Per ACP schema 0.12, NewSessionResponse carries
+                        // config_options (claude-agent-acp v0.37.0 emits the
+                        // initial model + effort + mode set here, not as a
+                        // subsequent notification). Surface them so the
+                        // cockpit pickers render immediately. See #1403.
+                        if let Some(event) =
+                            config_options_event(new_session.config_options.clone())
+                        {
+                            let _ = event_tx_for_block.send(event).await;
                         }
 
                         // Tell the server-side listener so it can persist the
@@ -3780,6 +3917,54 @@ async fn run_connection_task<W, R>(
                                                 );
                                             }
                                         }
+                                        Some(ClientCmd::SetConfigOption { config_id, value }) => {
+                                            info!(
+                                                target: "cockpit.acp",
+                                                "sending session/set_config_option {config_id}={value} during in-flight prompt"
+                                            );
+                                            let sent = connection.send_request(
+                                                SetSessionConfigOptionRequest::new(
+                                                    acp_session_id.clone(),
+                                                    SessionConfigId::new(config_id.clone()),
+                                                    SessionConfigValueId::new(value.clone()),
+                                                ),
+                                            );
+                                            let tx = event_tx_for_block.clone();
+                                            tokio::spawn(async move {
+                                                match sent.block_task().await {
+                                                    Ok(resp) => {
+                                                        // claude-agent-acp's setSessionConfigOption
+                                                        // returns the full updated config_options
+                                                        // list in the response but does NOT emit a
+                                                        // follow-up `config_option_update`
+                                                        // notification (see acp-agent.js:1003-1057).
+                                                        // Synthesize ConfigOptionsUpdated from the
+                                                        // response so the frontend reducer clears
+                                                        // pending state and shows the new current
+                                                        // value. See #1403.
+                                                        if let Some(event) =
+                                                            config_options_event(Some(resp.config_options))
+                                                        {
+                                                            let _ = tx.send(event).await;
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        let reason = format!("{e}");
+                                                        warn!(
+                                                            target: "cockpit.acp",
+                                                            "session/set_config_option failed mid-turn: {reason}"
+                                                        );
+                                                        let _ = tx
+                                                            .send(Event::ConfigOptionSwitchFailed {
+                                                                config_id,
+                                                                value,
+                                                                reason,
+                                                            })
+                                                            .await;
+                                                    }
+                                                }
+                                            });
+                                        }
                                         Some(ClientCmd::SetMode(mode_id)) => {
                                             info!(
                                                 target: "cockpit.acp",
@@ -3965,6 +4150,50 @@ async fn run_connection_task<W, R>(
                                     warn!(target: "cockpit.acp", "session/set_mode failed: {reason}");
                                     let _ = tx
                                         .send(Event::ModeSwitchFailed { mode_id, reason })
+                                        .await;
+                                }
+                            }
+                        });
+                    }
+                    Some(ClientCmd::SetConfigOption { config_id, value }) => {
+                        info!(
+                            target: "cockpit.acp",
+                            "sending session/set_config_option {config_id}={value}"
+                        );
+                        let sent = connection.send_request(SetSessionConfigOptionRequest::new(
+                            acp_session_id.clone(),
+                            SessionConfigId::new(config_id.clone()),
+                            SessionConfigValueId::new(value.clone()),
+                        ));
+                        let tx = event_tx_for_block.clone();
+                        tokio::spawn(async move {
+                            match sent.block_task().await {
+                                Ok(resp) => {
+                                    // claude-agent-acp's setSessionConfigOption returns the
+                                    // full updated config_options list in the response but
+                                    // does NOT emit a follow-up `config_option_update`
+                                    // notification (see acp-agent.js:1003-1057). Synthesize
+                                    // ConfigOptionsUpdated from the response so the frontend
+                                    // reducer clears pending state and shows the new
+                                    // current value. See #1403.
+                                    if let Some(event) =
+                                        config_options_event(Some(resp.config_options))
+                                    {
+                                        let _ = tx.send(event).await;
+                                    }
+                                }
+                                Err(e) => {
+                                    let reason = format!("{e}");
+                                    warn!(
+                                        target: "cockpit.acp",
+                                        "session/set_config_option failed: {reason}"
+                                    );
+                                    let _ = tx
+                                        .send(Event::ConfigOptionSwitchFailed {
+                                            config_id,
+                                            value,
+                                            reason,
+                                        })
                                         .await;
                                 }
                             }
@@ -6117,6 +6346,90 @@ mod tests {
             }
             other => panic!("expected AvailableCommandsUpdated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn map_config_option_update_emits_typed_event_with_categories() {
+        use agent_client_protocol::schema::{
+            ConfigOptionUpdate, SessionConfigKind, SessionConfigOption,
+            SessionConfigOptionCategory, SessionConfigSelect, SessionConfigSelectOption,
+            SessionConfigSelectOptions,
+        };
+        let model_option = SessionConfigOption::new(
+            "model",
+            "Model",
+            SessionConfigKind::Select(SessionConfigSelect::new(
+                "claude-opus-4-7",
+                SessionConfigSelectOptions::Ungrouped(vec![
+                    SessionConfigSelectOption::new("claude-opus-4-7", "Claude Opus 4.7"),
+                    SessionConfigSelectOption::new("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+                ]),
+            )),
+        )
+        .category(SessionConfigOptionCategory::Model);
+        let effort_option = SessionConfigOption::new(
+            "effort",
+            "Reasoning Effort",
+            SessionConfigKind::Select(SessionConfigSelect::new(
+                "default",
+                SessionConfigSelectOptions::Ungrouped(vec![
+                    SessionConfigSelectOption::new("default", "Default"),
+                    SessionConfigSelectOption::new("high", "High"),
+                ]),
+            )),
+        )
+        .category(SessionConfigOptionCategory::ThoughtLevel);
+        let mode_option = SessionConfigOption::new(
+            "mode",
+            "Mode",
+            SessionConfigKind::Select(SessionConfigSelect::new(
+                "default",
+                SessionConfigSelectOptions::Ungrouped(vec![
+                    SessionConfigSelectOption::new("default", "Default"),
+                    SessionConfigSelectOption::new("plan", "Plan"),
+                ]),
+            )),
+        )
+        .category(SessionConfigOptionCategory::Mode);
+        let update = ConfigOptionUpdate::new(vec![model_option, effort_option, mode_option]);
+
+        let events = map_update_to_events(
+            SessionUpdate::ConfigOptionUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::ConfigOptionsUpdated { options } => {
+                assert_eq!(options.len(), 3);
+                assert_eq!(options[0].id, "model");
+                assert_eq!(options[0].category, ConfigOptionCategory::Model);
+                assert_eq!(options[0].current_value, "claude-opus-4-7");
+                assert_eq!(options[0].options.len(), 2);
+                assert_eq!(options[1].category, ConfigOptionCategory::ThoughtLevel);
+                assert_eq!(options[1].current_value, "default");
+                assert_eq!(options[2].category, ConfigOptionCategory::Mode);
+            }
+            other => panic!("expected ConfigOptionsUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_options_event_propagates_empty_snapshot() {
+        // A present-but-empty snapshot from the adapter is a real
+        // full replacement and must clear stale cached selectors, so
+        // `config_options_event(Some(vec![]))` returns
+        // `Some(ConfigOptionsUpdated { options: [] })` (not `None`).
+        let event =
+            config_options_event(Some(Vec::new())).expect("Some(vec![]) should produce an event");
+        match event {
+            Event::ConfigOptionsUpdated { options } => {
+                assert!(options.is_empty());
+            }
+            other => panic!("expected empty ConfigOptionsUpdated, got {other:?}"),
+        }
+        // Absent snapshot (the adapter omitted the field) still
+        // returns None so callers skip the emit.
+        assert!(config_options_event(None).is_none());
     }
 
     #[test]

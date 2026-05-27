@@ -22,6 +22,26 @@ pub fn is_archived_section_path(path: &str) -> bool {
     path == ARCHIVED_SECTION_PATH
 }
 
+/// True for both the top-level Archived section sentinel and any synthetic
+/// child header pushed under it (e.g. project sub-folders nested inside
+/// Archived in Project grouping mode). Use this in places that disarm
+/// keybinds or skip palette entries for anything that lives inside the
+/// shelf; reserve `is_archived_section_path` for the exact-match cases
+/// (collapse-toggle routing, count assertions in tests).
+#[inline]
+pub fn is_within_archived_section(path: &str) -> bool {
+    path == ARCHIVED_SECTION_PATH || path.starts_with(&format!("{}/", ARCHIVED_SECTION_PATH))
+}
+
+/// Build the synthetic sub-path for a per-project header rendered inside
+/// the Archived section. Kept in one place so the path format stays in
+/// sync between the appender (groups.rs) and the collapse-state map
+/// (HomeView::project_group_collapsed).
+#[inline]
+pub fn archived_project_sub_path(project_name: &str) -> String {
+    format!("{}/{}", ARCHIVED_SECTION_PATH, project_name)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Group {
     pub name: String,
@@ -894,6 +914,137 @@ pub fn append_archived_section(items: &mut Vec<Item>, instances: &[Instance], co
             id: inst.id.clone(),
             depth: 1,
         });
+    }
+}
+
+/// Project-grouping variant of `append_archived_section`: nests archived
+/// sessions under a sub-header per project. Caller must have already
+/// rewritten `inst.group_path` to the project name (see
+/// `HomeView::build_flat_items_by_project`) so we can read it back here
+/// to bucket each archived row.
+///
+/// Layout:
+/// - Archived (depth 0)
+///   - <project name> (depth 1)
+///     - session row (depth 2)
+///
+/// `section_collapsed` hides everything below the top header; per-project
+/// `sub_collapsed` (read from `project_collapsed` keyed by the synthetic
+/// `archived_project_sub_path`) hides only that sub-folder's session rows.
+/// Sub-headers honor the user's `sort_order`, mirroring how
+/// `flatten_tree` orders active project headers; within a sub-folder,
+/// sessions still surface most-recently-archived first regardless of
+/// sort_order (archived rows are a "park this" affordance and the
+/// archive timestamp is the natural recency signal once the row is sunk).
+///
+/// Returns without pushing anything when no archived sessions exist, so
+/// users who never archive don't see a phantom "Archived" header in the
+/// project-mode view either.
+pub fn append_archived_section_by_project(
+    items: &mut Vec<Item>,
+    instances: &[Instance],
+    section_collapsed: bool,
+    project_collapsed: &HashMap<String, bool>,
+    sort_order: SortOrder,
+) {
+    let archived: Vec<&Instance> = instances.iter().filter(|i| i.is_archived()).collect();
+    if archived.is_empty() {
+        return;
+    }
+
+    items.push(Item::Group {
+        path: ARCHIVED_SECTION_PATH.to_string(),
+        name: ARCHIVED_SECTION_NAME.to_string(),
+        depth: 0,
+        collapsed: section_collapsed,
+        session_count: archived.len(),
+        profile: None,
+        archived_at: None,
+    });
+
+    if section_collapsed {
+        return;
+    }
+
+    let mut by_project: HashMap<String, Vec<&Instance>> = HashMap::new();
+    for inst in archived {
+        by_project
+            .entry(inst.group_path.clone())
+            .or_default()
+            .push(inst);
+    }
+
+    let mut buckets: Vec<(String, Vec<&Instance>)> = by_project.into_iter().collect();
+    sort_archived_project_buckets(&mut buckets, sort_order);
+
+    for (project_name, mut sessions) in buckets {
+        sessions.sort_by_key(|i| Reverse(i.archived_at));
+        let sub_path = archived_project_sub_path(&project_name);
+        let sub_collapsed = project_collapsed.get(&sub_path).copied().unwrap_or(false);
+        items.push(Item::Group {
+            path: sub_path,
+            name: project_name,
+            depth: 1,
+            collapsed: sub_collapsed,
+            session_count: sessions.len(),
+            profile: None,
+            archived_at: None,
+        });
+        if sub_collapsed {
+            continue;
+        }
+        for inst in sessions {
+            items.push(Item::Session {
+                id: inst.id.clone(),
+                depth: 2,
+            });
+        }
+    }
+}
+
+/// Ordering helper for archived project sub-folders. Mirrors the spirit
+/// of `sort_groups` but operates on a `(project_name, sessions)` pair
+/// since the archive sub-folders are synthetic and not in any
+/// `GroupTree`. AZ/ZA sort by project name; recency sorts (Newest,
+/// LastActivity) use the max `archived_at` within the group; Oldest
+/// uses the min `archived_at` ascending. Attention falls back to
+/// most-recently-archived because archived rows are all tier 99 in the
+/// attention bucket and the tier offers no discriminator inside the shelf.
+fn sort_archived_project_buckets(buckets: &mut [(String, Vec<&Instance>)], sort_order: SortOrder) {
+    match sort_order {
+        SortOrder::AZ => buckets.sort_by_key(|b| b.0.to_lowercase()),
+        SortOrder::ZA => buckets.sort_by_key(|b| Reverse(b.0.to_lowercase())),
+        SortOrder::Oldest => {
+            buckets.sort_by_key(|(_, sessions)| {
+                sessions
+                    .iter()
+                    .filter_map(|i| i.archived_at)
+                    .min()
+                    .unwrap_or(DateTime::<Utc>::MAX_UTC)
+            });
+        }
+        SortOrder::Newest | SortOrder::Attention => {
+            buckets.sort_by_key(|(_, sessions)| {
+                Reverse(
+                    sessions
+                        .iter()
+                        .filter_map(|i| i.archived_at)
+                        .max()
+                        .unwrap_or(DateTime::<Utc>::MIN_UTC),
+                )
+            });
+        }
+        SortOrder::LastActivity => {
+            buckets.sort_by_key(|(_, sessions)| {
+                Reverse(
+                    sessions
+                        .iter()
+                        .filter_map(|i| i.last_accessed_at)
+                        .max()
+                        .unwrap_or(DateTime::<Utc>::MIN_UTC),
+                )
+            });
+        }
     }
 }
 

@@ -42,7 +42,19 @@ base("per-profile settings stay isolated across profile switches", async ({ page
     await expect(
       profileSelect.locator("option", { hasText: "isolation-b" }),
     ).toHaveCount(1, { timeout: 5_000 });
+    // Race-proofing: after switching profiles, SettingsView fires a
+    // useEffect that GETs /api/profiles/<name>/settings. The assertion
+    // below toHaveValue-polls the rendered select, but on slower CI
+    // runners (#1383 flake) the poll can race the re-fetch and read
+    // the previously-loaded profile's value within its 10s window.
+    // Await the network round trip explicitly before each assertion.
+    const waitForBSettings = page.waitForResponse(
+      (r) =>
+        r.url().includes("/api/settings?profile=isolation-b") &&
+        r.request().method() === "GET",
+    );
     await profileSelect.selectOption("isolation-b");
+    await waitForBSettings;
     await openSettingsTab(page, "Tmux");
 
     // Profile B starts fresh; tmux status_bar should be the unset
@@ -51,7 +63,13 @@ base("per-profile settings stay isolated across profile switches", async ({ page
     await expect(statusBarB).toHaveValue("auto", { timeout: 10_000 });
 
     // Switch back to profile A; the value set above must still hold.
+    const waitForASettings = page.waitForResponse(
+      (r) =>
+        r.url().includes(`/api/settings?profile=${profileA}`) &&
+        r.request().method() === "GET",
+    );
     await profileSelect.selectOption(profileA);
+    await waitForASettings;
     await openSettingsTab(page, "Tmux");
     const statusBarA = settingsSelectByLabel(page, "Status bar");
     await expect(statusBarA).toHaveValue("disabled", { timeout: 10_000 });

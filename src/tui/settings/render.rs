@@ -26,6 +26,79 @@ fn is_ssh_session() -> bool {
         || std::env::var("SSH_TTY").is_ok()
 }
 
+/// Word-wrap `text` to a maximum display width, collapsing runs of
+/// whitespace so the multi-line `\`-continued descriptions in
+/// `fields.rs` (which preserve indentation on each source line) render
+/// without runs of extra spaces. Returns at least one line so callers
+/// can use `lines.len()` as a height directly. A word wider than
+/// `width` is left on its own line and will overflow; descriptions are
+/// natural prose so this isn't a real-world case.
+pub(super) fn wrap_description_lines(text: &str, width: u16) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let max_width = width as usize;
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+    for word in text.split_whitespace() {
+        let w = word.width();
+        if current.is_empty() {
+            current.push_str(word);
+            current_w = w;
+        } else if current_w + 1 + w <= max_width {
+            current.push(' ');
+            current.push_str(word);
+            current_w += 1 + w;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+            current_w = w;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// Allocation-free twin of [`wrap_description_lines`]: walks the same
+/// greedy word-wrap and returns the line count. Used by
+/// `field_height`, which runs in the render hot path once per field
+/// and only cares about the row count, not the wrapped text.
+pub(super) fn wrap_description_height(text: &str, width: u16) -> u16 {
+    if text.is_empty() {
+        return 0;
+    }
+    if width == 0 {
+        return 1;
+    }
+    let max_width = width as usize;
+    let mut lines: u16 = 0;
+    let mut current_w: usize = 0;
+    for word in text.split_whitespace() {
+        let w = word.width();
+        if current_w == 0 {
+            current_w = w;
+        } else if current_w + 1 + w <= max_width {
+            current_w += 1 + w;
+        } else {
+            lines = lines.saturating_add(1);
+            current_w = w;
+        }
+    }
+    if current_w > 0 {
+        lines = lines.saturating_add(1);
+    }
+    lines.max(1)
+}
+
 impl SettingsView {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Clear the area
@@ -213,6 +286,7 @@ impl SettingsView {
 
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        self.fields_content_width = inner.width;
 
         if self.fields.is_empty() {
             let msg = if self.scope == SettingsScope::Repo {
@@ -352,19 +426,27 @@ impl SettingsView {
     }
 
     pub(super) fn field_height(&self, field: &super::SettingField, index: usize) -> u16 {
+        let desc_height = self.description_height(field.description);
         match &field.value {
             FieldValue::SectionHeader => {
-                // heading line + dimmed subtitle. No value row.
-                1 + 1
+                // heading line + dimmed subtitle (wrapped). No value row.
+                1 + desc_height
             }
             FieldValue::List(items)
                 if self.list_edit_state.is_some() && index == self.selected_field =>
             {
                 // label + description + header + items + add prompt
-                1 + 1 + 1 + items.len() as u16 + 1
+                1 + desc_height + 1 + items.len() as u16 + 1
             }
-            _ => 1 + 1 + 1, // Label + description + value/summary
+            _ => 1 + desc_height + 1, // Label + description + value/summary
         }
+    }
+
+    /// Height in rows of a field's description after word-wrapping to
+    /// the fields panel width. Empty descriptions reserve zero rows so
+    /// section headers without a subtitle don't waste a blank line.
+    pub(super) fn description_height(&self, description: &str) -> u16 {
+        wrap_description_height(description, self.fields_content_width.max(1))
     }
 
     fn render_field(
@@ -394,16 +476,18 @@ impl SettingsView {
             ]);
             frame.render_widget(Paragraph::new(heading), area);
             if !field.description.is_empty() {
+                let wrapped = wrap_description_lines(field.description, area.width);
                 let subtitle_area = Rect {
                     x: area.x,
                     y: area.y + 1,
                     width: area.width,
-                    height: 1,
+                    height: wrapped.len() as u16,
                 };
-                frame.render_widget(
-                    Paragraph::new(field.description).style(Style::default().fg(theme.dimmed)),
-                    subtitle_area,
-                );
+                let lines: Vec<Line> = wrapped
+                    .into_iter()
+                    .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.dimmed))))
+                    .collect();
+                frame.render_widget(Paragraph::new(lines), subtitle_area);
             }
             return;
         }
@@ -436,19 +520,25 @@ impl SettingsView {
 
         frame.render_widget(Paragraph::new(label), area);
 
+        let wrapped_desc = wrap_description_lines(field.description, area.width);
+        let desc_height = wrapped_desc.len() as u16;
         let description_area = Rect {
             x: area.x,
             y: area.y + 1,
             width: area.width,
-            height: 1,
+            height: desc_height,
         };
-        frame.render_widget(
-            Paragraph::new(field.description).style(Style::default().fg(theme.dimmed)),
-            description_area,
-        );
+        let desc_lines: Vec<Line> = wrapped_desc
+            .into_iter()
+            .map(|line| Line::from(Span::styled(line, Style::default().fg(theme.dimmed))))
+            .collect();
+        frame.render_widget(Paragraph::new(desc_lines), description_area);
 
+        // Inner value renderers paint at `value_area.y + 1`, so shift
+        // by the wrapped description height to keep the value aligned
+        // directly under the (potentially multi-line) description.
         let value_area = Rect {
-            y: area.y + 1,
+            y: area.y + desc_height,
             ..area
         };
 
@@ -1124,5 +1214,186 @@ impl SettingsView {
             Span::styled("close", Style::default().fg(theme.dimmed)),
         ]);
         frame.render_widget(Paragraph::new(footer), layout[3]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{wrap_description_height, wrap_description_lines};
+
+    #[test]
+    fn wrap_description_lines_returns_empty_for_empty_input() {
+        assert!(wrap_description_lines("", 40).is_empty());
+    }
+
+    #[test]
+    fn wrap_description_lines_fits_short_text_on_one_line() {
+        let lines = wrap_description_lines("short text", 40);
+        assert_eq!(lines, vec!["short text".to_string()]);
+    }
+
+    #[test]
+    fn wrap_description_lines_breaks_at_word_boundaries() {
+        let lines = wrap_description_lines("one two three four", 8);
+        // "one two" fits (7 chars), "three" needs new line, "four" fits with "three"
+        assert_eq!(
+            lines,
+            vec![
+                "one two".to_string(),
+                "three".to_string(),
+                "four".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn wrap_description_lines_collapses_runs_of_whitespace() {
+        // Mimics the multi-line `\`-continued descriptions in fields.rs
+        // where the continuation indentation produces runs of spaces.
+        let text = "hello      world      again";
+        let lines = wrap_description_lines(text, 40);
+        assert_eq!(lines, vec!["hello world again".to_string()]);
+    }
+
+    #[test]
+    fn wrap_description_lines_handles_long_setting_description() {
+        // Approximation of the Interaction tab description that
+        // triggered the cutoff bug at narrow widths (issue #1551).
+        let text = "What Enter (and double-click) does on a session row in \
+                    the Agent view: attach to tmux (default, historical \
+                    behavior) or enter live-send mode so the home list stays \
+                    visible and keystrokes pipe through to the agent. \
+                    Terminal/Tool views and cockpit sessions ignore this \
+                    setting.";
+        // At a 120-col-wide settings panel none of the wrapped lines
+        // should exceed the available width.
+        let lines = wrap_description_lines(text, 120);
+        assert!(lines.len() > 1, "long text should wrap to multiple lines");
+        for line in &lines {
+            assert!(
+                line.chars().count() <= 120,
+                "wrapped line {line:?} exceeds width"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_description_lines_zero_width_returns_single_line() {
+        let lines = wrap_description_lines("anything", 0);
+        assert_eq!(lines, vec!["anything".to_string()]);
+    }
+
+    /// `wrap_description_height` must agree with `wrap_description_lines().len()`
+    /// for every input; it is the allocation-free shortcut the render hot
+    /// path uses. If they ever drift, `field_height` will paint values on
+    /// top of (or below) the description in real renders.
+    #[test]
+    fn wrap_description_height_matches_wrap_description_lines() {
+        let cases: &[(&str, u16)] = &[
+            ("", 40),
+            ("short text", 40),
+            ("one two three four", 8),
+            ("hello      world      again", 40),
+            ("anything", 0),
+            (
+                "What Enter (and double-click) does on a session row in \
+                 the Agent view: attach to tmux (default, historical \
+                 behavior) or enter live-send mode so the home list stays \
+                 visible and keystrokes pipe through to the agent.",
+                40,
+            ),
+        ];
+        for (text, width) in cases {
+            let expected = wrap_description_lines(text, *width).len() as u16;
+            let actual = wrap_description_height(text, *width);
+            assert_eq!(
+                actual, expected,
+                "height mismatch for text {text:?} width {width}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod field_height_tests {
+    use super::super::{FieldKey, FieldValue, SettingField, SettingsCategory, SettingsView};
+    use crate::session::Storage;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    fn setup_test_home(temp: &TempDir) {
+        std::env::set_var("HOME", temp.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+    }
+
+    fn fresh_view() -> (TempDir, SettingsView) {
+        let temp = TempDir::new().unwrap();
+        setup_test_home(&temp);
+        let _ = Storage::new("test").unwrap();
+        let view = SettingsView::new("test", None).unwrap();
+        (temp, view)
+    }
+
+    /// At a normal panel width, a short description fits on one row, so
+    /// `field_height` returns the historical `1 + 1 + 1`. At a width
+    /// narrow enough to force two wrap lines, the height grows by exactly
+    /// the extra row. Locks the contract between `description_height`
+    /// (consumed by the scroll math) and what the render pass paints.
+    #[test]
+    #[serial]
+    fn field_height_grows_with_wrapped_description() {
+        let (_temp, mut view) = fresh_view();
+
+        let field = SettingField {
+            key: FieldKey::DefaultAttachMode,
+            label: "Test Label",
+            description: "alpha beta gamma delta",
+            value: FieldValue::Bool(false),
+            category: SettingsCategory::Interaction,
+            has_override: false,
+            inherited_display: None,
+        };
+
+        view.fields_content_width = 80;
+        assert_eq!(
+            view.field_height(&field, 0),
+            3,
+            "wide panel: label + 1-line desc + value"
+        );
+
+        // Width that fits "alpha beta" (10) but not "alpha beta gamma" (16),
+        // forcing two wrap lines.
+        view.fields_content_width = 12;
+        assert_eq!(
+            view.field_height(&field, 0),
+            4,
+            "narrow panel: label + 2-line desc + value"
+        );
+    }
+
+    /// Section headers have no value row. When the subtitle wraps, the
+    /// reported height must still match `1 + wrapped_subtitle_lines` so
+    /// the surrounding scroll math doesn't drift.
+    #[test]
+    #[serial]
+    fn field_height_section_header_tracks_wrapped_subtitle() {
+        let (_temp, mut view) = fresh_view();
+
+        let header = SettingField {
+            key: FieldKey::SectionMarker,
+            label: "Section",
+            description: "alpha beta gamma delta",
+            value: FieldValue::SectionHeader,
+            category: SettingsCategory::Cockpit,
+            has_override: false,
+            inherited_display: None,
+        };
+
+        view.fields_content_width = 80;
+        assert_eq!(view.field_height(&header, 0), 2);
+
+        view.fields_content_width = 12;
+        assert_eq!(view.field_height(&header, 0), 3);
     }
 }

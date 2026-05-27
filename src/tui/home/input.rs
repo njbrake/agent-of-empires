@@ -28,21 +28,51 @@ use crate::tui::settings::{SettingsAction, SettingsView};
 /// fast for trackpads or too slow on remote sessions.
 const DOUBLE_CLICK_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// xterm bracketed-paste start sequence: `ESC [ 2 0 0 ~`. An agent that
+/// has enabled bracketed paste mode (`\e[?2004h`) treats everything
+/// between this marker and the matching end marker as one paste rather
+/// than as keystrokes, so interior newlines accumulate in the input
+/// buffer instead of firing `submit` per line.
+const BRACKETED_PASTE_START: &[u8] = &[0x1b, b'[', b'2', b'0', b'0', b'~'];
+
+/// xterm bracketed-paste end sequence: `ESC [ 2 0 1 ~`. Pairs with
+/// [`BRACKETED_PASTE_START`].
+const BRACKETED_PASTE_END: &[u8] = &[0x1b, b'[', b'2', b'0', b'1', b'~'];
+
 /// Decompose pasted text into a series of `TmuxKey`s safe for the
-/// live-send worker to dispatch. Control bytes can't ride inside a
-/// `send-keys -l` payload (tmux's command parser splits on newlines
-/// and we have no safe encoding for raw control bytes), so we split
-/// the paste around them: printable runs go through as `Literal`,
-/// known control characters translate to their named equivalents
-/// (`\n` and `\r` → `Enter`, `\t` → `Tab`), and anything else below
-/// 0x20 is dropped rather than mapped to a surprising named key. A
-/// `\r\n` pair coalesces to a single `Enter` so Windows-line-ending
-/// pastes don't fire two newlines in a row.
+/// live-send worker to dispatch.
+///
+/// Single-line pastes (no `\n` / `\r`) skip the bracketed-paste
+/// wrapping and travel as a single `Literal`: a bare shell or any
+/// agent that hasn't enabled `\e[?2004h` keeps working unchanged,
+/// because we never emit the escape markers it would render as
+/// literal text. Tabs in single-line pastes still go through as
+/// `Named("Tab")` to mirror the historical path.
+///
+/// Multi-line pastes get wrapped in xterm bracketed-paste markers
+/// (`\e[200~` / `\e[201~`) so the receiving agent sees the entire
+/// payload as one paste rather than as N independent Enter keypresses.
+/// Without the wrapping, agents that submit on Enter (Claude Code,
+/// Codex, OpenCode, ...) post one user message per pasted line, which
+/// is the bug behind #1546. The whole payload (markers, printable
+/// runs, interior CRs, and tabs) goes through as a single `HexBytes`,
+/// so the worker fires one `tmux send-keys -H` subprocess per paste
+/// instead of one per chunk. `\r\n` pairs coalesce to a single CR so
+/// Windows-line-ending pastes don't double up; other control bytes
+/// (BEL, ESC, ...) are dropped rather than risk that an embedded
+/// escape closes the bracketed-paste sequence on the agent's side.
 pub(super) fn split_paste_for_live_send(text: &str) -> Vec<live_send::TmuxKey> {
+    let has_newline = text.contains('\n') || text.contains('\r');
+    if !has_newline {
+        return split_inline_paste(text);
+    }
+    split_bracketed_paste(text)
+}
+
+fn split_inline_paste(text: &str) -> Vec<live_send::TmuxKey> {
     let mut out = Vec::new();
     let mut buf = String::new();
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
+    for ch in text.chars() {
         let is_control = (ch as u32) < 0x20 || ch == '\x7f';
         if !is_control {
             buf.push(ch);
@@ -51,25 +81,53 @@ pub(super) fn split_paste_for_live_send(text: &str) -> Vec<live_send::TmuxKey> {
         if !buf.is_empty() {
             out.push(live_send::TmuxKey::Literal(std::mem::take(&mut buf)));
         }
-        match ch {
-            '\n' => out.push(live_send::TmuxKey::Named("Enter".to_string())),
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                out.push(live_send::TmuxKey::Named("Enter".to_string()));
-            }
-            '\t' => out.push(live_send::TmuxKey::Named("Tab".to_string())),
-            _ => {
-                // BEL, ESC, etc.: dropping is friendlier than mapping
-                // to a named key that could cancel the agent's input.
-            }
+        if ch == '\t' {
+            out.push(live_send::TmuxKey::Named("Tab".to_string()));
         }
+        // BEL, ESC, etc.: dropping is friendlier than mapping
+        // to a named key that could cancel the agent's input.
     }
     if !buf.is_empty() {
         out.push(live_send::TmuxKey::Literal(buf));
     }
     out
+}
+
+fn split_bracketed_paste(text: &str) -> Vec<live_send::TmuxKey> {
+    // Build one contiguous byte payload: start marker, then the paste
+    // content with printables as their UTF-8 bytes / interior newlines
+    // as CR (0x0d) / tabs as 0x09, then the end marker. Sending it as
+    // one `HexBytes` means the worker fires exactly one `tmux send-keys
+    // -H` subprocess per paste rather than one per chunk.
+    let mut bytes = Vec::with_capacity(text.len() + BRACKETED_PASTE_START.len() * 2);
+    bytes.extend_from_slice(BRACKETED_PASTE_START);
+
+    let mut chars = text.chars().peekable();
+    let mut utf8_buf = [0u8; 4];
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\n' => bytes.push(0x0d),
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                bytes.push(0x0d);
+            }
+            '\t' => bytes.push(0x09),
+            c if (c as u32) < 0x20 || c == '\x7f' => {
+                // Embedded ESC / BEL / etc. has no safe encoding
+                // inside the paste payload; drop rather than risk a
+                // bogus terminal escape closing the paste early.
+            }
+            c => {
+                let s = c.encode_utf8(&mut utf8_buf);
+                bytes.extend_from_slice(s.as_bytes());
+            }
+        }
+    }
+
+    bytes.extend_from_slice(BRACKETED_PASTE_END);
+    vec![live_send::TmuxKey::HexBytes(bytes)]
 }
 
 fn resolve_hook_install_agent(
@@ -200,10 +258,10 @@ impl HomeView {
         row >= list_y && row < list_bottom
     }
 
-    /// Begin a drag if `(col, row)` is on the divider, or, while
-    /// live-send is active, inside the preview pane. Returns true when
-    /// a drag actually started, so the caller can mark the event
-    /// handled and skip the row-click path.
+    /// Begin a drag if `(col, row)` is on the divider, or inside the
+    /// preview pane (whenever the pane is on screen, in or out of live
+    /// mode). Returns true when a drag actually started, so the caller
+    /// can mark the event handled and skip the row-click path.
     ///
     /// Divider drags resize the list/preview split (the only kind we
     /// had before live-send shipped). Preview-pane drags start an
@@ -219,7 +277,15 @@ impl HomeView {
             });
             return true;
         }
-        if self.live_send.is_some() && self.hit_preview(col, row) {
+        // Modals that aren't live-send sit over the preview, so a
+        // click inside `preview_area` while one is open is meant for
+        // the modal underneath and should not seed a hidden selection
+        // behind it. `handle_drag_move`'s cancel branch covers a modal
+        // that opens mid-drag; this guards the start.
+        if self.has_non_live_send_overlay() {
+            return false;
+        }
+        if self.hit_preview(col, row) {
             self.preview_selection = Some(PreviewSelection {
                 anchor: (col, row),
                 extent: (col, row),
@@ -521,6 +587,15 @@ impl HomeView {
         key: KeyEvent,
         update_info: Option<&crate::update::UpdateInfo>,
     ) -> Option<Action> {
+        // Any keystroke drops a finalized preview-pane selection. The
+        // highlight pins to cell coords, so as soon as the user starts
+        // doing anything else (navigating the list, opening a dialog,
+        // typing through live-send, etc.) the cells underneath can
+        // change and the highlight would point at unrelated content.
+        // Doing the clear here covers both the live-send branch below
+        // and the regular home-view path.
+        self.clear_preview_selection();
+
         // Live-send capture wins over every other key handler. While
         // `live_send` is `Some` the home view is acting as a thin relay
         // to the target pane; dialog hotkeys, search, and list navigation
@@ -1122,6 +1197,7 @@ impl HomeView {
                 DialogResult::Cancel => {
                     self.send_message_dialog = None;
                     self.pending_send_session = None;
+                    self.pending_send_target = live_send::LiveSendTarget::Agent;
                 }
                 DialogResult::Submit(message) => {
                     self.send_message_dialog = None;
@@ -2118,7 +2194,14 @@ impl HomeView {
             KeyCode::Char('M') if self.strict_hotkeys => {
                 self.open_send_message_dialog();
             }
-            // Tab enters live-send mode on the selected running session.
+            // Tab is the activation key's complement: it does whichever
+            // of (live-send, tmux attach) `Enter` doesn't. When
+            // `default_attach_mode = LiveSend`, Enter activates live
+            // mode, so Tab swaps to a full tmux attach (the escape
+            // hatch). When `default_attach_mode = Tmux` (the default),
+            // Enter still attaches and Tab keeps its historical
+            // live-send role.
+            //
             // Free at the home-view top level (settings/cockpit/dialogs
             // own their own Tab handlers), and the entry-vs-send
             // distinction is unambiguous: this branch only fires when
@@ -2126,7 +2209,21 @@ impl HomeView {
             // top of `handle_key` short-circuits otherwise. While in
             // live mode Tab is sent verbatim to the agent.
             KeyCode::Tab => {
-                if let Some(action) = self.start_live_send() {
+                let swap_to_attach = self
+                    .selected_session
+                    .as_deref()
+                    .map(|id| {
+                        matches!(
+                            self.default_attach_mode(id),
+                            Some(crate::session::NewSessionAttachMode::LiveSend)
+                        )
+                    })
+                    .unwrap_or(false);
+                if swap_to_attach {
+                    if let Some(action) = self.tab_attach_action() {
+                        return Some(action);
+                    }
+                } else if let Some(action) = self.start_live_send() {
                     return Some(action);
                 }
             }
@@ -2329,12 +2426,13 @@ impl HomeView {
                     });
                 }
                 Item::Group { name, path, .. } => {
-                    // The synthetic Archived section header is not a real
-                    // group; skip it so the palette doesn't surface the
-                    // sentinel path or invite Jump-to-group navigation
-                    // that the rest of the codebase intentionally
-                    // disarms.
-                    if crate::session::is_archived_section_path(path) {
+                    // The synthetic Archived section header (and any
+                    // sub-folder rendered under it in Project mode) is
+                    // not a real group; skip it so the palette doesn't
+                    // surface the sentinel path or invite Jump-to-group
+                    // navigation that the rest of the codebase
+                    // intentionally disarms.
+                    if crate::session::is_within_archived_section(path) {
                         continue;
                     }
                     let label = if name == path {
@@ -2552,7 +2650,9 @@ impl HomeView {
                 // tmux attach for live-send mode on Enter / double-click.
                 // Cockpit was already handled above (the resolver also
                 // returns None for cockpit, so the match is double-safe);
-                // Terminal/Tool views keep their existing paths regardless.
+                // Terminal view honors the same setting (live-send onto
+                // the paired terminal pane); Tool view keeps its
+                // existing AttachToolSession path.
                 //
                 // Route through `start_live_send` so the same-target
                 // guard (already-live on this session) is honored: a
@@ -2572,6 +2672,60 @@ impl HomeView {
                     Some(Action::AttachSession(id))
                 }
             }
+            ViewMode::Terminal => {
+                // Mirror Agent view: when `default_attach_mode = LiveSend`,
+                // Enter on the terminal row enters live-send mode against
+                // the paired terminal pane (host or container, whichever
+                // is currently shown). Otherwise fall back to the
+                // historical tmux attach.
+                if matches!(
+                    self.default_attach_mode(&id),
+                    Some(crate::session::NewSessionAttachMode::LiveSend)
+                ) {
+                    return self.start_live_send();
+                }
+                let terminal_mode = if let Some(inst) = self.get_instance(&id) {
+                    if inst.is_sandboxed() {
+                        self.get_terminal_mode(&id)
+                    } else {
+                        TerminalMode::Host
+                    }
+                } else {
+                    TerminalMode::Host
+                };
+                Some(Action::AttachTerminal(id, terminal_mode))
+            }
+            ViewMode::Tool(ref tool_name) => Some(Action::AttachToolSession(id, tool_name.clone())),
+        }
+    }
+
+    /// Resolve the "Tab swap" action that fires when
+    /// `default_attach_mode = LiveSend`: Enter takes the live-send
+    /// slot, so Tab takes the tmux-attach slot. Mirrors the cockpit
+    /// and in-flight guards from `activate_selected_session`; returns
+    /// the same per-view-mode attach actions Enter produces under the
+    /// historical default.
+    pub(super) fn tab_attach_action(&mut self) -> Option<Action> {
+        let id = self.selected_session.clone()?;
+        if let Some(inst) = self.get_instance(&id) {
+            if matches!(inst.status, Status::Deleting | Status::Creating) {
+                return None;
+            }
+            if inst.is_cockpit_mode() {
+                #[cfg(feature = "serve")]
+                {
+                    return Some(Action::OpenCockpit(id));
+                }
+                #[cfg(not(feature = "serve"))]
+                {
+                    return Some(Action::SetTransientStatus(
+                        "Cockpit session: rebuild with --features serve to attach".to_string(),
+                    ));
+                }
+            }
+        }
+        match self.view_mode {
+            ViewMode::Agent => Some(Action::AttachSession(id)),
             ViewMode::Terminal => {
                 let terminal_mode = if let Some(inst) = self.get_instance(&id) {
                     if inst.is_sandboxed() {
@@ -2599,11 +2753,13 @@ impl HomeView {
                 }
                 Item::Group { path, .. } => {
                     self.selected_session = None;
-                    if crate::session::is_archived_section_path(path) {
-                        // The synthetic Archived section is not a real
-                        // group: it can't be renamed, deleted, archived,
-                        // or moved. Leaving `selected_group` unset
-                        // disarms every keybind that branches on
+                    if crate::session::is_within_archived_section(path) {
+                        // The synthetic Archived section (and any
+                        // project sub-folder rendered under it in
+                        // Project mode) is not a real group: it can't
+                        // be renamed, deleted, archived, or moved.
+                        // Leaving `selected_group` unset disarms every
+                        // keybind that branches on
                         // `selected_group.is_some()` (rename, delete,
                         // archive group, etc.) without each one having
                         // to special-case the sentinel.
@@ -3050,9 +3206,11 @@ impl HomeView {
         // next dialog open (typically the next `m` press) drains it. Never
         // throw voice text on the floor; losing dictation is worse than
         // silently catching it.
-        if let Some((id, title)) = self.resolve_paste_target() {
+        if let Some((id, title, target)) = self.resolve_send_target() {
+            let label = live_send::format_target_label(&title, target);
             self.pending_send_session = Some(id);
-            let mut dialog = SendMessageDialog::new(&title);
+            self.pending_send_target = target;
+            let mut dialog = SendMessageDialog::new(&label);
             dialog.handle_paste(text);
             self.send_message_dialog = Some(dialog);
             return;
@@ -3109,7 +3267,7 @@ impl HomeView {
     }
 
     /// Attempt to enter live-send mode against the currently-selected
-    /// session. Unlike `resolve_paste_target`, this does NOT require
+    /// session. Unlike `resolve_send_target`, this does NOT require
     /// the tmux pane to already exist: `prepare_live_send` calls
     /// `ensure_pane_ready` which revives stopped sessions (Docker
     /// start, splash wait, resume cascade). Without this relaxation
@@ -3137,6 +3295,24 @@ impl HomeView {
         if inst.is_cockpit_mode() {
             return None;
         }
+        // Pick the live-send target based on which pane the user is
+        // currently previewing. Agent view → agent pane (historical
+        // default). Terminal view → the paired host or container
+        // terminal pane, so 'm'/Tab compose against the same shell
+        // the user sees. Tool view stays out of live-send (no clean
+        // target for lazygit/yazi etc.; let the caller fall back to
+        // AttachToolSession).
+        self.pending_live_send_target = match &self.view_mode {
+            ViewMode::Agent => live_send::LiveSendTarget::Agent,
+            ViewMode::Terminal => {
+                if inst.is_sandboxed() && self.get_terminal_mode(&id) == TerminalMode::Container {
+                    live_send::LiveSendTarget::ContainerTerminal
+                } else {
+                    live_send::LiveSendTarget::Terminal
+                }
+            }
+            ViewMode::Tool(_) => return None,
+        };
         Some(Action::EnterLiveSend(id))
     }
 
@@ -3159,13 +3335,12 @@ impl HomeView {
             return;
         };
 
-        // Any keystroke in live mode dismisses a finalized preview
-        // selection so the highlight doesn't linger forever once the
-        // user starts typing again. The PageUp/PageDown scroll keys
-        // below also count — scrolling away with a highlight still
-        // visible would point at content that no longer exists at
-        // those cells.
-        self.clear_preview_selection();
+        // `handle_key` already cleared any finalized preview
+        // selection at the top, so the highlight doesn't linger
+        // across the keystroke that switched the user out of
+        // copy-and-look mode. The PageUp/PageDown scroll keys below
+        // would otherwise need their own dismissal; the shared
+        // top-of-handle_key clear covers them too.
 
         // Shift+PageUp / Shift+PageDown scroll the preview pane
         // without forwarding to the agent. Matches the terminal-
@@ -3230,10 +3405,11 @@ impl HomeView {
         self.live_send = None;
         self.live_send_worker = None;
         self.live_send_last_resize = None;
-        // A preview selection only ever exists in live mode; leaving
-        // live without dropping it would leave a stale highlight on
-        // the regular preview pane. Clear it here so the home view
-        // returns to its pre-live state cleanly.
+        // Preview selections also work outside live mode now, but a
+        // live-mode highlight pins to the live-resized pane coords,
+        // and exiting reflows the preview back to its normal size.
+        // Drop the selection so the highlight can't survive into a
+        // pane it no longer points at.
         self.clear_preview_selection();
     }
 
@@ -3258,7 +3434,17 @@ impl HomeView {
         let Some(inst) = self.get_instance(&state.session_id) else {
             return Some("Session was deleted while live mode was active.");
         };
-        let current_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+        let current_name = match state.target {
+            live_send::LiveSendTarget::Agent => {
+                crate::tmux::Session::generate_name(&inst.id, &inst.title)
+            }
+            live_send::LiveSendTarget::Terminal => {
+                crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title)
+            }
+            live_send::LiveSendTarget::ContainerTerminal => {
+                crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title)
+            }
+        };
         if current_name != state.tmux_name {
             return Some("Session was renamed while live mode was active.");
         }
@@ -3272,12 +3458,18 @@ impl HomeView {
     /// If pending_paste has accumulated text from earlier untargeted pastes,
     /// drain it into the dialog so voice/dictation captured before a session
     /// was picked still gets used. No-op if no running session is targetable.
+    ///
+    /// Honors `view_mode`: in Terminal view, the dialog targets the paired
+    /// terminal pane (host or container) rather than the agent, so 'm'
+    /// composes a command for the same shell the user is previewing.
     fn open_send_message_dialog(&mut self) {
-        let Some((id, title)) = self.resolve_paste_target() else {
+        let Some((id, title, target)) = self.resolve_send_target() else {
             return;
         };
+        let label = live_send::format_target_label(&title, target);
         self.pending_send_session = Some(id);
-        let mut dialog = SendMessageDialog::new(&title);
+        self.pending_send_target = target;
+        let mut dialog = SendMessageDialog::new(&label);
         if let Some(buf) = self.pending_paste.take() {
             if !buf.is_empty() {
                 dialog.handle_paste(&buf);
@@ -3286,44 +3478,54 @@ impl HomeView {
         self.send_message_dialog = Some(dialog);
     }
 
-    /// Resolve a target session id + title for an untargeted paste/type-burst.
-    /// Only returns Some when an explicit, runnable session is selected.
-    ///
-    /// Cases that return None (caller stashes to `pending_paste`):
-    /// - Cursor on a group header (`selected_session` is None).
-    /// - No selection at all (empty list, no sessions).
-    /// - Selected session is non-running (Stopped, Error, Creating, or tmux
-    ///   pane gone).
-    ///
-    /// Why no first-running fallback: silently dispatching paste/dictation
-    /// to "whichever session sorts first" misroutes voice messages across
-    /// groups. A user with cursor on the "backend" group expanding it to
-    /// browse, dictating, and having the paste land in a "frontend" session
-    /// is exactly the misrouting the archived-selection fix is preventing.
-    /// Stashing to `pending_paste` is strictly better: the status-bar
-    /// indicator surfaces the captured count, and the next `m` against a
-    /// runnable selection drains it into the compose dialog.
-    ///
-    /// Defensive fall-through: when `selected_session` references an id
-    /// that no longer maps to an instance (deleted underneath us between
-    /// select and paste, shouldn't happen in steady state), we also stash
-    /// rather than reroute.
-    fn resolve_paste_target(&self) -> Option<(String, String)> {
-        let pick = |inst: &crate::session::Instance| -> Option<(String, String)> {
-            if inst.status == Status::Creating {
-                return None;
+    /// Compose target for the current view: agent in Agent view, the
+    /// paired host/container terminal in Terminal view. Tool view has
+    /// no clean compose target (the tool owns the pane), so it falls
+    /// through to Agent for the historical paste/letter-capture path.
+    pub(super) fn current_send_target(&self) -> live_send::LiveSendTarget {
+        match &self.view_mode {
+            ViewMode::Agent => live_send::LiveSendTarget::Agent,
+            ViewMode::Terminal => {
+                if let Some(id) = self.selected_session.as_deref() {
+                    if let Some(inst) = self.get_instance(id) {
+                        if inst.is_sandboxed()
+                            && self.get_terminal_mode(id) == TerminalMode::Container
+                        {
+                            return live_send::LiveSendTarget::ContainerTerminal;
+                        }
+                    }
+                }
+                live_send::LiveSendTarget::Terminal
             }
-            let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title).ok();
-            if tmux_session.as_ref().is_some_and(|s| s.exists()) {
-                Some((inst.id.clone(), inst.title.clone()))
-            } else {
-                None
-            }
-        };
+            ViewMode::Tool(_) => live_send::LiveSendTarget::Agent,
+        }
+    }
 
+    /// Resolve `(id, title, target)` for an untargeted paste, 'm', or
+    /// strict-mode letter capture. Agent targets keep the historical
+    /// gate (the agent tmux pane must already exist) so the compose
+    /// dialog can't open against a stopped session; terminal targets
+    /// relax that gate because `execute_send_message` will spawn the
+    /// paired terminal on demand the same way `attach_terminal` does.
+    fn resolve_send_target(&self) -> Option<(String, String, live_send::LiveSendTarget)> {
         let id = self.selected_session.as_ref()?;
         let inst = self.get_instance(id)?;
-        pick(inst)
+        if matches!(inst.status, Status::Creating | Status::Deleting) {
+            return None;
+        }
+        let target = self.current_send_target();
+        let ready = match target {
+            live_send::LiveSendTarget::Agent => crate::tmux::Session::new(&inst.id, &inst.title)
+                .map(|s| s.exists())
+                .unwrap_or(false),
+            live_send::LiveSendTarget::Terminal | live_send::LiveSendTarget::ContainerTerminal => {
+                true
+            }
+        };
+        if !ready {
+            return None;
+        }
+        Some((inst.id.clone(), inst.title.clone(), target))
     }
 
     /// Strict-mode typing guard: a bare lowercase letter was pressed outside
@@ -3345,9 +3547,11 @@ impl HomeView {
             return;
         }
 
-        if let Some((id, title)) = self.resolve_paste_target() {
+        if let Some((id, title, target)) = self.resolve_send_target() {
+            let label = live_send::format_target_label(&title, target);
             self.pending_send_session = Some(id);
-            let mut dialog = SendMessageDialog::new(&title);
+            self.pending_send_target = target;
+            let mut dialog = SendMessageDialog::new(&label);
             dialog.handle_paste(&s);
             self.send_message_dialog = Some(dialog);
             return;
@@ -3583,6 +3787,28 @@ impl HomeView {
 mod tests {
     use super::*;
     use crate::session::config::{SessionConfig, ToolSessionConfig};
+
+    #[test]
+    fn format_target_label_distinguishes_terminal_panes() {
+        // Users firing 'm' from Terminal view should see the dialog
+        // title (and the live-mode banner) call out the target pane so
+        // they don't accidentally send agent prompts into a shell (or
+        // vice versa). Both the compose dialog and the status-bar
+        // banner route through the same helper so the label can't drift.
+        use live_send::{format_target_label, LiveSendTarget};
+        assert_eq!(
+            format_target_label("my-session", LiveSendTarget::Agent),
+            "my-session",
+        );
+        assert_eq!(
+            format_target_label("my-session", LiveSendTarget::Terminal),
+            "my-session (terminal)",
+        );
+        assert_eq!(
+            format_target_label("my-session", LiveSendTarget::ContainerTerminal),
+            "my-session (container)",
+        );
+    }
 
     #[test]
     fn hook_install_agent_uses_detect_as_for_custom_codex_wrapper() {

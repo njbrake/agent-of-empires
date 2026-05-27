@@ -220,11 +220,24 @@ impl HomeView {
                     self.storages
                         .insert(target_profile.to_string(), Storage::new(target_profile)?);
                 }
-                let group_path = self
+                if !self.group_trees.contains_key(target_profile) {
+                    self.group_trees.insert(
+                        target_profile.to_string(),
+                        GroupTree::new_with_groups(&[], &[]),
+                    );
+                }
+                // Capture the moved row's old group_path before the move so
+                // we can prune the source profile's now-empty copy after.
+                // Without the prune, the source profile retains an empty
+                // group header with the same name as the one the row appears
+                // under in the target profile, which reads as a duplicate
+                // group in unified view.
+                let old_group_path = self
                     .get_instance(&id)
                     .map(|i| i.group_path.clone())
                     .unwrap_or_default();
-                self.move_to_profile(&id, target_profile, group_path)?;
+                self.move_to_profile(&id, target_profile, old_group_path.clone())?;
+                self.prune_empty_group(&current_profile, &old_group_path);
                 self.rebuild_group_trees();
                 // Rebuild the visible row list too; otherwise the row still
                 // renders under the old profile until the next reload, and

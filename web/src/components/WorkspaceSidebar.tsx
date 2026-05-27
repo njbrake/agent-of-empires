@@ -10,7 +10,7 @@ import {
   type MutableRefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { Pencil } from "lucide-react";
+import { Clock, ListOrdered, Pencil } from "lucide-react";
 import {
   DndContext,
   MouseSensor,
@@ -49,6 +49,7 @@ import { useIdleDecayWindowMs } from "../lib/idleDecay";
 import { renameSession, setSessionNotifications } from "../lib/api";
 import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
+import type { SidebarSortMode } from "../lib/sidebarSort";
 import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
 
@@ -83,6 +84,8 @@ interface Props {
   onProjects: () => void;
   onDeleteSession?: (workspaceId: string) => void;
   readOnly?: boolean;
+  sortMode: SidebarSortMode;
+  onSortModeChange: (mode: SidebarSortMode) => void;
 }
 
 function bestSession(
@@ -295,15 +298,18 @@ function SortableSessionRow(props: {
   onClick: () => void;
   onDelete?: (workspaceId: string) => void;
   readOnly?: boolean;
+  dragDisabled?: boolean;
 }) {
   const dragSuppressRef = useDragSuppressRef();
-  // `disabled: readOnly` no-ops the sensor listeners, so a read-only
-  // viewer can't drag the row (and can't fire the PUT, which the
-  // server would reject anyway). Skipping the sortable wiring entirely
-  // would also drop the click suppressor; that's harmless in read-only
-  // since nothing else triggers a drag.
+  // `disabled` no-ops the sensor listeners. `readOnly` covers viewers
+  // who can't write, `dragDisabled` covers modes where the visible order
+  // is computed (e.g. last-activity sort), so a drag would have no
+  // meaning. Skipping the sortable wiring entirely would also drop the
+  // click suppressor; that's harmless in either case since nothing else
+  // triggers a drag.
+  const dragOff = !!props.readOnly || !!props.dragDisabled;
   const { listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: props.workspace.id, disabled: props.readOnly });
+    useSortable({ id: props.workspace.id, disabled: dragOff });
   useEffect(() => {
     if (isDragging) {
       // Keep extending the window while dragging so a slow drag still
@@ -334,9 +340,9 @@ function SortableSessionRow(props: {
     <div
       ref={setNodeRef}
       style={style}
-      {...(props.readOnly ? {} : listeners)}
+      {...(dragOff ? {} : listeners)}
       aria-roledescription={
-        props.readOnly ? undefined : "Press and hold to reorder"
+        dragOff ? undefined : "Press and hold to reorder"
       }
       // While dragging, the row gets an amber ring (matches the active
       // session accent) and a soft shadow so it reads as elevated above
@@ -1017,7 +1023,10 @@ export function WorkspaceSidebar({
   onProjects,
   onDeleteSession,
   readOnly,
+  sortMode,
+  onSortModeChange,
 }: Props) {
+  const dragDisabled = !!readOnly || sortMode === "lastActivity";
   const dragSuppressRef = useRef<number>(0);
   useSuppressClickAfterDrag(dragSuppressRef);
   const offline = useServerDown();
@@ -1159,6 +1168,40 @@ export function WorkspaceSidebar({
           <span className="text-sm text-text-muted flex-1">
             Projects
           </span>
+          <Tooltip
+            text={
+              sortMode === "lastActivity"
+                ? "Sort: last activity, drag disabled"
+                : "Sort: manual, drag enabled"
+            }
+          >
+            <button
+              onClick={() =>
+                onSortModeChange(
+                  sortMode === "manual" ? "lastActivity" : "manual",
+                )
+              }
+              aria-pressed={sortMode === "lastActivity"}
+              aria-label={
+                sortMode === "lastActivity"
+                  ? "Sort by last activity, currently pressed"
+                  : "Sort by manual order"
+              }
+              data-testid="sidebar-sort-toggle"
+              data-sort-mode={sortMode}
+              className={`w-8 h-8 flex items-center justify-center cursor-pointer rounded-md transition-colors ${
+                sortMode === "lastActivity"
+                  ? "text-brand-500"
+                  : "text-text-dim hover:text-text-secondary"
+              }`}
+            >
+              {sortMode === "lastActivity" ? (
+                <Clock className="h-3.5 w-3.5" />
+              ) : (
+                <ListOrdered className="h-3.5 w-3.5" />
+              )}
+            </button>
+          </Tooltip>
           <Tooltip text="Filter">
             <button
               onClick={toggleFilter}
@@ -1236,7 +1279,7 @@ export function WorkspaceSidebar({
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
-            onDragEnd={readOnly ? undefined : handleDragEnd}
+            onDragEnd={dragDisabled ? undefined : handleDragEnd}
           >
             {filteredGroups.map((group) => {
               const showExpanded = q ? true : !group.collapsed;
@@ -1273,6 +1316,7 @@ export function WorkspaceSidebar({
                           }}
                           onDelete={onDeleteSession}
                           readOnly={readOnly}
+                          dragDisabled={sortMode === "lastActivity"}
                         />
                       ))}
                     </SortableContext>

@@ -525,6 +525,63 @@ The Auto-approve toggle in the wizard does not configure
 `ALLOW_BYPASS`; the env var is a daemon-process input set wherever
 `aoe serve` actually launches.
 
+## Model and reasoning effort
+
+Cockpit sessions render two extra selectors in the composer footer
+beside the mode pill when the ACP adapter advertises them: a model
+dropdown and a reasoning-effort selector. Both come from one wire
+mechanism, ACP `SessionUpdate::ConfigOptionUpdate`, stabilised
+upstream in `claude-agent-acp` v0.37.0. The adapter emits the full
+snapshot of every selector (mode, model, reasoning effort, future
+categories) whenever any one of them changes; the cockpit replaces
+its cached list in full.
+
+### When the pickers appear
+
+The pickers only render if the adapter publishes the matching
+category. `claude-agent-acp` v0.37.0+ advertises a model selector
+for every session, and adds a reasoning-effort selector when the
+current model reports `supportsEffort=true`. Older adapters that
+emit no `config_option_update` show neither picker; this is by
+design so non-Claude backends don't grow empty UI chrome.
+
+### Setting a value
+
+Clicking an option fires `POST /api/sessions/{id}/cockpit/config-option`
+with `{ config_id, value }` which the cockpit supervisor turns into
+ACP `session/set_config_option`. The UI is pessimistic: the chip
+still shows the previous current value while the request is in
+flight, with a subtle dim and a disabled re-click on the just-clicked
+option, until the adapter pushes a confirming `config_option_update`.
+This avoids "snap back" on slow networks (Cloudflare Tunnel can run
+300-800ms round trips).
+
+### The `Default` reasoning effort
+
+The reasoning-effort dropdown includes a `Default` option alongside
+adapter-supported levels like `Low | Medium | High`. `Default` is
+not a fixed effort; the SDK resolves it per current model. Picking
+it explicitly tells the adapter to drop any session-level effort
+pin so the model uses its default reasoning budget. See upstream
+PR agentclientprotocol/claude-agent-acp#701.
+
+### When a switch fails
+
+If the adapter rejects `session/set_config_option` (rate limit,
+missing capability, transient error), an amber non-blocking notice
+appears next to the composer with the configured selector name, the
+rejected value, and the adapter's reason. The notice auto-dismisses
+when a later snapshot reports the originally-requested value as
+current (the user retried and won, or the adapter applied the value
+asynchronously). The session keeps running in whichever value the
+adapter last confirmed.
+
+### Lifecycle clears
+
+The cached selector list clears on `AgentSwitched` (a Claude-to-Codex
+handoff invalidates Claude-specific models) but survives `/clear`:
+adapter capabilities are process-scoped, not conversation-scoped.
+
 ## Approvals
 
 When the agent wants to run a tool that requires approval, the cockpit

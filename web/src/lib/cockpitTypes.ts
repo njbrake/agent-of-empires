@@ -102,6 +102,50 @@ export interface AvailableCommand {
   accepts_input: boolean;
 }
 
+/** Semantic category for a session configuration option, mirroring
+ *  ACP's `SessionConfigOptionCategory`. The cockpit UI uses this to
+ *  pick the right widget per category (model dropdown, effort
+ *  segmented control). Unknown categories preserve their string
+ *  payload so the broadcast frame stays forward-compatible. See
+ *  #1403. */
+export type ConfigOptionCategory =
+  | "mode"
+  | "model"
+  | "thought_level"
+  | { Other: string };
+
+/** One choice in a `Select`-kind ConfigOptionDescriptor. */
+export interface ConfigOptionChoice {
+  value: string;
+  name: string;
+  description?: string | null;
+}
+
+/** Cockpit's view of a single ACP `SessionConfigOption`. Each
+ *  `ConfigOptionsUpdated` event replaces the prior list in full;
+ *  the adapter resends the full snapshot whenever any selector
+ *  changes. */
+export interface ConfigOptionDescriptor {
+  id: string;
+  name: string;
+  description?: string | null;
+  category: ConfigOptionCategory;
+  current_value: string;
+  options: ConfigOptionChoice[];
+}
+
+/** Carried by `ConfigOptionSwitchFailed`. Lives on
+ *  `CockpitState.configOptionSwitchFailed` so the UI can render a
+ *  non-blocking notice when the adapter rejects a `set_config_option`
+ *  call. Auto-clears when the next `ConfigOptionsUpdated` snapshot
+ *  confirms the originally-requested value. */
+export interface ConfigOptionSwitchFailure {
+  configId: string;
+  value: string;
+  reason: string;
+  at: string;
+}
+
 export interface Approval {
   nonce: string;
   tool_call: ToolCall;
@@ -221,6 +265,14 @@ export type CockpitEvent =
   | { CurrentModeChanged: { current_mode_id: string } }
   | { ModeSwitchFailed: { mode_id: string; reason: string } }
   | { AvailableCommandsUpdated: { commands: AvailableCommand[] } }
+  | { ConfigOptionsUpdated: { options: ConfigOptionDescriptor[] } }
+  | {
+      ConfigOptionSwitchFailed: {
+        config_id: string;
+        value: string;
+        reason: string;
+      };
+    }
   | { RawAgentUpdate: { payload: unknown } }
   | { AgentMessageChunk: { text: string } }
   | { Stopped: { reason: string } }
@@ -411,6 +463,26 @@ export interface CockpitState {
     reason: string;
     at: string;
   } | null;
+  /** Full snapshot of the per-session selectors (model, reasoning
+   *  effort, mode, future categories) the adapter advertises through
+   *  ACP `SessionUpdate::ConfigOptionUpdate`. Empty when the adapter
+   *  emits no config options. Replaced wholesale on each
+   *  `ConfigOptionsUpdated` frame; cleared on `AgentSwitched`. See
+   *  #1403. */
+  configOptions: ConfigOptionDescriptor[];
+  /** Non-blocking notice for the most recent
+   *  `session/set_config_option` rejection. Auto-clears when the
+   *  next snapshot confirms the originally-requested value, or on
+   *  `AgentSwitched`. */
+  configOptionSwitchFailed: ConfigOptionSwitchFailure | null;
+  /** Set when the user clicks a model/effort option and the POST is
+   *  in flight; cleared by the next `ConfigOptionsUpdated` snapshot
+   *  (which reconciles authoritative state) or by
+   *  `ConfigOptionSwitchFailed`. Drives the pending affordance
+   *  (opacity dim + disabled re-click) on the just-clicked option;
+   *  the picker keeps showing the previously-current value until the
+   *  adapter confirms, so the UI never lies about active state. */
+  pendingConfigOption: { configId: string; value: string } | null;
   /** Set when the daemon emitted `Stopped { reason: "prompt_orphaned" }`,
    *  meaning the silent-orphan watchdog detected that the adapter
    *  finished streaming the turn but never sent the JSON-RPC
@@ -522,6 +594,9 @@ export function emptyCockpitState(): CockpitState {
     agentOrphaned: false,
     modeSwitchFailed: null,
     lastAgentSwitch: null,
+    configOptions: [],
+    configOptionSwitchFailed: null,
+    pendingConfigOption: null,
   };
 }
 
@@ -799,6 +874,40 @@ export function applyEvent(
   }
   if ("AvailableCommandsUpdated" in event) {
     next.availableCommands = event.AvailableCommandsUpdated.commands;
+    return next;
+  }
+  if ("ConfigOptionsUpdated" in event) {
+    const options = event.ConfigOptionsUpdated.options;
+    next.configOptions = options;
+    // The snapshot is authoritative, so any in-flight pending click
+    // resolves here regardless of whether the adapter applied the
+    // exact requested value. A rejected change comes through
+    // `ConfigOptionSwitchFailed` and clears pending on that path
+    // instead.
+    next.pendingConfigOption = null;
+    // Auto-dismiss a stale switch-failed notice when this snapshot
+    // confirms the originally-requested value: user retried and won,
+    // or the adapter applied asynchronously after the rejection.
+    if (next.configOptionSwitchFailed) {
+      const failure = next.configOptionSwitchFailed;
+      const confirmed = options.some(
+        (opt) =>
+          opt.id === failure.configId && opt.current_value === failure.value,
+      );
+      if (confirmed) {
+        next.configOptionSwitchFailed = null;
+      }
+    }
+    return next;
+  }
+  if ("ConfigOptionSwitchFailed" in event) {
+    next.configOptionSwitchFailed = {
+      configId: event.ConfigOptionSwitchFailed.config_id,
+      value: event.ConfigOptionSwitchFailed.value,
+      reason: event.ConfigOptionSwitchFailed.reason,
+      at: new Date().toISOString(),
+    };
+    next.pendingConfigOption = null;
     return next;
   }
   if ("AgentMessageChunk" in event) {
@@ -1141,6 +1250,11 @@ export function applyEvent(
     next.workerStopped = false;
     next.workerRestarting = false;
     next.agentUnresponsive = false;
+    // Per-adapter selectors belong to the previous backend; the new
+    // backend will publish its own snapshot. See #1403.
+    next.configOptions = [];
+    next.configOptionSwitchFailed = null;
+    next.pendingConfigOption = null;
     next.activity = [
       ...next.activity,
       {
@@ -1226,6 +1340,9 @@ export function normaliseTurnCounters(
     agentUnresponsive?: boolean;
     agentOrphaned?: boolean;
     usageBaseline?: { cost: number } | null;
+    configOptions?: ConfigOptionDescriptor[];
+    configOptionSwitchFailed?: ConfigOptionSwitchFailure | null;
+    pendingConfigOption?: { configId: string; value: string } | null;
   },
 ): CockpitState {
   const pendingUserPromptSeq =
@@ -1263,12 +1380,25 @@ export function normaliseTurnCounters(
   // start subtracting normally.
   const usageBaseline =
     state.usageBaseline === undefined ? null : state.usageBaseline;
+  // Pre-#1403 persisted entries lack the config-option trio.
+  const configOptions = Array.isArray(state.configOptions)
+    ? state.configOptions
+    : [];
+  const configOptionSwitchFailed =
+    state.configOptionSwitchFailed === undefined
+      ? null
+      : state.configOptionSwitchFailed;
+  const pendingConfigOption =
+    state.pendingConfigOption === undefined ? null : state.pendingConfigOption;
   return {
     ...state,
     rejectedPrompts,
     agentUnresponsive,
     agentOrphaned,
     usageBaseline,
+    configOptions,
+    configOptionSwitchFailed,
+    pendingConfigOption,
     pendingUserPromptSeq,
     lastStoppedSeq,
     turnActive: isTurnActive({ pendingUserPromptSeq, lastStoppedSeq }),

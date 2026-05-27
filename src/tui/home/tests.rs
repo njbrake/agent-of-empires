@@ -3958,7 +3958,7 @@ fn set_instance_status_runs_status_hook_on_transition() {
 /// Earlier behavior fell through to the first-running fallback whenever
 /// `selected_session` was None — silently misrouting voice/dictation
 /// across groups. With cursor on a group, `selected_session` is None and
-/// `resolve_paste_target` must return None unconditionally.
+/// `resolve_send_target` must return None unconditionally.
 #[test]
 #[serial]
 fn paste_on_group_header_stashes_instead_of_misrouting() {
@@ -4656,6 +4656,216 @@ fn manual_grouping_attention_sort_stays_flat() {
     );
 }
 
+/// `prune_empty_group` is the post-move cleanup that drops the source
+/// profile's now-empty copy of a group after a session moves to a
+/// different profile. Without it, both profiles end up with the same
+/// group name in unified view, the source one empty and the target one
+/// populated, which reads as a duplicate group header.
+#[test]
+#[serial]
+fn prune_empty_group_drops_source_when_no_session_remains() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+
+    // Pre-state: alpha has one session in group "work", beta is empty.
+    let mut moved = Instance::new("moved", "/tmp/moved");
+    moved.source_profile = "alpha".to_string();
+    moved.group_path = "work".to_string();
+    view.instances = vec![moved];
+    view.group_trees.clear();
+    view.group_trees.insert(
+        "alpha".to_string(),
+        GroupTree::new_with_groups(&view.instances, &[]),
+    );
+    view.group_trees
+        .insert("beta".to_string(), GroupTree::new_with_groups(&[], &[]));
+    assert!(view.group_trees["alpha"].group_exists("work"));
+
+    // Simulate the move: re-tag source_profile, then prune the now-empty
+    // source group.
+    view.instances[0].source_profile = "beta".to_string();
+    view.prune_empty_group("alpha", "work");
+
+    assert!(
+        !view.group_trees["alpha"].group_exists("work"),
+        "alpha should no longer own the now-empty 'work' group after the move"
+    );
+}
+
+/// Prune must NOT drop the source group when the source profile still
+/// has other sessions sitting at the same path (or nested under it).
+/// Two sessions, only one moved → source profile keeps the group.
+#[test]
+#[serial]
+fn prune_empty_group_keeps_source_when_sibling_session_remains() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+
+    let mut moved = Instance::new("moved", "/tmp/moved");
+    moved.source_profile = "alpha".to_string();
+    moved.group_path = "work".to_string();
+    let mut sibling = Instance::new("sibling", "/tmp/sibling");
+    sibling.source_profile = "alpha".to_string();
+    sibling.group_path = "work".to_string();
+    view.instances = vec![moved, sibling];
+    view.group_trees.clear();
+    view.group_trees.insert(
+        "alpha".to_string(),
+        GroupTree::new_with_groups(&view.instances, &[]),
+    );
+    view.group_trees
+        .insert("beta".to_string(), GroupTree::new_with_groups(&[], &[]));
+
+    view.instances[0].source_profile = "beta".to_string();
+    view.prune_empty_group("alpha", "work");
+
+    assert!(
+        view.group_trees["alpha"].group_exists("work"),
+        "alpha must keep 'work' because the sibling session still lives there"
+    );
+}
+
+/// Prune must also keep the source group when a session sits in a
+/// *descendant* path. Only the leaf moved out; the parent still has
+/// rows under it.
+#[test]
+#[serial]
+fn prune_empty_group_keeps_source_when_descendant_session_remains() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+
+    let mut moved = Instance::new("moved", "/tmp/moved");
+    moved.source_profile = "alpha".to_string();
+    moved.group_path = "work".to_string();
+    let mut nested = Instance::new("nested", "/tmp/nested");
+    nested.source_profile = "alpha".to_string();
+    nested.group_path = "work/frontend".to_string();
+    view.instances = vec![moved, nested];
+    view.group_trees.clear();
+    view.group_trees.insert(
+        "alpha".to_string(),
+        GroupTree::new_with_groups(&view.instances, &[]),
+    );
+    view.group_trees
+        .insert("beta".to_string(), GroupTree::new_with_groups(&[], &[]));
+
+    view.instances[0].source_profile = "beta".to_string();
+    view.prune_empty_group("alpha", "work");
+
+    assert!(
+        view.group_trees["alpha"].group_exists("work"),
+        "alpha must keep 'work' because the nested session still lives under it"
+    );
+}
+
+/// Prune must keep the source group when the profile's tree carries a
+/// descendant *group* (even with no session under it). Lets users keep
+/// hand-built structure like `work/anchor` that survives moves of every
+/// session out of the parent. Without this guard, `delete_group`'s
+/// `starts_with(prefix)` cascade nukes the anchor sub-group too.
+#[test]
+#[serial]
+fn prune_empty_group_keeps_source_when_descendant_group_remains() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+
+    let mut moved = Instance::new("moved", "/tmp/moved");
+    moved.source_profile = "alpha".to_string();
+    moved.group_path = "work".to_string();
+    view.instances = vec![moved];
+    view.group_trees.clear();
+    let mut alpha_tree = GroupTree::new_with_groups(&view.instances, &[]);
+    alpha_tree.create_group("work/anchor");
+    view.group_trees.insert("alpha".to_string(), alpha_tree);
+    view.group_trees
+        .insert("beta".to_string(), GroupTree::new_with_groups(&[], &[]));
+    assert!(view.group_trees["alpha"].group_exists("work/anchor"));
+
+    view.instances[0].source_profile = "beta".to_string();
+    view.prune_empty_group("alpha", "work");
+
+    assert!(
+        view.group_trees["alpha"].group_exists("work"),
+        "alpha must keep 'work' because of the user-anchored 'work/anchor' sub-group"
+    );
+    assert!(
+        view.group_trees["alpha"].group_exists("work/anchor"),
+        "anchor sub-group must survive the no-op prune"
+    );
+}
+
+/// The prune must persist through save+reload. Without tombstoning in
+/// `pending_group_deletions`, the in-memory delete is reverted on next
+/// startup because `HomeView::new` reloads `existing_groups` from disk
+/// and reseeds the tree with the supposedly-pruned group. Mirrors the
+/// restart_selected_session sequence: seed + persist, then move + prune
+/// + persist.
+#[test]
+#[serial]
+fn prune_empty_group_survives_save_and_reload() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+
+    {
+        let mut view = HomeView::new(None, tools.clone()).unwrap();
+        let moved = {
+            let mut inst = Instance::new("moved", "/tmp/moved");
+            inst.source_profile = "alpha".to_string();
+            inst.group_path = "work".to_string();
+            inst
+        };
+        view.instance_map.insert("moved".to_string(), moved.clone());
+        view.instances.push(moved);
+        view.pending_added
+            .entry("alpha".to_string())
+            .or_default()
+            .insert("moved".to_string());
+        view.group_trees.insert(
+            "alpha".to_string(),
+            GroupTree::new_with_groups(&view.instances, &[]),
+        );
+        view.save().unwrap();
+
+        view.group_trees
+            .entry("beta".to_string())
+            .or_insert_with(|| GroupTree::new_with_groups(&[], &[]));
+        let old_path = view.instance_map["moved"].group_path.clone();
+        view.move_to_profile("moved", "beta", old_path.clone())
+            .unwrap();
+        view.prune_empty_group("alpha", &old_path);
+        view.save().unwrap();
+    }
+
+    let reloaded = HomeView::new(None, tools).unwrap();
+    assert!(
+        reloaded.group_trees.contains_key("alpha"),
+        "alpha tree must still load after the move"
+    );
+    assert!(
+        !reloaded.group_trees["alpha"].group_exists("work"),
+        "pruned 'work' must stay gone after save+reload, not get re-seeded from disk"
+    );
+}
+
 /// Favorite, snooze, and urgent decorations only render in Attention sort.
 /// In Newest (or any other sort), the row paints with its plain title and
 /// status-driven color even when the flags are set, so users who don't
@@ -4825,6 +5035,321 @@ fn archived_section_pinned_to_bottom_in_every_sort() {
     }
 }
 
+/// In Project grouping mode, archived sessions must nest under per-project
+/// sub-headers inside the Archived section instead of forming one flat list.
+/// Layout: Archived (depth 0) > <project> (depth 1) > sessions (depth 2).
+/// Sessions inside a sub-folder still sort most-recently-archived first.
+#[test]
+#[serial]
+fn archived_section_nests_by_project_in_project_mode() {
+    use crate::session::{
+        archived_project_sub_path,
+        config::{GroupByMode, SortOrder},
+        is_archived_section_path, ARCHIVED_SECTION_NAME,
+    };
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    // Pin to AZ so this test asserts only the depth-0/1/2 layout shape,
+    // not the sort-order behavior. Sort_order coverage lives in
+    // `archived_sub_folders_honor_sort_order` below.
+    env.view.sort_order = SortOrder::AZ;
+    // Archive one session from each project so we expect two sub-folders.
+    let alpha_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .unwrap();
+    let beta_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "beta-error")
+        .map(|i| i.id.clone())
+        .unwrap();
+    env.view
+        .apply_user_action(&alpha_id, |inst| inst.archive())
+        .unwrap();
+    env.view
+        .apply_user_action(&beta_id, |inst| inst.archive())
+        .unwrap();
+    env.view.archived_section_collapsed = false;
+    env.view.flat_items = env.view.build_flat_items();
+
+    // Find the Archived section header and walk forward.
+    let arch_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|it| matches!(it, Item::Group { path, .. } if is_archived_section_path(path)))
+        .expect("Archived section header must be present");
+
+    // Header sanity: depth 0, count = 2, name = Archived.
+    match &env.view.flat_items[arch_idx] {
+        Item::Group {
+            depth,
+            session_count,
+            name,
+            ..
+        } => {
+            assert_eq!(*depth, 0, "Archived header depth");
+            assert_eq!(*session_count, 2, "two archived sessions across projects");
+            assert_eq!(name, ARCHIVED_SECTION_NAME);
+        }
+        _ => unreachable!(),
+    }
+
+    // The next two non-session items should be sub-folder headers at depth 1,
+    // one for "alpha" and one for "beta", in alphabetical order. Between them
+    // and after the second, the sessions at depth 2 belong to that sub-folder.
+    let tail = &env.view.flat_items[arch_idx + 1..];
+
+    let sub_alpha_path = archived_project_sub_path("alpha");
+    let sub_beta_path = archived_project_sub_path("beta");
+
+    // First sub-header must be alpha (AZ sort orders by name).
+    match &tail[0] {
+        Item::Group {
+            path,
+            name,
+            depth,
+            session_count,
+            ..
+        } => {
+            assert_eq!(path, &sub_alpha_path);
+            assert_eq!(name, "alpha");
+            assert_eq!(*depth, 1);
+            assert_eq!(*session_count, 1);
+        }
+        other => panic!("expected alpha sub-header at depth 1, got {:?}", other),
+    }
+    // Then alpha's archived session at depth 2.
+    match &tail[1] {
+        Item::Session { id, depth } => {
+            assert_eq!(
+                id, &alpha_id,
+                "alpha sub-folder should contain alpha-running"
+            );
+            assert_eq!(*depth, 2);
+        }
+        other => panic!("expected alpha-running session row, got {:?}", other),
+    }
+    // Then the beta sub-header at depth 1.
+    match &tail[2] {
+        Item::Group {
+            path,
+            name,
+            depth,
+            session_count,
+            ..
+        } => {
+            assert_eq!(path, &sub_beta_path);
+            assert_eq!(name, "beta");
+            assert_eq!(*depth, 1);
+            assert_eq!(*session_count, 1);
+        }
+        other => panic!("expected beta sub-header at depth 1, got {:?}", other),
+    }
+    // Then beta's archived session at depth 2.
+    match &tail[3] {
+        Item::Session { id, depth } => {
+            assert_eq!(id, &beta_id, "beta sub-folder should contain beta-error");
+            assert_eq!(*depth, 2);
+        }
+        other => panic!("expected beta-error session row, got {:?}", other),
+    }
+}
+
+/// Collapsing the Archived umbrella in Project mode hides both sub-folder
+/// headers and their session rows.
+#[test]
+#[serial]
+fn archived_section_collapsed_hides_project_sub_folders() {
+    use crate::session::{config::GroupByMode, is_within_archived_section};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    let alpha_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .unwrap();
+    env.view
+        .apply_user_action(&alpha_id, |inst| inst.archive())
+        .unwrap();
+    env.view.archived_section_collapsed = true;
+    env.view.flat_items = env.view.build_flat_items();
+
+    let within_archive_items: Vec<&Item> = env
+        .view
+        .flat_items
+        .iter()
+        .filter(|it| match it {
+            Item::Group { path, .. } => is_within_archived_section(path),
+            Item::Session { .. } => false,
+        })
+        .collect();
+    assert_eq!(
+        within_archive_items.len(),
+        1,
+        "collapsed Archived must render only its top-level header, got {:?}",
+        within_archive_items
+    );
+}
+
+/// Collapsing a single project sub-folder under Archived hides its session
+/// rows but leaves the sub-header (and any other sub-folders) intact. Uses
+/// the same `project_group_collapsed` map that drives regular project mode
+/// collapse, keyed by the synthetic `archived_project_sub_path`.
+#[test]
+#[serial]
+fn archived_project_sub_folder_collapse_hides_only_its_sessions() {
+    use crate::session::{archived_project_sub_path, config::GroupByMode};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    let alpha_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .unwrap();
+    let beta_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "beta-error")
+        .map(|i| i.id.clone())
+        .unwrap();
+    env.view
+        .apply_user_action(&alpha_id, |inst| inst.archive())
+        .unwrap();
+    env.view
+        .apply_user_action(&beta_id, |inst| inst.archive())
+        .unwrap();
+    env.view.archived_section_collapsed = false;
+    // Collapse only alpha's archived sub-folder.
+    env.view
+        .project_group_collapsed
+        .insert(archived_project_sub_path("alpha"), true);
+    env.view.flat_items = env.view.build_flat_items();
+
+    // alpha sub-folder must still appear as a header but with no session row
+    // following it; beta sub-folder must still emit its session row.
+    let has_alpha_session = env
+        .view
+        .flat_items
+        .iter()
+        .any(|it| matches!(it, Item::Session { id, .. } if id == &alpha_id));
+    let has_beta_session = env
+        .view
+        .flat_items
+        .iter()
+        .any(|it| matches!(it, Item::Session { id, .. } if id == &beta_id));
+    assert!(
+        !has_alpha_session,
+        "collapsed alpha sub-folder must hide its archived session"
+    );
+    assert!(
+        has_beta_session,
+        "expanded beta sub-folder must still surface its archived session"
+    );
+    let alpha_sub_path = archived_project_sub_path("alpha");
+    assert!(
+        env.view.flat_items.iter().any(
+            |it| matches!(it, Item::Group { path, collapsed, .. } if path == &alpha_sub_path && *collapsed)
+        ),
+        "alpha sub-folder header must remain visible with collapsed=true"
+    );
+}
+
+/// Archived project sub-folders honor `sort_order`, mirroring how active
+/// project headers order in `flatten_tree`. AZ/ZA sort by project name;
+/// recency sorts (Newest, LastActivity, Attention) bring the most-
+/// recently-archived project to the top; Oldest does the inverse. Probes
+/// AZ, ZA, and Newest as representatives; the Oldest/LastActivity/Attention
+/// branches share the same `sort_archived_project_buckets` machinery.
+#[test]
+#[serial]
+fn archived_sub_folders_honor_sort_order() {
+    use crate::session::{
+        archived_project_sub_path,
+        config::{GroupByMode, SortOrder},
+        is_archived_section_path,
+    };
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    let alpha_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .unwrap();
+    let beta_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "beta-error")
+        .map(|i| i.id.clone())
+        .unwrap();
+    // Archive alpha first, then beta. archived_at is `Utc::now()` at the
+    // moment of `archive()`, so beta is strictly more recent than alpha.
+    env.view
+        .apply_user_action(&alpha_id, |inst| inst.archive())
+        .unwrap();
+    env.view
+        .apply_user_action(&beta_id, |inst| inst.archive())
+        .unwrap();
+    env.view.archived_section_collapsed = false;
+
+    let first_sub_folder = |env: &TestEnv| -> Option<String> {
+        let arch_idx = env.view.flat_items.iter().position(
+            |it| matches!(it, Item::Group { path, .. } if is_archived_section_path(path)),
+        )?;
+        env.view
+            .flat_items
+            .get(arch_idx + 1)
+            .and_then(|it| match it {
+                Item::Group { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+    };
+
+    let alpha_sub = archived_project_sub_path("alpha");
+    let beta_sub = archived_project_sub_path("beta");
+
+    env.view.sort_order = SortOrder::AZ;
+    env.view.flat_items = env.view.build_flat_items();
+    assert_eq!(
+        first_sub_folder(&env).as_deref(),
+        Some(alpha_sub.as_str()),
+        "AZ: alphabetical, alpha first"
+    );
+
+    env.view.sort_order = SortOrder::ZA;
+    env.view.flat_items = env.view.build_flat_items();
+    assert_eq!(
+        first_sub_folder(&env).as_deref(),
+        Some(beta_sub.as_str()),
+        "ZA: reverse alphabetical, beta first"
+    );
+
+    env.view.sort_order = SortOrder::Newest;
+    env.view.flat_items = env.view.build_flat_items();
+    assert_eq!(
+        first_sub_folder(&env).as_deref(),
+        Some(beta_sub.as_str()),
+        "Newest: most-recently-archived project first (beta archived after alpha)"
+    );
+}
+
 mod scroll_pane_isolation {
     //! Wheel events are confined to whichever pane the mouse is over.
     //! In particular, a wheel over the preview pane never moves the list
@@ -4976,6 +5501,7 @@ mod scroll_pane_isolation {
             session_id: "fake".to_string(),
             title: "fake".to_string(),
             tmux_name: "fake".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: crate::tui::home::live_send::parse_chord_list(
                 crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
             ),
@@ -5006,6 +5532,7 @@ mod scroll_pane_isolation {
             session_id: "fake".to_string(),
             title: "fake".to_string(),
             tmux_name: "fake".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: crate::tui::home::live_send::parse_chord_list(
                 crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
             ),
@@ -5439,6 +5966,7 @@ mod click_to_select {
             session_id: id_a.clone(),
             title: "session1".to_string(),
             tmux_name: format!("aoe_test_{}", id_a),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: Vec::new(),
         });
 
@@ -5473,6 +6001,7 @@ mod click_to_select {
             session_id: id_a.clone(),
             title: "session2".to_string(),
             tmux_name: format!("aoe_test_{}", id_a),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: Vec::new(),
         });
 
@@ -5829,11 +6358,13 @@ mod divider_drag {
 }
 
 mod preview_drag_select {
-    //! Click-and-drag on the preview pane while live-send is active
-    //! starts an in-app text selection. The renderer paints a
-    //! reversed-style highlight; release copies the cells through
-    //! OSC 52. Selections only exist in live mode (terminal-native
-    //! drag-select already handles every other surface).
+    //! Click-and-drag on the preview pane starts an in-app text
+    //! selection whenever the pane is on screen (in or out of live
+    //! mode). The renderer paints a reversed-style highlight; release
+    //! copies the cells through OSC 52. We need our own selection
+    //! handler because the TUI captures mouse events to support wheel
+    //! scroll, which keeps terminal-native drag-select from reaching
+    //! the preview.
 
     use super::*;
     use crate::tui::home::{live_send::LiveSendState, DragKind};
@@ -5849,17 +6380,35 @@ mod preview_drag_select {
             session_id: "test-session".to_string(),
             title: "test".to_string(),
             tmux_name: "aoe_test_drag_select".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: Vec::new(),
         });
     }
 
     #[test]
     #[serial]
-    fn drag_start_outside_live_mode_does_not_start_selection() {
+    fn drag_start_outside_live_mode_installs_selection() {
         let mut env = create_test_env_empty();
         env.view.preview_area = Rect::new(40, 0, 60, 20);
-        // No live_send -> the preview hit is ignored; no selection
-        // installs.
+        // No live_send: a press on the preview pane still seeds a
+        // PreviewSelect so users can copy from a regular session
+        // preview without first entering live mode.
+        assert!(env.view.handle_drag_start(50, 10));
+        assert!(matches!(env.view.drag_state, Some(DragKind::PreviewSelect)));
+        let sel = env.view.preview_selection.expect("selection installed");
+        assert_eq!(sel.anchor, (50, 10));
+        assert_eq!(sel.extent, (50, 10));
+        assert!(!sel.finalized);
+    }
+
+    #[test]
+    #[serial]
+    fn drag_start_blocked_by_non_live_overlay() {
+        // A modal sitting over the preview must swallow the press
+        // instead of seeding a hidden highlight behind the dialog.
+        let mut env = create_test_env_empty();
+        env.view.preview_area = Rect::new(40, 0, 60, 20);
+        env.view.show_help = true;
         assert!(!env.view.handle_drag_start(50, 10));
         assert!(env.view.preview_selection.is_none());
         assert!(env.view.drag_state.is_none());
@@ -6194,6 +6743,7 @@ mod preview_drag_select {
             session_id: "fake-id".to_string(),
             title: "fake".to_string(),
             tmux_name: "aoe_test_full_pipeline".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: Vec::new(),
         });
 
@@ -6316,6 +6866,7 @@ mod live_send_mode {
             session_id: inst.id.clone(),
             title: inst.title,
             tmux_name,
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: crate::tui::home::live_send::parse_chord_list(
                 crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
             ),
@@ -6331,6 +6882,7 @@ mod live_send_mode {
             session_id: "missing-id".to_string(),
             title: "missing-title".to_string(),
             tmux_name: "missing-tmux".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: crate::tui::home::live_send::parse_chord_list(
                 crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
             ),
@@ -6650,9 +7202,12 @@ mod live_send_mode {
     mod paste_splitting {
         //! `split_paste_for_live_send` decomposes a pasted string into
         //! tmux operations the live-send worker can actually deliver.
-        //! `send-keys -l` rejects control bytes, so newlines, tabs, and
-        //! CR/CRLF must come through as Named keys. Everything else
-        //! travels as Literal runs.
+        //! Single-line pastes stay on the simple `Literal` + `Named("Tab")`
+        //! path so raw shells and bracketed-paste-unaware agents keep
+        //! working. Multi-line pastes get wrapped in xterm bracketed-
+        //! paste markers (#1546) and dispatched as a single `HexBytes`
+        //! payload so the receiving agent sees one paste instead of one
+        //! `Enter` per line.
 
         use crate::tui::home::input::split_paste_for_live_send;
         use crate::tui::home::live_send::TmuxKey;
@@ -6664,6 +7219,23 @@ mod live_send_mode {
             TmuxKey::Named(name.to_string())
         }
 
+        /// xterm bracketed-paste start: `ESC [ 2 0 0 ~`.
+        const BP_START: &[u8] = &[0x1b, b'[', b'2', b'0', b'0', b'~'];
+        /// xterm bracketed-paste end: `ESC [ 2 0 1 ~`.
+        const BP_END: &[u8] = &[0x1b, b'[', b'2', b'0', b'1', b'~'];
+
+        /// Build the expected `HexBytes` payload for a multi-line
+        /// paste: start marker, then the per-line `body` bytes, then
+        /// end marker. Keeps each test focused on the *shape* of the
+        /// paste content rather than on hand-rolled byte arithmetic.
+        fn wrap(body: &[u8]) -> Vec<TmuxKey> {
+            let mut out = Vec::with_capacity(BP_START.len() + body.len() + BP_END.len());
+            out.extend_from_slice(BP_START);
+            out.extend_from_slice(body);
+            out.extend_from_slice(BP_END);
+            vec![TmuxKey::HexBytes(out)]
+        }
+
         #[test]
         fn printable_paste_stays_one_literal() {
             assert_eq!(
@@ -6673,47 +7245,49 @@ mod live_send_mode {
         }
 
         #[test]
-        fn newline_splits_into_literal_enter_literal() {
+        fn newline_wraps_in_bracketed_paste() {
+            // Two-line paste must wrap in `\e[200~` / `\e[201~` markers,
+            // with the interior newline riding as a raw CR. Without the
+            // wrapping the agent treats the `\n` as Enter -> submit and
+            // posts each line as its own user message (#1546).
             assert_eq!(
                 split_paste_for_live_send("first\nsecond"),
-                vec![lit("first"), named("Enter"), lit("second")],
+                wrap(b"first\x0dsecond"),
             );
         }
 
         #[test]
-        fn trailing_newline_emits_enter_with_no_literal_after() {
+        fn trailing_newline_stays_inside_bracketed_paste() {
+            // A single line plus a trailing newline still wraps: the
+            // user gets a paste with a trailing CR in the agent's input
+            // buffer rather than a paste-then-submit. Lets the user
+            // review before sending.
             assert_eq!(
                 split_paste_for_live_send("only line\n"),
-                vec![lit("only line"), named("Enter")],
+                wrap(b"only line\x0d"),
             );
         }
 
         #[test]
-        fn leading_newline_emits_enter_first() {
-            assert_eq!(
-                split_paste_for_live_send("\nbody"),
-                vec![named("Enter"), lit("body")],
-            );
+        fn leading_newline_stays_inside_bracketed_paste() {
+            assert_eq!(split_paste_for_live_send("\nbody"), wrap(b"\x0dbody"));
         }
 
         #[test]
-        fn crlf_coalesces_to_single_enter() {
-            assert_eq!(
-                split_paste_for_live_send("a\r\nb"),
-                vec![lit("a"), named("Enter"), lit("b")],
-            );
+        fn crlf_coalesces_to_single_cr() {
+            // Windows-style line endings collapse to one CR inside the
+            // bracketed paste so the agent doesn't see a double newline.
+            assert_eq!(split_paste_for_live_send("a\r\nb"), wrap(b"a\x0db"));
         }
 
         #[test]
-        fn bare_cr_emits_enter() {
-            assert_eq!(
-                split_paste_for_live_send("a\rb"),
-                vec![lit("a"), named("Enter"), lit("b")],
-            );
+        fn bare_cr_becomes_cr_inside_bracketed_paste() {
+            assert_eq!(split_paste_for_live_send("a\rb"), wrap(b"a\x0db"));
         }
 
         #[test]
-        fn tab_emits_named_tab() {
+        fn tab_in_single_line_paste_emits_named_tab() {
+            // Single-line tab pastes stay on the historical path.
             assert_eq!(
                 split_paste_for_live_send("a\tb"),
                 vec![lit("a"), named("Tab"), lit("b")],
@@ -6721,7 +7295,15 @@ mod live_send_mode {
         }
 
         #[test]
-        fn other_control_bytes_are_dropped() {
+        fn tab_in_multiline_paste_rides_as_raw_byte() {
+            // Inside a bracketed paste, tab is a literal character of
+            // the paste content, not a key event, so we send it as a
+            // raw 0x09 byte alongside the rest of the payload.
+            assert_eq!(split_paste_for_live_send("a\tb\nc"), wrap(b"a\x09b\x0dc"),);
+        }
+
+        #[test]
+        fn other_control_bytes_are_dropped_in_single_line_path() {
             // BEL (0x07) and ESC (0x1b) have no safe paste mapping;
             // they're dropped to avoid surprising agent input cancels.
             assert_eq!(
@@ -6731,20 +7313,60 @@ mod live_send_mode {
         }
 
         #[test]
+        fn other_control_bytes_are_dropped_inside_bracketed_paste() {
+            // Same drop policy applies inside the bracketed paste: an
+            // embedded ESC could prematurely close the paste sequence
+            // on the agent's side, so we strip it rather than forward.
+            assert_eq!(
+                split_paste_for_live_send("a\x07b\x1bc\nd"),
+                wrap(b"abc\x0dd"),
+            );
+        }
+
+        #[test]
         fn multiline_drag_select_paste_round_trip() {
             // Exact shape that comes back from drag-select copy: lines
-            // joined with `\n` and no trailing newline. The agent
-            // should see literal text + Enter + literal text.
+            // joined with `\n` and no trailing newline. After the fix
+            // for #1546 this wraps in bracketed-paste markers so the
+            // agent sees one paste instead of three Enter keypresses.
             assert_eq!(
                 split_paste_for_live_send("alpha beta\nsecond line\nthird"),
-                vec![
-                    lit("alpha beta"),
-                    named("Enter"),
-                    lit("second line"),
-                    named("Enter"),
-                    lit("third"),
-                ],
+                wrap(b"alpha beta\x0dsecond line\x0dthird"),
             );
+        }
+
+        #[test]
+        fn multiline_paste_dispatches_as_one_hex_payload() {
+            // Single-fork dispatch: the entire paste (markers, content,
+            // CRs) is one `HexBytes` so the worker fires exactly one
+            // `tmux send-keys -H` subprocess. Verifies the length-of-1
+            // invariant the worker relies on for paste latency.
+            let out = split_paste_for_live_send("a\nb\nc\nd");
+            assert_eq!(out.len(), 1, "multiline paste must be one TmuxKey");
+            match &out[0] {
+                TmuxKey::HexBytes(_) => {}
+                other => panic!("expected HexBytes, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn multiline_paste_with_utf8_preserves_bytes() {
+            // Non-ASCII chars (emoji, accented letters) ride as their
+            // UTF-8 byte sequences so the agent receives the same text
+            // the user copied. Regression guard for any future "ASCII
+            // only" filter.
+            assert_eq!(
+                split_paste_for_live_send("café\n🚀"),
+                wrap("café\x0d🚀".as_bytes()),
+            );
+        }
+
+        #[test]
+        fn empty_paste_is_empty() {
+            // An empty paste should drop the entire bracketed-paste
+            // wrapper too: pushing `\e[200~\e[201~` with no payload
+            // would still flash through some agents' paste handlers.
+            assert!(split_paste_for_live_send("").is_empty());
         }
     }
 }
@@ -6955,11 +7577,15 @@ mod default_attach_mode {
 
     #[test]
     #[serial]
-    fn terminal_view_ignores_default_attach_mode() {
-        // Terminal view has its own activation path (Container/Host
-        // tmux attach). The setting only applies to Agent view, so
-        // Terminal must keep its existing behavior even when
-        // default_attach_mode = LiveSend.
+    fn terminal_view_honors_default_attach_mode_live_send() {
+        // The `default_attach_mode = LiveSend` setting applies to
+        // Terminal view too: pressing Enter on a terminal-view row
+        // dispatches `Action::EnterLiveSend` against the paired
+        // terminal pane (the live-send target resolution happens in
+        // `start_live_send` based on view_mode). Without this, the
+        // user's "Enter = live mode" preference would silently flip
+        // back to a full tmux attach whenever they were previewing a
+        // terminal.
         let mut env = create_test_env_empty();
         write_global_default_attach_mode(NewSessionAttachMode::LiveSend);
         let id = add_session(&mut env.view, "session-one");
@@ -6968,10 +7594,127 @@ mod default_attach_mode {
         env.view.update_selected();
         env.view.view_mode = crate::tui::home::ViewMode::Terminal;
         let action = env.view.activate_selected_session();
+        assert_eq!(action, Some(Action::EnterLiveSend(id)));
+    }
+
+    #[test]
+    #[serial]
+    fn terminal_view_falls_back_to_attach_when_default_is_tmux() {
+        // Inverse of the LiveSend case: with the historical Tmux
+        // default, Enter on a terminal-view row keeps the historical
+        // `Action::AttachTerminal` so users who haven't opted into
+        // live mode see no change.
+        let mut env = create_test_env_empty();
+        let id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.view_mode = crate::tui::home::ViewMode::Terminal;
+        let action = env.view.activate_selected_session();
         assert!(
             matches!(&action, Some(Action::AttachTerminal(returned_id, _)) if returned_id == &id),
-            "Terminal view must emit AttachTerminal regardless of default_attach_mode, got {:?}",
+            "default Tmux mode must keep Terminal view on AttachTerminal, got {:?}",
             action
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn tab_swaps_to_attach_session_when_default_is_live_send() {
+        // When `default_attach_mode = LiveSend`, Enter takes over the
+        // live-send slot, so Tab swaps to a full tmux attach (the
+        // escape hatch). Without this, the user would have no
+        // single-key path to the underlying tmux session.
+        let mut env = create_test_env_empty();
+        write_global_default_attach_mode(NewSessionAttachMode::LiveSend);
+        let id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        let action = env.view.handle_key(key(KeyCode::Tab), None);
+        assert_eq!(action, Some(Action::AttachSession(id)));
+    }
+
+    #[test]
+    #[serial]
+    fn tab_still_enters_live_send_when_default_is_tmux() {
+        // With the historical Tmux default, Enter still attaches and
+        // Tab keeps its historical live-send role.
+        let mut env = create_test_env_empty();
+        let id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        let action = env.view.handle_key(key(KeyCode::Tab), None);
+        assert_eq!(action, Some(Action::EnterLiveSend(id)));
+    }
+
+    #[test]
+    #[serial]
+    fn tab_in_terminal_view_swaps_to_attach_terminal_when_default_is_live_send() {
+        // Terminal-view counterpart of the swap: with Enter pinned to
+        // live-send, Tab in Terminal view attaches the paired terminal
+        // pane rather than the agent pane.
+        let mut env = create_test_env_empty();
+        write_global_default_attach_mode(NewSessionAttachMode::LiveSend);
+        let id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.view_mode = crate::tui::home::ViewMode::Terminal;
+        let action = env.view.handle_key(key(KeyCode::Tab), None);
+        assert!(
+            matches!(&action, Some(Action::AttachTerminal(returned_id, _)) if returned_id == &id),
+            "Tab in Terminal view with LiveSend default must AttachTerminal, got {:?}",
+            action
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn m_in_terminal_view_targets_terminal_pane() {
+        // The 'm' bug from #1554: pressing 'm' from Terminal view used
+        // to open a compose dialog that targeted the agent pane,
+        // sending commands meant for the shell into the agent's input
+        // box. The fix: `pending_send_target` reflects view_mode at
+        // dialog open time so `execute_send_message` routes to the
+        // paired terminal pane.
+        let mut env = create_test_env_empty();
+        let _id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.view_mode = crate::tui::home::ViewMode::Terminal;
+        let _ = env.view.handle_key(key(KeyCode::Char('m')), None);
+        assert!(
+            env.view.send_message_dialog.is_some(),
+            "Terminal view 'm' must open the compose dialog even when \
+             the paired tmux pane hasn't spawned yet"
+        );
+        assert_eq!(
+            env.view.pending_send_target,
+            crate::tui::home::live_send::LiveSendTarget::Terminal,
+            "compose dialog opened from Terminal view must target the terminal pane"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn start_live_send_in_terminal_view_targets_terminal_pane() {
+        // Direct check on the live-send target resolution: in Terminal
+        // view, `start_live_send` stages the host terminal as the
+        // pending target so `prepare_live_send` will dispatch
+        // keystrokes to the paired terminal tmux pane.
+        let mut env = create_test_env_empty();
+        let _id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.view_mode = crate::tui::home::ViewMode::Terminal;
+        let _ = env.view.start_live_send();
+        assert_eq!(
+            env.view.pending_live_send_target,
+            crate::tui::home::live_send::LiveSendTarget::Terminal
         );
     }
 
@@ -7407,6 +8150,96 @@ mod save_field_merge {
                 .and_then(|i| i.agent_session_id.clone())
                 .is_none(),
             "reload must honor peer-cleared sid; carrying memory would re-pass --resume <stale>"
+        );
+    }
+
+    /// `stamp_last_accessed` on a sunk row must auto-clear archived_at on
+    /// BOTH memory and disk, and rebuild flat_items so the row leaves the
+    /// synthetic Archived section on the same frame. Regression guard for
+    /// the "re-entering an archived session left it stuck in the Archived
+    /// section until the user pressed `z`" bug: the old implementation used
+    /// mutate_instance + save, but merge_from_tui doesn't carry archived_at
+    /// so the next reload resurrected the sink from disk.
+    #[test]
+    #[serial]
+    fn stamp_last_accessed_on_archived_row_unsinks_persistently() {
+        use crate::session::{is_archived_section_path, Item};
+
+        let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/grp");
+
+        view.apply_user_action(&id, |inst| inst.archive())
+            .expect("seed archive must persist");
+        view.flat_items = view.build_flat_items();
+        assert!(
+            view.get_instance(&id).unwrap().is_archived(),
+            "precondition: row archived in memory"
+        );
+        let archived_section_present = |items: &[Item]| {
+            items.iter().any(|it| match it {
+                Item::Group { path, .. } => is_archived_section_path(path),
+                _ => false,
+            })
+        };
+        assert!(
+            archived_section_present(&view.flat_items),
+            "precondition: Archived section header rendered"
+        );
+
+        view.stamp_last_accessed(&id);
+
+        assert!(
+            !view.get_instance(&id).unwrap().is_archived(),
+            "stamp_last_accessed must clear archived_at in memory"
+        );
+        let disk_row = Storage::new("test")
+            .unwrap()
+            .load()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == id)
+            .expect("disk row present");
+        assert!(
+            disk_row.archived_at.is_none(),
+            "stamp_last_accessed must persist the auto-unarchive (merge_from_tui drops archived_at)"
+        );
+        assert!(
+            !archived_section_present(&view.flat_items),
+            "Archived section must disappear once the only archived row is unsunk"
+        );
+    }
+
+    /// Snoozed siblings of the archive case: `snoozed_until` is also cleared
+    /// by `touch_last_accessed` and is also excluded from `merge_from_tui`,
+    /// so the same persistence bug applied to snoozed rows. Same fix path
+    /// (apply_user_action), same disk-versus-memory contract.
+    #[test]
+    #[serial]
+    fn stamp_last_accessed_on_snoozed_row_persistently_clears_snooze() {
+        let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/grp");
+
+        view.apply_user_action(&id, |inst| inst.snooze(30))
+            .expect("seed snooze must persist");
+        assert!(
+            view.get_instance(&id).unwrap().is_snoozed(),
+            "precondition: row snoozed in memory"
+        );
+
+        view.stamp_last_accessed(&id);
+
+        assert!(
+            !view.get_instance(&id).unwrap().is_snoozed(),
+            "stamp_last_accessed must clear snoozed_until in memory"
+        );
+        let disk_row = Storage::new("test")
+            .unwrap()
+            .load()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == id)
+            .expect("disk row present");
+        assert!(
+            disk_row.snoozed_until.is_none(),
+            "stamp_last_accessed must persist the auto-unsnooze (merge_from_tui drops snoozed_until)"
         );
     }
 }
