@@ -46,6 +46,16 @@ export type Action =
   | { kind: "dismiss_mode_switch_failed" }
   | { kind: "set_pending_config_option"; configId: string; value: string }
   | { kind: "clear_pending_config_option" }
+  | {
+      /** Clear pendingConfigOption only when it still matches the
+       *  (configId, value) pair of the failed request. Prevents a
+       *  stale request A from wiping a newer request B's pending
+       *  state after the user clicked a second option mid-flight.
+       *  See #1403 (review feedback). */
+      kind: "clear_pending_config_option_if_match";
+      configId: string;
+      value: string;
+    }
   | { kind: "dismiss_config_option_switch_failed" };
 
 // LRU-capped module cache keyed by cockpit session id. Mirrors the
@@ -427,6 +437,15 @@ function reducer(state: CockpitState, action: Action): CockpitState {
   }
   if (action.kind === "clear_pending_config_option") {
     return { ...state, pendingConfigOption: null };
+  }
+  if (action.kind === "clear_pending_config_option_if_match") {
+    if (
+      state.pendingConfigOption?.configId === action.configId &&
+      state.pendingConfigOption?.value === action.value
+    ) {
+      return { ...state, pendingConfigOption: null };
+    }
+    return state;
   }
   if (action.kind === "dismiss_config_option_switch_failed") {
     return { ...state, configOptionSwitchFailed: null };
@@ -1165,7 +1184,14 @@ export function useCockpit(
         );
         if (!res.ok) {
           const detail = await safeText(res);
-          dispatch({ kind: "clear_pending_config_option" });
+          // Guard against the user clicking a second option before this
+          // request's response landed: clear pending only when it
+          // still matches our (configId, value) pair. See #1403.
+          dispatch({
+            kind: "clear_pending_config_option_if_match",
+            configId,
+            value,
+          });
           dispatch({
             kind: "error",
             message:
@@ -1173,7 +1199,11 @@ export function useCockpit(
           });
         }
       } catch (e) {
-        dispatch({ kind: "clear_pending_config_option" });
+        dispatch({
+          kind: "clear_pending_config_option_if_match",
+          configId,
+          value,
+        });
         dispatch({
           kind: "error",
           message: `Network error setting ${configId}: ${describeError(e)}`,

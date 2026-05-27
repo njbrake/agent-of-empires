@@ -69,6 +69,53 @@ describe("cockpitHookReducer / config option actions", () => {
     });
     expect(state.pendingConfigOption?.value).toBe("claude-sonnet-4-6");
   });
+
+  it("clear_pending_config_option_if_match clears when the request matches the current pending", () => {
+    const seeded = cockpitHookReducer(emptyCockpitState(), {
+      kind: "set_pending_config_option",
+      configId: "model",
+      value: "claude-sonnet-4-6",
+    });
+    const next = cockpitHookReducer(seeded, {
+      kind: "clear_pending_config_option_if_match",
+      configId: "model",
+      value: "claude-sonnet-4-6",
+    });
+    expect(next.pendingConfigOption).toBeNull();
+  });
+
+  it("clear_pending_config_option_if_match leaves a newer pending intact when a stale request fails", () => {
+    // Request A for model=opus dispatched, then request B for
+    // model=sonnet replaced pending. A's failure must NOT wipe B.
+    let state = cockpitHookReducer(emptyCockpitState(), {
+      kind: "set_pending_config_option",
+      configId: "model",
+      value: "claude-opus-4-7",
+    });
+    state = cockpitHookReducer(state, {
+      kind: "set_pending_config_option",
+      configId: "model",
+      value: "claude-sonnet-4-6",
+    });
+    const next = cockpitHookReducer(state, {
+      kind: "clear_pending_config_option_if_match",
+      configId: "model",
+      value: "claude-opus-4-7",
+    });
+    expect(next.pendingConfigOption).toEqual({
+      configId: "model",
+      value: "claude-sonnet-4-6",
+    });
+  });
+
+  it("clear_pending_config_option_if_match is a no-op when pending is already cleared", () => {
+    const next = cockpitHookReducer(emptyCockpitState(), {
+      kind: "clear_pending_config_option_if_match",
+      configId: "model",
+      value: "claude-opus-4-7",
+    });
+    expect(next.pendingConfigOption).toBeNull();
+  });
 });
 
 // ---- Hook async tests ---------------------------------------------------
