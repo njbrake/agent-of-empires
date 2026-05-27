@@ -590,10 +590,10 @@ impl HomeView {
         // Any keystroke drops a finalized preview-pane selection. The
         // highlight pins to cell coords, so as soon as the user starts
         // doing anything else (navigating the list, opening a dialog,
-        // entering live mode, etc.) the cells underneath can change
-        // and the highlight would point at unrelated content.
-        // `handle_live_send_key` repeats this clear inside the
-        // live-send branch so the same dismissal happens there.
+        // typing through live-send, etc.) the cells underneath can
+        // change and the highlight would point at unrelated content.
+        // Doing the clear here covers both the live-send branch below
+        // and the regular home-view path.
         self.clear_preview_selection();
 
         // Live-send capture wins over every other key handler. While
@@ -3232,13 +3232,12 @@ impl HomeView {
             return;
         };
 
-        // Any keystroke in live mode dismisses a finalized preview
-        // selection so the highlight doesn't linger forever once the
-        // user starts typing again. The PageUp/PageDown scroll keys
-        // below also count — scrolling away with a highlight still
-        // visible would point at content that no longer exists at
-        // those cells.
-        self.clear_preview_selection();
+        // `handle_key` already cleared any finalized preview
+        // selection at the top, so the highlight doesn't linger
+        // across the keystroke that switched the user out of
+        // copy-and-look mode. The PageUp/PageDown scroll keys below
+        // would otherwise need their own dismissal; the shared
+        // top-of-handle_key clear covers them too.
 
         // Shift+PageUp / Shift+PageDown scroll the preview pane
         // without forwarding to the agent. Matches the terminal-
