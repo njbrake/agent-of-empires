@@ -974,6 +974,12 @@ pub async fn delete_session(
 
     match deletion_result {
         Ok(result) if result.success => {
+            // `perform_deletion` may have produced user-facing messages
+            // (e.g. "Scratch directory kept at: <path>" when
+            // `--keep-scratch` is set). Capture them now so the
+            // success branch can echo them back; the result moves into
+            // the spawn_blocking below.
+            let messages = result.messages.clone();
             // Disk first: if persistence fails, the in-memory state is left
             // intact and we return 500. Otherwise the status poll loop
             // would silently re-add the entry from disk on the next tick
@@ -1012,7 +1018,10 @@ pub async fn delete_session(
                     state.instance_locks.write().await.remove(&id);
                     (
                         StatusCode::OK,
-                        Json(serde_json::json!({ "status": "deleted" })),
+                        Json(serde_json::json!({
+                            "status": "deleted",
+                            "messages": messages,
+                        })),
                     )
                 }
                 Ok(Err(e)) => {
