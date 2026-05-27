@@ -243,13 +243,28 @@ pub(crate) fn claude_poll_fn(
     project_path: String,
     known_session_id: Option<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
+    // issue #1522: promote the last successfully captured sid to the anchor
+    // for subsequent polls. Without this, the closure keeps the startup
+    // `known_session_id` forever; once that file goes stale the scan drops
+    // back to global-most-recent and shared-repo fleets can resume
+    // cross-assigning on the next /clear or fork.
+    let last_known = std::sync::Mutex::new(known_session_id);
     move || {
-        capture_claude_session_id(&project_path, known_session_id.as_deref())
+        let current_known = last_known.lock().ok().and_then(|g| g.clone());
+        let captured = capture_claude_session_id(&project_path, current_known.as_deref())
             .map_err(
                 |e| tracing::debug!(target: "session.capture", "Claude disk scan failed: {}", e),
             )
             .ok()
-            .and_then(validated_session_id)
+            .and_then(validated_session_id);
+
+        if let Some(id) = captured.as_ref() {
+            if let Ok(mut guard) = last_known.lock() {
+                *guard = Some(id.clone());
+            }
+        }
+
+        captured
     }
 }
 
@@ -2177,6 +2192,56 @@ mod tests {
             capture_claude_session_id("/tmp/myproject", Some(uuid_known)).unwrap(),
             uuid_fresh
         );
+
+        match old_val {
+            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_claude_poll_fn_promotes_last_known_across_polls() {
+        // issue #1522: once a stale anchor falls back to the disk's most-recent,
+        // the closure must adopt that sid as its new anchor so a later sibling
+        // write (think: another session in the same fleet) cannot steal it
+        // back on the next poll. Without promotion, the closure stays anchored
+        // to its startup sid forever, and shared-repo cross-assignment returns
+        // the moment a session forks (/clear, /new, --fork-session).
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let uuid_startup = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let uuid_post_fork = "11111111-2222-3333-4444-555555555555";
+        let uuid_sibling = "99999999-8888-7777-6666-555555555555";
+
+        // Startup anchor's file is stale; the post-fork file is fresh.
+        std::fs::write(project_dir.join(format!("{uuid_startup}.jsonl")), "s\n").unwrap();
+        let stale = std::time::SystemTime::now() - Duration::from_secs(600);
+        std::fs::File::options()
+            .write(true)
+            .open(project_dir.join(format!("{uuid_startup}.jsonl")))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(stale))
+            .unwrap();
+        std::fs::write(project_dir.join(format!("{uuid_post_fork}.jsonl")), "f\n").unwrap();
+
+        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
+        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
+
+        let poll = claude_poll_fn("/tmp/myproject".to_string(), Some(uuid_startup.to_string()));
+
+        // First poll: anchor is stale, fall back to most-recent (post-fork).
+        assert_eq!(poll().as_deref(), Some(uuid_post_fork));
+
+        // A sibling session in the same dir writes its transcript with a newer
+        // mtime than the post-fork file.
+        std::fs::write(project_dir.join(format!("{uuid_sibling}.jsonl")), "x\n").unwrap();
+
+        // Second poll: closure must now anchor to the post-fork sid (still
+        // fresh) and refuse to drift onto the sibling's newer file.
+        assert_eq!(poll().as_deref(), Some(uuid_post_fork));
 
         match old_val {
             Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
