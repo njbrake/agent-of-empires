@@ -62,18 +62,47 @@ base("wizard remembers the last-picked agent after reload", async ({ page }, tes
     );
     expect(stored).toBe("codex");
 
-    const reopenedHeader = page
-      .locator('[data-testid="sidebar-group-header"]')
-      .first();
-    await expect(reopenedHeader).toBeVisible({ timeout: 10_000 });
-    await reopenedHeader
-      .getByRole("button", { name: /New session in /i })
+    // Reopen via the GLOBAL "New session" button (aria-label="New
+    // session"), not the per-group "New session in <name>" button.
+    // The group button routes through handleCreateSession which
+    // overrides prefill.tool from the latest matching session
+    // (App.tsx:451), bypassing loadLastUsedTool entirely. The global
+    // button passes wizardPrefill=undefined, so buildInitialData()
+    // picks up the persisted tool from localStorage and the wizard
+    // mounts with data.tool="codex". Open it, jump to the Agent step
+    // via the step indicator dot is non-clickable, so navigate
+    // through Project (pick the seeded path) → Session → Agent and
+    // assert the codex tile is selected. That proves the read side
+    // of loadLastUsedTool.
+    await page
+      .getByRole("button", { name: "New session", exact: true })
+      .first()
       .click();
     await expect(
-      page.getByRole("heading", { name: /Review & Launch/i }),
+      page.getByRole("heading", { name: /Project folder/i }),
     ).toBeVisible({ timeout: 10_000 });
-    const agentRow = page.getByRole("button", { name: /^Agent / });
-    await expect(agentRow).toContainText("codex", { timeout: 5_000 });
+    const recentProjectTile = page
+      .locator("button")
+      .filter({ hasText: /\/project$/ })
+      .first();
+    await expect(recentProjectTile).toBeVisible({ timeout: 5_000 });
+    await recentProjectTile.click();
+    await page.getByRole("button", { name: /^Next$/ }).click();
+    await expect(
+      page.getByRole("heading", { name: /Name your session/i }),
+    ).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: /^Next$/ }).click();
+    await expect(
+      page.getByRole("heading", { name: /Which AI agent\?/i }),
+    ).toBeVisible({ timeout: 10_000 });
+    // The codex tile carries `border-brand-600` only when data.tool
+    // matches. Assert that styling instead of clicking Next twice more
+    // to reach Review — keeps the spec tight while still verifying the
+    // read side of persistence.
+    const codexTile = page.getByRole("button", { name: /^codex/i });
+    await expect(codexTile).toHaveClass(/border-brand-600/, {
+      timeout: 5_000,
+    });
   } finally {
     await serve.stop();
   }
