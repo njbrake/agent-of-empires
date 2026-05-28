@@ -138,7 +138,7 @@ Common cause: the hook calls a tool (uv, npm, pip) that needs network access or 
 
 Before checking out the new branch, AOE runs `git fetch <remote> <branch>` so the worktree starts from the latest remote state. Network errors, missing remotes, SSH key issues, and 10s timeouts no longer pass silently; they surface as warnings shaped like:
 
-```
+```text
 git fetch <remote> <branch> failed for <repo>: <stderr>
 ```
 
