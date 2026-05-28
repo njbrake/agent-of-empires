@@ -167,8 +167,8 @@ export function SettingsView({
   }, [loadSettings]);
 
   const sendSave = useCallback(
-    async (section: string, data: Record<string, unknown>) => {
-      if (!selectedProfile) return;
+    async (section: string, data: Record<string, unknown>): Promise<boolean> => {
+      if (!selectedProfile) return false;
       setSaving(true);
       setSaveError(null);
       const ok = await updateProfileSettings(selectedProfile, { [section]: data });
@@ -177,6 +177,7 @@ export function SettingsView({
         setSaveError("Failed to save, please try again");
         loadSettings();
       }
+      return ok;
     },
     [selectedProfile, loadSettings],
   );
@@ -198,15 +199,15 @@ export function SettingsView({
     sectionData: Record<string, unknown>,
     field: string,
     value: unknown,
-  ) => {
+  ): Promise<boolean> => {
     updateLocal({ [section]: { ...sectionData, [field]: value } });
-    sendSave(section, { [field]: value });
+    return sendSave(section, { [field]: value });
   };
 
   const saveSubField = useCallback(
-    (section: string, field: string, value: unknown) => {
+    (section: string, field: string, value: unknown): Promise<boolean> => {
       const sectionData = (settings?.[section] ?? {}) as Record<string, unknown>;
-      saveField(section, sectionData, field, value);
+      return saveField(section, sectionData, field, value);
     },
     [settings, selectedProfile, sendSave, loadSettings],
   );
