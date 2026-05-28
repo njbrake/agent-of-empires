@@ -268,35 +268,79 @@ pub(crate) fn claude_poll_fn(
     }
 }
 
+/// Pick the active Claude session UUID from the container shell snippet's
+/// stdout in [`capture_claude_session_id_in_container`].
+///
+/// Stdout is expected to be UUID basenames, one per line, in newest-first
+/// order, already filtered to files modified within the last 5 minutes.
+///
+/// Mirrors the host-side anchor preference (issue #1522): when several AoE
+/// sessions share one container/cwd, the bare "most recent" heuristic makes
+/// every poller report whichever session wrote last and cross-assign ids.
+/// If our `known_session_id` is among the fresh candidates, prefer it;
+/// otherwise fall back to the most-recent (first in the list). With no
+/// candidates, return an error so the caller can surface it the same way
+/// the previous "no active session" path did.
+fn select_claude_session_in_container(
+    stdout_bytes: &[u8],
+    known_session_id: Option<&str>,
+) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout_bytes);
+    let candidates: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && Uuid::parse_str(l).is_ok())
+        .collect();
+
+    if candidates.is_empty() {
+        anyhow::bail!("No active Claude session found in container");
+    }
+
+    if let Some(k) = known_session_id {
+        if candidates.contains(&k) {
+            return Ok(k.to_string());
+        }
+    }
+
+    Ok(candidates[0].to_string())
+}
+
 /// Capture Claude Code session ID inside a Docker container.
 ///
 /// Claude in a sandboxed AoE session writes its `.jsonl` files to the
 /// container's `~/.claude/projects/{encoded-cwd}/` directory, not the host's.
-/// This shells `docker exec` into the running container to find the most
-/// recently modified UUID-named jsonl in that directory, with a 5-minute
-/// staleness guard.
+/// This shells `docker exec` into the running container, lists every fresh
+/// (≤5 min mtime) UUID-named jsonl in that directory newest-first, and
+/// delegates per-pane attribution to [`select_claude_session_in_container`]
+/// — which prefers `known_session_id` when it's still fresh, falling back
+/// to the most-recent file otherwise. This mirrors the host path's anchor
+/// (issue #1522) so fleets sharing a single container/cwd don't
+/// cross-assign session ids.
 pub(crate) fn capture_claude_session_id_in_container(
     container_name: &str,
     container_cwd: &str,
+    known_session_id: Option<&str>,
 ) -> Result<String> {
     let dir_name = encode_claude_project_path(container_cwd);
 
-    // Shell snippet:
+    // Shell snippet (POSIX-portable):
     //   - resolve $CLAUDE_CONFIG_DIR or $HOME/.claude
     //   - walk projects/<encoded>/ for *.jsonl files
     //   - keep ones with mtime within 5 minutes
-    //   - emit basename (without .jsonl) of the most recent
+    //   - emit basenames (without .jsonl) in newest-first order
     //
-    // Using POSIX `find -mmin -5` and `ls -t` to avoid GNU-only `printf '%T@ %f'`.
+    // We emit every fresh candidate (not just `head -1`) so the Rust
+    // selector can apply per-instance anchor preference (issue #1522).
+    // Using POSIX `find -mmin -5` and `ls -t` to avoid GNU-only flags.
     let snippet = format!(
         r#"
 CLAUDE_HOME="${{CLAUDE_CONFIG_DIR:-$HOME/.claude}}"
 DIR="$CLAUDE_HOME/projects/{dir_name}"
 [ -d "$DIR" ] || exit 0
-NEWEST=$(ls -t "$DIR"/*.jsonl 2>/dev/null | head -1)
-[ -z "$NEWEST" ] && exit 0
-[ -n "$(find "$NEWEST" -mmin -5 2>/dev/null)" ] || exit 0
-basename "$NEWEST" .jsonl
+for f in $(ls -t "$DIR"/*.jsonl 2>/dev/null); do
+  [ -n "$(find "$f" -mmin -5 2>/dev/null)" ] || continue
+  basename "$f" .jsonl
+done
 "#
     );
 
@@ -310,31 +354,42 @@ basename "$NEWEST" .jsonl
         anyhow::bail!("docker exec returned non-zero: {}", stderr.trim());
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let id = stdout.trim();
-    if id.is_empty() {
-        anyhow::bail!(
-            "No active Claude session found in container {}",
-            container_name
-        );
-    }
-    if Uuid::parse_str(id).is_err() {
-        anyhow::bail!("Container returned non-UUID session ID: {:?}", id);
-    }
-
-    Ok(id.to_string())
+    select_claude_session_in_container(&output.stdout, known_session_id)
+        .map_err(|e| anyhow::anyhow!("{} (container {})", e, container_name))
 }
 
 /// Polling closure for sandboxed (Docker) Claude Code session tracking.
+///
+/// Mirrors [`claude_poll_fn`]'s issue #1522 anchor: holds the
+/// `known_session_id` in a `Mutex` and promotes the last successful capture
+/// into it so the poller stays attached to its session's actual current id
+/// over its lifetime (matches the host-path behaviour PR #1523 landed).
 pub(crate) fn claude_poll_fn_sandboxed(
     container_name: String,
     container_cwd: String,
+    known_session_id: Option<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
+    let last_known = std::sync::Mutex::new(known_session_id);
     move || {
-        capture_claude_session_id_in_container(&container_name, &container_cwd)
-            .map_err(|e| tracing::debug!(target: "session.capture", "Claude container scan failed: {}", e))
-            .ok()
-            .and_then(validated_session_id)
+        let current_known = last_known.lock().ok().and_then(|g| g.clone());
+        let captured = capture_claude_session_id_in_container(
+            &container_name,
+            &container_cwd,
+            current_known.as_deref(),
+        )
+        .map_err(
+            |e| tracing::debug!(target: "session.capture", "Claude container scan failed: {}", e),
+        )
+        .ok()
+        .and_then(validated_session_id);
+
+        if let Some(id) = captured.as_ref() {
+            if let Ok(mut guard) = last_known.lock() {
+                *guard = Some(id.clone());
+            }
+        }
+
+        captured
     }
 }
 
@@ -2337,8 +2392,77 @@ mod tests {
         let result = capture_claude_session_id_in_container(
             "aoe-test-nonexistent-container-xyz",
             "/workspace/test",
+            None,
         );
         assert!(result.is_err());
+    }
+
+    // --- issue #1522 mirror: anchor preference inside the container path ---
+    //
+    // The shell snippet emits UUID basenames in newest-first order. We feed
+    // synthetic stdout into the pure selector to verify that the anchor wins
+    // when fresh, that we fall back to most-recent otherwise, and that the
+    // single-session-per-container case is preserved.
+
+    #[test]
+    fn test_select_claude_session_in_container_most_recent_when_no_anchor() {
+        let uuid_new = "11111111-2222-3333-4444-555555555555";
+        let uuid_old = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let stdout = format!("{uuid_new}\n{uuid_old}\n"); // newest-first
+        let id = select_claude_session_in_container(stdout.as_bytes(), None).unwrap();
+        assert_eq!(id, uuid_new);
+    }
+
+    #[test]
+    fn test_select_claude_session_in_container_prefers_anchor() {
+        // Two fresh candidates; B is newer. With no anchor every session in a
+        // shared container would resolve to B and cross-assign. With anchor=A,
+        // each session keeps its own id (issue #1522 mirror of the host fix).
+        let uuid_a = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let uuid_b = "11111111-2222-3333-4444-555555555555";
+        let stdout = format!("{uuid_b}\n{uuid_a}\n"); // B newer
+        assert_eq!(
+            select_claude_session_in_container(stdout.as_bytes(), Some(uuid_a)).unwrap(),
+            uuid_a,
+            "anchor A must win even though B is newer"
+        );
+        assert_eq!(
+            select_claude_session_in_container(stdout.as_bytes(), Some(uuid_b)).unwrap(),
+            uuid_b,
+        );
+    }
+
+    #[test]
+    fn test_select_claude_session_in_container_anchor_absent_falls_back_to_newest() {
+        // Anchor points at a session whose file isn't fresh here (or never
+        // existed in this container); fall back to most-recent.
+        let uuid_new = "11111111-2222-3333-4444-555555555555";
+        let uuid_other = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let absent = "99999999-9999-9999-9999-999999999999";
+        let stdout = format!("{uuid_new}\n{uuid_other}\n");
+        assert_eq!(
+            select_claude_session_in_container(stdout.as_bytes(), Some(absent)).unwrap(),
+            uuid_new,
+        );
+    }
+
+    #[test]
+    fn test_select_claude_session_in_container_no_candidates_errors() {
+        let result = select_claude_session_in_container(b"", None);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No active Claude session"),);
+    }
+
+    #[test]
+    fn test_select_claude_session_in_container_ignores_non_uuid_lines() {
+        // Defensive: blank lines and any stray output must not be picked.
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let stdout = format!("\n  \nnot-a-uuid\n{uuid}\nstill-not-a-uuid\n");
+        let id = select_claude_session_in_container(stdout.as_bytes(), None).unwrap();
+        assert_eq!(id, uuid);
     }
 
     #[test]
