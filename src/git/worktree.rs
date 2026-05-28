@@ -489,7 +489,13 @@ impl GitWorktree {
         // via `record_fetch_warning` so the user knows the new worktree may
         // be starting from a stale local ref instead of failing silently.
         let t = std::time::Instant::now();
-        let resolved_base: Option<(String, Option<String>)> = if create_branch {
+        // (name, remote, explicit) — `explicit` flips the lookup chain
+        // below from "fall through to HEAD" to "return BranchNotFound"
+        // when neither a remote-tracking ref nor a local branch with the
+        // user-typed name exists. A typo in `--base-branch` should
+        // surface as an error, not as a session quietly anchored to a
+        // bystander commit.
+        let resolved_base: Option<(String, Option<String>, bool)> = if create_branch {
             match base_branch {
                 Some(b) if !b.trim().is_empty() => {
                     let base = b.trim().to_string();
@@ -502,7 +508,7 @@ impl GitWorktree {
                     let fetch_remote = remote.as_deref().unwrap_or(FETCH_REMOTE);
                     let outcome = self.fetch_branch(fetch_remote, &base);
                     self.record_fetch_warning(&mut warnings, &outcome, fetch_remote, &base);
-                    Some((base, remote))
+                    Some((base, remote, true))
                 }
                 _ => {
                     let info = self
@@ -514,7 +520,7 @@ impl GitWorktree {
                     let fetch_remote = info.remote.as_deref().unwrap_or(FETCH_REMOTE);
                     let outcome = self.fetch_branch(fetch_remote, &info.name);
                     self.record_fetch_warning(&mut warnings, &outcome, fetch_remote, &info.name);
-                    Some((info.name, info.remote))
+                    Some((info.name, info.remote, false))
                 }
             }
         } else {
@@ -527,17 +533,22 @@ impl GitWorktree {
         let t = std::time::Instant::now();
         let repo = open_repo_at(&self.repo_path)?;
 
-        if let Some((base, base_remote)) = resolved_base {
+        if let Some((base, base_remote, explicit)) = resolved_base {
             // Branch from the picked remote's tip when the auto-detected
             // canonical remote isn't `origin` (issue #1029: fork+upstream
             // layouts). When the caller passed an explicit `--base-branch`,
             // try `origin/<base>` first to preserve historical behavior.
             // Falls back to a local branch with the same name (lets users
             // base off a teammate's local-only branch), then to HEAD,
-            // then to any local branch (bare repo with broken HEAD).
+            // then to any local branch (bare repo with broken HEAD), but
+            // only when the base came from autodetection. An explicit
+            // `--base-branch` that resolves to none of the above is a
+            // user-visible error: surfacing it as BranchNotFound keeps
+            // typos from silently producing a session anchored to a
+            // bystander commit.
             let primary_remote = base_remote.as_deref().unwrap_or(FETCH_REMOTE);
             let remote_ref = format!("{primary_remote}/{base}");
-            let commit_oid = repo
+            let direct_match = repo
                 .find_branch(&remote_ref, git2::BranchType::Remote)
                 .ok()
                 .and_then(|b| b.get().target())
@@ -557,23 +568,31 @@ impl GitWorktree {
                     repo.find_branch(&base, git2::BranchType::Local)
                         .ok()
                         .and_then(|b| b.get().target())
-                })
-                .or_else(|| {
-                    repo.head()
-                        .ok()
-                        .and_then(|h| h.peel_to_commit().ok())
-                        .map(|c| c.id())
-                })
-                .or_else(|| {
-                    repo.branches(Some(git2::BranchType::Local))
-                        .ok()
-                        .and_then(|mut branches| {
-                            branches.find_map(|b| b.ok().and_then(|(b, _)| b.get().target()))
-                        })
-                })
-                .ok_or_else(|| {
-                    GitError::WorktreeCommandFailed("No commits found to branch from".to_string())
-                })?;
+                });
+
+            let commit_oid = if let Some(oid) = direct_match {
+                oid
+            } else if explicit {
+                return Err(GitError::BranchNotFound(base));
+            } else {
+                repo.head()
+                    .ok()
+                    .and_then(|h| h.peel_to_commit().ok())
+                    .map(|c| c.id())
+                    .or_else(|| {
+                        repo.branches(Some(git2::BranchType::Local)).ok().and_then(
+                            |mut branches| {
+                                branches.find_map(|b| b.ok().and_then(|(b, _)| b.get().target()))
+                            },
+                        )
+                    })
+                    .ok_or_else(|| {
+                        GitError::WorktreeCommandFailed(
+                            "No commits found to branch from".to_string(),
+                        )
+                    })?
+            };
+
             let commit = repo.find_commit(commit_oid)?;
             repo.branch(branch, &commit, false)?;
         } else {
@@ -3314,6 +3333,52 @@ mod tests {
             "hotfix-1 should branch off upstream/main ({upstream_tip}), \
              not stale origin/main ({origin_tip})"
         );
+    }
+
+    #[test]
+    fn test_create_worktree_explicit_base_typo_returns_branch_not_found() {
+        // A typo in `--base-branch` must not silently produce a worktree
+        // anchored to HEAD. With no remote-tracking ref and no local
+        // branch by the typo'd name, create_worktree must surface
+        // BranchNotFound so the caller can show the user the typo.
+        let (dir, _repo) = setup_test_repo();
+        let repo_path = dir.path();
+        let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
+        let wt_parent = TempDir::new().unwrap();
+        let wt_path = wt_parent.path().join("hotfix-wt");
+        let result = git_wt.create_worktree("hotfix-1", &wt_path, true, Some("maain"));
+        match result {
+            Err(GitError::BranchNotFound(name)) => {
+                assert_eq!(name, "maain", "error should name the typo'd base");
+            }
+            other => panic!("expected BranchNotFound, got {other:?}"),
+        }
+        assert!(
+            !wt_path.exists(),
+            "no worktree should be created when base resolution fails"
+        );
+    }
+
+    #[test]
+    fn test_create_worktree_autodetected_base_still_falls_through_to_head() {
+        // When no explicit base is passed, autodetect runs and may yield
+        // a name that ultimately can't be resolved (e.g. a brand-new
+        // local-only repo where `main` exists but the lookup chain
+        // somehow misses it). The fallback to HEAD must still kick in
+        // so the historical behavior of "create the worktree off HEAD"
+        // is preserved. This is the autodetect twin of the typo test.
+        let (dir, repo) = setup_test_repo();
+        let repo_path = dir.path();
+        let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
+        let wt_parent = TempDir::new().unwrap();
+        let wt_path = wt_parent.path().join("autodetected-wt");
+        git_wt
+            .create_worktree("new-feature", &wt_path, true, None)
+            .expect("autodetect path should still succeed via HEAD fallback");
+        assert!(wt_path.exists(), "worktree should be created");
+        assert!(repo
+            .find_branch("new-feature", git2::BranchType::Local)
+            .is_ok());
     }
 
     #[test]
