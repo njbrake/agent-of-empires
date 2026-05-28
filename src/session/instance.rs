@@ -804,9 +804,10 @@ impl Instance {
         // (TUI-side or peer-side) dethrones a concurrent archive.
         let touched = self.last_accessed_at > pre.last_accessed_at;
 
-        // archive(): archived=Some => favorited=None, pinned=None
+        // archive(): archived=Some => favorited=None, snoozed=None, pinned=None
         if archived_changed && post.archived_at.is_some() {
             self.favorited_at = None;
+            self.snoozed_until = None;
             self.pinned_at = None;
         }
         // favorite(): favorited=Some => archived=None, snoozed=None
@@ -830,20 +831,32 @@ impl Instance {
             self.archived_at = None;
             self.snoozed_until = None;
         }
+        // Final-state invariant: archive is the strongest dismiss and
+        // wins over snooze. The per-mutation rules above clear other
+        // flags on the change side, but the diff can also leave disk
+        // archived (pre-existing) AND snoozed (added by post); without
+        // this check the row would persist both and the web sidebar's
+        // tier comparator (which assumes exactly one active triage
+        // state) would render contradictory chips. See #1581.
+        if self.archived_at.is_some() {
+            self.snoozed_until = None;
+        }
     }
 
     /// Mark the session archived. Archived sessions sink to the bottom of
     /// the Attention sort and render in italic+dim style, but remain
     /// visible. Auto-cleared by the attention-signal hook on Waiting/Error.
     ///
-    /// Mutual exclusion with `favorite` and `pin`: archiving clears both
-    /// `favorited_at` and `pinned_at`. Archive is the strongest dismiss;
-    /// keeping a stale favorite or pin marker on a row the user just sunk
-    /// produces contradictory state. The user's explicit rule: "archived
-    /// removes fav." Pin extends the same rule (see #1581).
+    /// Mutual exclusion with `favorite`, `snooze`, and `pin`: archiving
+    /// clears `favorited_at`, `snoozed_until`, and `pinned_at`. Archive
+    /// is the strongest dismiss; keeping any other triage flag on a row
+    /// the user just sunk produces contradictory state, and the web
+    /// sidebar's tier comparator already assumes the server enforces a
+    /// single active triage state (see `sidebarSort.ts` in #1581).
     pub fn archive(&mut self) {
         self.archived_at = Some(Utc::now());
         self.favorited_at = None;
+        self.snoozed_until = None;
         self.pinned_at = None;
     }
 
@@ -3265,7 +3278,13 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_diff_archive_and_snooze_coexist() {
+    fn test_merge_diff_peer_archive_clears_concurrent_tui_snooze() {
+        // The web/TUI/CLI contract treats pinned/archived/snoozed as
+        // mutually exclusive (the sidebar tier comparator assumes a
+        // single active triage state, see #1581). When a TUI snooze
+        // races a peer archive, archive wins: snooze is a temporary
+        // sink and archive is the indefinite one, so leaving both set
+        // would surface contradictory triage state on the next render.
         let pre = Instance::new("s", "/tmp/x");
         let mut post = pre.clone();
         post.snooze(15);
@@ -3276,7 +3295,26 @@ mod tests {
         disk.merge_user_action_diff(&pre, &post);
 
         assert!(disk.archived_at.is_some(), "peer archive survives");
-        assert!(disk.snoozed_until.is_some(), "TUI snooze landed");
+        assert!(
+            disk.snoozed_until.is_none(),
+            "archive() invariant must clear a concurrent TUI snooze"
+        );
+    }
+
+    #[test]
+    fn test_archive_clears_snooze() {
+        // Direct mutator test (no merge): the data-layer contract is
+        // that archive is mutually exclusive with every other triage
+        // flag. The sidebar tier comparator in `sidebarSort.ts`
+        // assumes the server enforces exactly one active state, so a
+        // snooze-then-archive transition must leave only archive
+        // behind. See #1581.
+        let mut inst = Instance::new("s", "/tmp/x");
+        inst.snooze(15);
+        assert!(inst.is_snoozed());
+        inst.archive();
+        assert!(inst.is_archived());
+        assert!(!inst.is_snoozed());
     }
 
     #[test]
