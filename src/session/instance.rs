@@ -325,6 +325,19 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snoozed_until: Option<DateTime<Utc>>,
 
+    /// Web-only pin marker. Distinct from `favorited_at`: favorite is the
+    /// TUI attention-sort within-tier pin, while pin is a hard top-of-sort
+    /// surfacing primitive surfaced through the web sidebar (where the TUI's
+    /// Attention sort does not exist). Mutually exclusive with the sink
+    /// states (`archived_at`, `snoozed_until`) via the `pin()` mutator and
+    /// the inverse clear in `archive()` / `snooze()`. Orthogonal to
+    /// `favorited_at` (both can be set; they drive different surfaces).
+    /// Unlike archive/snooze, `pin` is NOT cleared by `touch_last_accessed`
+    /// because it is an explicit persistent surfacing signal, not a sink
+    /// state that "user is engaging" implicitly contradicts. See #1581.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<DateTime<Utc>>,
+
     /// Scratch-session marker. When true, `project_path` points at an
     /// auto-provisioned directory under `<app_dir>/scratch/<id>/` that the
     /// deletion path removes on `aoe rm` (unless the user opts in to keeping
@@ -659,6 +672,7 @@ impl Instance {
             archived_at: None,
             favorited_at: None,
             snoozed_until: None,
+            pinned_at: None,
             scratch: false,
             worktree_info: None,
             workspace_info: None,
@@ -771,6 +785,9 @@ impl Instance {
         if pre.snoozed_until != post.snoozed_until {
             self.snoozed_until = post.snoozed_until;
         }
+        if pre.pinned_at != post.pinned_at {
+            self.pinned_at = post.pinned_at;
+        }
         if pre.base_branch_override != post.base_branch_override {
             self.base_branch_override = post.base_branch_override.clone();
         }
@@ -781,20 +798,34 @@ impl Instance {
 
         let archived_changed = pre.archived_at != post.archived_at;
         let favorited_changed = pre.favorited_at != post.favorited_at;
+        let snoozed_changed = pre.snoozed_until != post.snoozed_until;
+        let pinned_changed = pre.pinned_at != post.pinned_at;
         // Touch is an event invariant: any advance of last_accessed_at
         // (TUI-side or peer-side) dethrones a concurrent archive.
         let touched = self.last_accessed_at > pre.last_accessed_at;
 
-        // archive(): archived=Some => favorited=None
+        // archive(): archived=Some => favorited=None, pinned=None
         if archived_changed && post.archived_at.is_some() {
             self.favorited_at = None;
+            self.pinned_at = None;
         }
         // favorite(): favorited=Some => archived=None, snoozed=None
         if favorited_changed && post.favorited_at.is_some() {
             self.archived_at = None;
             self.snoozed_until = None;
         }
-        // touch_last_accessed(): clears archived + snoozed.
+        // snooze(): snoozed=Some => pinned=None (sink clears surface).
+        if snoozed_changed && post.snoozed_until.is_some() {
+            self.pinned_at = None;
+        }
+        // pin(): pinned=Some => archived=None, snoozed=None (surface clears sinks).
+        if pinned_changed && post.pinned_at.is_some() {
+            self.archived_at = None;
+            self.snoozed_until = None;
+        }
+        // touch_last_accessed(): clears archived + snoozed. Does NOT clear
+        // favorite or pin (both are explicit user-surfacing signals, not
+        // sink states).
         if touched {
             self.archived_at = None;
             self.snoozed_until = None;
@@ -805,13 +836,15 @@ impl Instance {
     /// the Attention sort and render in italic+dim style, but remain
     /// visible. Auto-cleared by the attention-signal hook on Waiting/Error.
     ///
-    /// Mutual exclusion with `favorite`: archiving clears `favorited_at`.
-    /// Archive is the strongest dismiss; keeping a stale favorite pin on a
-    /// row the user just sunk produces contradictory "pinned + dismissed"
-    /// state. The user's explicit rule: "archived removes fav."
+    /// Mutual exclusion with `favorite` and `pin`: archiving clears both
+    /// `favorited_at` and `pinned_at`. Archive is the strongest dismiss;
+    /// keeping a stale favorite or pin marker on a row the user just sunk
+    /// produces contradictory state. The user's explicit rule: "archived
+    /// removes fav." Pin extends the same rule (see #1581).
     pub fn archive(&mut self) {
         self.archived_at = Some(Utc::now());
         self.favorited_at = None;
+        self.pinned_at = None;
     }
 
     pub fn unarchive(&mut self) {
@@ -869,8 +902,15 @@ impl Instance {
     /// tick); no timer task needed. Resolution of `minutes` happens at
     /// snooze time, not render time, so changing the config default mid-
     /// snooze does NOT extend currently-sleeping rows.
+    ///
+    /// Clears `pinned_at` for the same reason archive does: snooze is a
+    /// sink state, and a pinned-yet-snoozed row is contradictory. The
+    /// existing favorite mutator is intentionally NOT touched here
+    /// (favorite is the TUI within-tier signal, snoozed favorites keep
+    /// their star when they wake; see field doc for `favorited_at`).
     pub fn snooze(&mut self, minutes: u32) {
         self.snoozed_until = Some(Utc::now() + chrono::Duration::minutes(minutes as i64));
+        self.pinned_at = None;
     }
 
     pub fn unsnooze(&mut self) {
@@ -897,6 +937,30 @@ impl Instance {
                 None
             }
         })
+    }
+
+    /// Mark this session pinned. Pin is a web-only surfacing primitive:
+    /// pinned workspaces sort to the top of the web sidebar (across all
+    /// sort modes), regardless of last-activity. Distinct from
+    /// `favorited_at`, which drives the TUI Attention sort's within-tier
+    /// pin and stays unchanged here (see #1581).
+    ///
+    /// Mutual exclusion with the sink states: pinning clears
+    /// `archived_at` and `snoozed_until`. A pinned-yet-sunk row would
+    /// contradict the entire point of pinning (surface this), so the
+    /// sinks come off, identical to how `favorite()` handles it.
+    pub fn pin(&mut self) {
+        self.pinned_at = Some(Utc::now());
+        self.archived_at = None;
+        self.snoozed_until = None;
+    }
+
+    pub fn unpin(&mut self) {
+        self.pinned_at = None;
+    }
+
+    pub fn is_pinned(&self) -> bool {
+        self.pinned_at.is_some()
     }
 
     /// Time elapsed since this session most recently transitioned into
@@ -3254,6 +3318,148 @@ mod tests {
     }
 
     #[test]
+    fn test_pin_clears_archive_and_snooze() {
+        let mut inst = Instance::new("s", "/tmp/x");
+        inst.archive();
+        assert!(inst.is_archived());
+        inst.pin();
+        assert!(inst.is_pinned());
+        assert!(!inst.is_archived());
+        assert!(!inst.is_snoozed());
+
+        inst.snooze(15);
+        assert!(inst.is_snoozed());
+        inst.pin();
+        assert!(inst.is_pinned());
+        assert!(!inst.is_snoozed());
+    }
+
+    #[test]
+    fn test_archive_clears_pin() {
+        let mut inst = Instance::new("s", "/tmp/x");
+        inst.pin();
+        assert!(inst.is_pinned());
+        inst.archive();
+        assert!(inst.is_archived());
+        assert!(!inst.is_pinned());
+    }
+
+    #[test]
+    fn test_snooze_clears_pin() {
+        let mut inst = Instance::new("s", "/tmp/x");
+        inst.pin();
+        assert!(inst.is_pinned());
+        inst.snooze(30);
+        assert!(inst.is_snoozed());
+        assert!(!inst.is_pinned());
+    }
+
+    #[test]
+    fn test_touch_last_accessed_preserves_pin() {
+        let mut inst = Instance::new("s", "/tmp/x");
+        inst.pin();
+        assert!(inst.is_pinned());
+        inst.touch_last_accessed();
+        // Pin is an explicit user surfacing signal, not a sink state.
+        // User interaction (send, attach) must NOT clear it.
+        assert!(inst.is_pinned());
+    }
+
+    #[test]
+    fn test_pin_and_favorite_coexist() {
+        let mut inst = Instance::new("s", "/tmp/x");
+        inst.favorite();
+        assert!(inst.is_favorited());
+        inst.pin();
+        // Pin and favorite drive different surfaces (TUI Attention vs web
+        // sidebar). They must coexist; pinning does NOT clear favorite.
+        assert!(inst.is_pinned());
+        assert!(inst.is_favorited());
+
+        let mut inst2 = Instance::new("s2", "/tmp/x");
+        inst2.pin();
+        inst2.favorite();
+        // Same in reverse: favoriting does NOT clear pin.
+        assert!(inst2.is_pinned());
+        assert!(inst2.is_favorited());
+    }
+
+    #[test]
+    fn test_merge_diff_peer_archive_loses_to_tui_pin() {
+        let pre = Instance::new("s", "/tmp/x");
+        let mut post = pre.clone();
+        post.pin();
+
+        let mut disk = pre.clone();
+        disk.archive();
+
+        disk.merge_user_action_diff(&pre, &post);
+
+        assert!(disk.pinned_at.is_some(), "TUI pin landed");
+        assert!(
+            disk.archived_at.is_none(),
+            "pin() invariant must clear concurrent peer archive"
+        );
+    }
+
+    #[test]
+    fn test_merge_diff_peer_pin_loses_to_tui_archive() {
+        let pre = Instance::new("s", "/tmp/x");
+        let mut post = pre.clone();
+        post.archive();
+
+        let mut disk = pre.clone();
+        disk.pin();
+
+        disk.merge_user_action_diff(&pre, &post);
+
+        assert!(disk.archived_at.is_some(), "TUI archive landed");
+        assert!(
+            disk.pinned_at.is_none(),
+            "archive() invariant must clear concurrent peer pin"
+        );
+    }
+
+    #[test]
+    fn test_merge_diff_peer_pin_loses_to_tui_snooze() {
+        let pre = Instance::new("s", "/tmp/x");
+        let mut post = pre.clone();
+        post.snooze(30);
+
+        let mut disk = pre.clone();
+        disk.pin();
+
+        disk.merge_user_action_diff(&pre, &post);
+
+        assert!(disk.snoozed_until.is_some(), "TUI snooze landed");
+        assert!(
+            disk.pinned_at.is_none(),
+            "snooze() invariant must clear concurrent peer pin"
+        );
+    }
+
+    #[test]
+    fn test_merge_diff_peer_touch_preserves_pin() {
+        let mut pre = Instance::new("s", "/tmp/x");
+        pre.last_accessed_at = Some(Utc::now() - chrono::Duration::seconds(60));
+
+        let mut post = pre.clone();
+        post.pin();
+
+        let mut disk = pre.clone();
+        disk.touch_last_accessed();
+
+        disk.merge_user_action_diff(&pre, &post);
+
+        // Touch dethrones archive/snooze but NOT pin: pin is an explicit
+        // surfacing signal that the user's interaction does not contradict.
+        assert!(
+            disk.pinned_at.is_some(),
+            "peer touch must NOT clear concurrent TUI pin"
+        );
+    }
+
+    #[test]
     fn test_merge_from_tui_copies_status_pipeline() {
         let mut stored = Instance::new("session", "/tmp/test");
         stored.status = Status::Idle;
@@ -3300,11 +3506,13 @@ mod tests {
         let peer_archived = Some(Utc::now());
         let peer_favorited = Some(Utc::now() - chrono::Duration::minutes(2));
         let peer_snoozed = Some(Utc::now() + chrono::Duration::minutes(30));
+        let peer_pinned = Some(Utc::now() - chrono::Duration::minutes(1));
 
         let mut stored = Instance::new("session", "/tmp/test");
         stored.archived_at = peer_archived;
         stored.favorited_at = peer_favorited;
         stored.snoozed_until = peer_snoozed;
+        stored.pinned_at = peer_pinned;
         stored.title = "peer-renamed".to_string();
         stored.group_path = "peer/group".to_string();
         stored.agent_session_id = Some("daemon-sid".to_string());
@@ -3316,6 +3524,7 @@ mod tests {
         src.archived_at = None;
         src.favorited_at = None;
         src.snoozed_until = None;
+        src.pinned_at = None;
         src.title = "tui-stale".to_string();
         src.group_path = "tui/stale".to_string();
         src.agent_session_id = Some("tui-stale-sid".to_string());
@@ -3327,6 +3536,7 @@ mod tests {
         assert_eq!(stored.archived_at, peer_archived);
         assert_eq!(stored.favorited_at, peer_favorited);
         assert_eq!(stored.snoozed_until, peer_snoozed);
+        assert_eq!(stored.pinned_at, peer_pinned);
         assert_eq!(stored.title, "peer-renamed");
         assert_eq!(stored.group_path, "peer/group");
         assert_eq!(stored.agent_session_id.as_deref(), Some("daemon-sid"));
