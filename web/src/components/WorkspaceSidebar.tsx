@@ -56,7 +56,11 @@ import {
 import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
 import { reportError } from "../lib/toastBus";
-import type { SidebarSortMode } from "../lib/sidebarSort";
+import {
+  workspaceIsPinned,
+  workspaceIsSunk,
+  type SidebarSortMode,
+} from "../lib/sidebarSort";
 import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
 
@@ -1536,7 +1540,22 @@ export function WorkspaceSidebar({
                           }}
                           onDelete={onDeleteSession}
                           readOnly={readOnly}
-                          dragDisabled={sortMode === "lastActivity"}
+                          // Drag is disabled when the tier comparator
+                          // already controls placement: lastActivity
+                          // mode has no manual concept, pinned rows
+                          // always float to the top of their group,
+                          // and sunk (archived + snoozed) rows are
+                          // ordered by tier-2 placement. Allowing a
+                          // drag in any of those cases would let the
+                          // user rearrange the persisted
+                          // workspace_ordering against the visual
+                          // tier and produce a no-op release, see
+                          // #1581.
+                          dragDisabled={
+                            sortMode === "lastActivity" ||
+                            workspaceIsPinned(ws) ||
+                            workspaceIsSunk(ws)
+                          }
                         />
                       ))}
                     </SortableContext>
