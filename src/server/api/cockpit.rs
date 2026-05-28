@@ -451,6 +451,17 @@ pub async fn cockpit_prompt(
     // reconciler stops skipping the session on its next ~2s tick and
     // respawns the worker; the frontend's queue drains as soon as the
     // fresh `AcpSessionAssigned` lands. See #1581.
+    //
+    // The in-memory mutation and the disk persistence are both held
+    // under `state.instance_lock(&id)` so they serialize against
+    // other session-mutating endpoints (archive / snooze / pin /
+    // rename) on the same id. Without this guard, a concurrent
+    // archive PATCH could interleave with the touch and produce a
+    // lost write (archive sets archived_at = Some, touch clears it,
+    // archive's persist lands first, touch's persist lands second
+    // and overwrites the archive).
+    let inst_lock = state.instance_lock(&id).await;
+    let _guard = inst_lock.lock().await;
     let triage_changed = {
         let mut instances = state.instances.write().await;
         if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
@@ -499,6 +510,11 @@ pub async fn cockpit_prompt(
             }
         }
     }
+    // Drop the per-session lock before reaching out to the
+    // supervisor. publish_user_prompt and send_prompt take their own
+    // locks downstream; holding ours across the agent forward would
+    // serialize prompts unnecessarily and stall siblings.
+    drop(_guard);
     // Publish the user's prompt into the event stream BEFORE forwarding
     // to the agent so the replay buffer / on-disk store captures it
     // even if the agent forward fails. The frontend treats UserPromptSent
