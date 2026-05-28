@@ -190,6 +190,101 @@ describe("useCockpit auto-wake on sendPrompt (#1581)", () => {
     expect(result.current.state.queuedPrompts).toHaveLength(1);
   });
 
+  it("does NOT enqueue when the archive wake call fails", async () => {
+    // Regression: a failed wake PATCH used to fall through to the
+    // local enqueue, which left the prompt parked in a queue that
+    // never drains (the reconciler kept skipping the still-archived
+    // session). Surface an error instead so the user knows to retry
+    // or unarchive manually. See #1581 CodeRabbit review.
+    const sessionId = "sess-wake-fail-arch";
+    // Override the default fetch to fail the archive PATCH.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method ?? "GET";
+        let body: unknown = null;
+        if (typeof init?.body === "string") {
+          try {
+            body = JSON.parse(init.body);
+          } catch {
+            body = init.body;
+          }
+        }
+        calls.push({ url, method, body });
+        if (url.includes("/cockpit/replay")) {
+          return new Response(
+            JSON.stringify({ frames: [], lost: false, highest_seq: 0 }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("/archive") && method === "PATCH") {
+          return new Response("simulated failure", { status: 500 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    const { result } = renderHook(
+      () => useCockpit(sessionId, "absent", "2026-01-01T00:00:00Z", null),
+      { wrapper },
+    );
+    await flushAsync();
+
+    await act(async () => {
+      await result.current.sendPrompt("wake me up");
+    });
+    await flushAsync();
+
+    expect(result.current.state.queuedPrompts).toHaveLength(0);
+    expect(result.current.state.lastError).toMatch(/wake/i);
+  });
+
+  it("does NOT enqueue when the snooze wake call fails", async () => {
+    const sessionId = "sess-wake-fail-snooze";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        const method = init?.method ?? "GET";
+        let body: unknown = null;
+        if (typeof init?.body === "string") {
+          try {
+            body = JSON.parse(init.body);
+          } catch {
+            body = init.body;
+          }
+        }
+        calls.push({ url, method, body });
+        if (url.includes("/cockpit/replay")) {
+          return new Response(
+            JSON.stringify({ frames: [], lost: false, highest_seq: 0 }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("/snooze") && method === "PATCH") {
+          return new Response("simulated failure", { status: 500 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+
+    const { result } = renderHook(
+      () =>
+        useCockpit(sessionId, "absent", null, "2099-01-01T00:00:00Z"),
+      { wrapper },
+    );
+    await flushAsync();
+
+    await act(async () => {
+      await result.current.sendPrompt("wake me up");
+    });
+    await flushAsync();
+
+    expect(result.current.state.queuedPrompts).toHaveLength(0);
+    expect(result.current.state.lastError).toMatch(/wake/i);
+  });
+
   it("prefers archive over snooze when both are somehow set (defensive)", async () => {
     // The server's XOR rules prevent both flags from co-existing on
     // the same session, but a defensive client should still do

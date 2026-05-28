@@ -1052,10 +1052,24 @@ export function useCockpit(
       // it client-side; the reconciler picks the session back up on
       // its next ~2s tick and the queue drains as soon as a fresh
       // `AcpSessionAssigned` lands. See #1581.
-      if (archivedAtRef.current) {
-        await setSessionArchive(sessionId, false);
-      } else if (snoozedUntilRef.current) {
-        await setSessionSnooze(sessionId, null);
+      if (archivedAtRef.current || snoozedUntilRef.current) {
+        const wakeResult = archivedAtRef.current
+          ? await setSessionArchive(sessionId, false)
+          : await setSessionSnooze(sessionId, null);
+        if (!wakeResult) {
+          // Wake PATCH failed (network drop / 5xx / 4xx). Surfacing
+          // an error is the only safe move: enqueueing locally would
+          // park the prompt in a queue that never drains, because
+          // the reconciler keeps skipping the still-sunk session.
+          // Route through the reducer's `error` action so the
+          // existing `InteractionErrorBanner` renders it. See #1581.
+          dispatch({
+            kind: "error",
+            message:
+              "Could not wake this session. Please retry, or unarchive / unsnooze from the sidebar.",
+          });
+          return;
+        }
       }
       const wsClosed = statusRef.current !== "open";
       const workerNotRunning = workerStateRef.current !== "running";
