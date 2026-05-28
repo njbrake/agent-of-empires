@@ -10,7 +10,7 @@ import {
   type MutableRefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { Clock, ListOrdered, Pencil } from "lucide-react";
+import { Archive, Clock, ListOrdered, Moon, Pencil, Pin } from "lucide-react";
 import {
   DndContext,
   MouseSensor,
@@ -46,9 +46,16 @@ import {
   isSessionActive,
 } from "../lib/session";
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
-import { renameSession, setSessionNotifications } from "../lib/api";
+import {
+  renameSession,
+  setSessionArchive,
+  setSessionNotifications,
+  setSessionPin,
+  setSessionSnooze,
+} from "../lib/api";
 import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
+import { reportError } from "../lib/toastBus";
 import type { SidebarSortMode } from "../lib/sidebarSort";
 import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
@@ -57,6 +64,23 @@ const SIDEBAR_WIDTH_KEY = "aoe-sidebar-width";
 const DEFAULT_WIDTH = 280;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
+
+/** Snooze duration presets surfaced by the sidebar context menu. Order
+ *  and values mirror the TUI dialog presets at
+ *  `src/tui/dialogs/snooze_duration.rs`, so the two surfaces describe
+ *  the same set of choices. The TUI extends past these via a manual
+ *  numeric entry; the web sidebar omits that path in v1 (the menu
+ *  stays flat). See #1581. */
+const SNOOZE_PRESETS: readonly { label: string; minutes: number }[] = [
+  { label: "1 hour", minutes: 60 },
+  { label: "2 hours", minutes: 120 },
+  { label: "3 hours", minutes: 180 },
+  { label: "4 hours", minutes: 240 },
+  { label: "5 hours", minutes: 300 },
+  { label: "6 hours", minutes: 360 },
+  { label: "1 day", minutes: 1440 },
+  { label: "1 week", minutes: 10080 },
+];
 
 // Module-level bus for closing any open SessionRow context menu when a
 // new one opens. Each SessionRow manages its own menu state; without
@@ -231,6 +255,30 @@ function formatDurationSecondsShort(seconds: number): string {
   const h = Math.floor(m / 60);
   const remM = m % 60;
   return remM === 0 ? `${h}h` : `${h}h ${remM}m`;
+}
+
+/** Compact "time remaining" label for the snooze chip computed once at
+ *  render time (no per-second timer, by design: snooze rows poll the
+ *  sessions API at the existing cadence and the static label is more
+ *  battery-friendly than a 1s ticker on phones, see #1581 design
+ *  discussion). Bucket sizes:
+ *   - < 1 minute : "<1m"
+ *   - < 1 hour   : "Nm"
+ *   - < 1 day    : "Nh" (rounded down)
+ *   - else       : "Nd" (rounded down)
+ *  Past timestamps return "soon" since the wake-up has expired but the
+ *  next poll has not yet cleared the row. */
+function formatSnoozeRemainingShort(snoozedUntilIso: string): string {
+  const target = Date.parse(snoozedUntilIso);
+  if (!Number.isFinite(target)) return "snoozed";
+  const remainingMs = target - Date.now();
+  if (remainingMs <= 0) return "soon";
+  const minutes = Math.floor(remainingMs / 60_000);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 // Wraps a SessionRow with @dnd-kit sortable plumbing. The row itself
@@ -410,6 +458,16 @@ const SessionRow = memo(function SessionRow({
   // row visually so the user can find their starred work fast. Toggled
   // via TUI `f`/`F` or `aoe session favorite|unfavorite`.
   const isFavorited = workspace.sessions.some((s) => s.favorited);
+  // Web-only triage signals. `pinned` floats the workspace to the top
+  // of every sort mode; `archived` and `snoozedUntil` mark the row as
+  // sunk (the parent splits sunk workspaces into a separate collapsible
+  // section). Aggregators mirror the matching helpers in
+  // `lib/sidebarSort.ts` to keep render and sort in sync. See #1581.
+  const isPinned = workspace.sessions.some((s) => s.pinned_at != null);
+  const isArchived = workspace.sessions.some((s) => s.archived_at != null);
+  const snoozedUntil = workspace.sessions.find((s) => s.snoozed_until)
+    ?.snoozed_until ?? null;
+  const isSnoozed = snoozedUntil != null;
   const sessionId = firstSession?.id;
   const navigationSessionId = runningSession?.id ?? firstSession?.id ?? null;
   const sessionPath = navigationSessionId
@@ -437,6 +495,74 @@ const SessionRow = memo(function SessionRow({
     await setSessionNotifications(sessionId, preset);
   };
 
+  // Triage actions (pin / archive / snooze). Optimistic state lets the
+  // glyph, chip, and tier flip immediately on click; on PATCH failure we
+  // revert and surface a toast. The optimistic snap clears itself once
+  // the next sessions-poll reflects the same value, so a successful
+  // round-trip is invisible to the user (just feels fast).
+  const [optimisticPinned, setOptimisticPinned] = useState<boolean | null>(
+    null,
+  );
+  const [optimisticArchived, setOptimisticArchived] = useState<boolean | null>(
+    null,
+  );
+  const [snoozeMenuOpen, setSnoozeMenuOpen] = useState(false);
+  useEffect(() => {
+    if (optimisticPinned !== null && optimisticPinned === isPinned) {
+      setOptimisticPinned(null);
+    }
+  }, [isPinned, optimisticPinned]);
+  useEffect(() => {
+    if (optimisticArchived !== null && optimisticArchived === isArchived) {
+      setOptimisticArchived(null);
+    }
+  }, [isArchived, optimisticArchived]);
+
+  const togglePin = async () => {
+    setContextMenu(null);
+    setSnoozeMenuOpen(false);
+    if (!sessionId) return;
+    const next = !isPinned;
+    setOptimisticPinned(next);
+    const result = await setSessionPin(sessionId, next);
+    if (!result) {
+      setOptimisticPinned(null);
+      reportError(next ? "Failed to pin session" : "Failed to unpin session");
+    }
+  };
+
+  const toggleArchive = async () => {
+    setContextMenu(null);
+    setSnoozeMenuOpen(false);
+    if (!sessionId) return;
+    const next = !isArchived;
+    setOptimisticArchived(next);
+    const result = await setSessionArchive(sessionId, next);
+    if (!result) {
+      setOptimisticArchived(null);
+      reportError(
+        next ? "Failed to archive session" : "Failed to unarchive session",
+      );
+    }
+  };
+
+  const applySnooze = async (minutes: number | null) => {
+    setContextMenu(null);
+    setSnoozeMenuOpen(false);
+    if (!sessionId) return;
+    const result = await setSessionSnooze(sessionId, minutes);
+    if (!result) {
+      reportError(
+        minutes == null ? "Failed to unsnooze session" : "Failed to snooze session",
+      );
+    }
+  };
+
+  // Effective state for rendering: optimistic overrides win until the
+  // prop catches up (cleared in the effects above).
+  const effectivePinned = optimisticPinned ?? isPinned;
+  const effectiveArchived = optimisticArchived ?? isArchived;
+
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(label);
@@ -457,7 +583,13 @@ const SessionRow = memo(function SessionRow({
   }, [renaming]);
 
   useEffect(() => {
-    if (!contextMenu) return;
+    // Reset the snooze-preset sub-list whenever the menu closes; otherwise
+    // re-opening would jump straight back into the preset list, surprising
+    // the user.
+    if (!contextMenu) {
+      setSnoozeMenuOpen(false);
+      return;
+    }
     const close = () => setContextMenu(null);
     const onDocClick = (e: MouseEvent) => {
       // Clicks inside the menu should be handled by item onClick
@@ -617,7 +749,16 @@ const SessionRow = memo(function SessionRow({
             />
           </span>
           <div className="min-w-0 flex-1">
-            <span className={`flex items-center gap-1.5 text-[13px] md:text-[14px] ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"} ${isFavorited ? "font-semibold" : ""}`}>
+            <span className={`flex items-center gap-1.5 text-[13px] md:text-[14px] ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"} ${isFavorited || effectivePinned ? "font-semibold" : ""} ${effectiveArchived || isSnoozed ? "italic opacity-70" : ""}`}>
+              {effectivePinned && (
+                <span
+                  title="Pinned"
+                  aria-label="Pinned"
+                  className="shrink-0 inline-flex text-brand-400"
+                >
+                  <Pin className="h-3 w-3 -rotate-45" />
+                </span>
+              )}
               {isFavorited && (
                 <span
                   title="Favorited"
@@ -635,6 +776,26 @@ const SessionRow = memo(function SessionRow({
                   className="inline-flex shrink-0"
                 >
                   <Pencil className="h-3 w-3 text-amber-400/90" />
+                </span>
+              )}
+              {isArchived && (
+                <span
+                  title="Archived"
+                  aria-label="Archived"
+                  className="shrink-0 inline-flex items-center gap-0.5 rounded border border-surface-700/40 bg-surface-800/40 px-1 py-0 text-[10px] font-mono font-medium text-text-dim"
+                >
+                  <Archive className="h-3 w-3" />
+                  <span className="hidden sm:inline">archived</span>
+                </span>
+              )}
+              {!isArchived && isSnoozed && snoozedUntil && (
+                <span
+                  title={`Snoozed until ${new Date(snoozedUntil).toLocaleString()}`}
+                  aria-label="Snoozed"
+                  className="shrink-0 inline-flex items-center gap-0.5 rounded border border-surface-700/40 bg-surface-800/40 px-1 py-0 text-[10px] font-mono font-medium text-text-dim"
+                >
+                  <Moon className="h-3 w-3" />
+                  <span>{formatSnoozeRemainingShort(snoozedUntil)}</span>
                 </span>
               )}
               {firstSession?.cockpit_mode &&
@@ -741,6 +902,64 @@ const SessionRow = memo(function SessionRow({
           })}
           {!readOnly && (
             <>
+              <div className="border-t border-surface-700/20 my-1" />
+              <div className="px-3 py-1 text-[11px] font-mono uppercase tracking-widest text-text-muted">
+                Triage
+              </div>
+              <button
+                onClick={() => void togglePin()}
+                data-testid="sidebar-context-menu-pin"
+                className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+              >
+                <Pin className="h-3.5 w-3.5 shrink-0 -rotate-45" />
+                {effectivePinned ? "Unpin" : "Pin"}
+              </button>
+              <button
+                onClick={() => void toggleArchive()}
+                data-testid="sidebar-context-menu-archive"
+                className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+              >
+                <Archive className="h-3.5 w-3.5 shrink-0" />
+                {effectiveArchived ? "Unarchive" : "Archive"}
+              </button>
+              {isSnoozed ? (
+                <button
+                  onClick={() => void applySnooze(null)}
+                  data-testid="sidebar-context-menu-unsnooze"
+                  className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+                >
+                  <Moon className="h-3.5 w-3.5 shrink-0" />
+                  Unsnooze
+                </button>
+              ) : snoozeMenuOpen ? (
+                <>
+                  <div
+                    className="pl-6 pr-3 py-1 text-[11px] font-mono uppercase tracking-widest text-text-muted"
+                    data-testid="sidebar-context-menu-snooze-presets"
+                  >
+                    Snooze for
+                  </div>
+                  {SNOOZE_PRESETS.map((preset) => (
+                    <button
+                      key={preset.minutes}
+                      onClick={() => void applySnooze(preset.minutes)}
+                      data-testid={`sidebar-context-menu-snooze-${preset.minutes}`}
+                      className="w-full text-left pl-9 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </>
+              ) : (
+                <button
+                  onClick={() => setSnoozeMenuOpen(true)}
+                  data-testid="sidebar-context-menu-snooze"
+                  className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+                >
+                  <Moon className="h-3.5 w-3.5 shrink-0" />
+                  Snooze…
+                </button>
+              )}
               <div className="border-t border-surface-700/20 my-1" />
               <button
                 onClick={handleDelete}
