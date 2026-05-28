@@ -8,7 +8,10 @@ import {
   loadSidebarSortMode,
   repoGroupLastActivityMs,
   saveSidebarSortMode,
+  workspaceIsPinned,
+  workspaceIsSunk,
   workspaceLastActivityMs,
+  workspaceTriageTier,
 } from "../sidebarSort";
 
 function session(over: Partial<SessionResponse> = {}): SessionResponse {
@@ -176,6 +179,118 @@ describe("repoGroupLastActivityMs", () => {
 
   it("returns NEGATIVE_INFINITY on an empty group", () => {
     expect(repoGroupLastActivityMs([])).toBe(Number.NEGATIVE_INFINITY);
+  });
+});
+
+describe("workspaceIsPinned", () => {
+  it("returns true when any session has pinned_at set", () => {
+    const ws = workspace("w", [
+      session({ id: "s1" }),
+      session({ id: "s2", pinned_at: "2025-01-01T00:00:00Z" }),
+    ]);
+    expect(workspaceIsPinned(ws)).toBe(true);
+  });
+
+  it("returns false when no session is pinned", () => {
+    const ws = workspace("w", [session({ id: "s1" }), session({ id: "s2" })]);
+    expect(workspaceIsPinned(ws)).toBe(false);
+  });
+});
+
+describe("workspaceIsSunk", () => {
+  it("returns true when every session is archived or snoozed", () => {
+    const ws = workspace("w", [
+      session({ id: "s1", archived_at: "2025-01-01T00:00:00Z" }),
+      session({ id: "s2", snoozed_until: "2026-01-01T00:00:00Z" }),
+    ]);
+    expect(workspaceIsSunk(ws)).toBe(true);
+  });
+
+  it("returns false when even one session is live", () => {
+    // A multi-session workspace with one live session must stay in the
+    // active tier rather than sinking the whole group out of sight.
+    const ws = workspace("w", [
+      session({ id: "s1", archived_at: "2025-01-01T00:00:00Z" }),
+      session({ id: "s2" }),
+    ]);
+    expect(workspaceIsSunk(ws)).toBe(false);
+  });
+
+  it("returns false on an empty workspace", () => {
+    const ws = workspace("w", []);
+    expect(workspaceIsSunk(ws)).toBe(false);
+  });
+});
+
+describe("workspaceTriageTier", () => {
+  it("returns 0 (pinned) for any pinned session, overriding sink fields", () => {
+    // Pin clears archive/snooze server-side, but a sibling session in
+    // the same workspace could still be archived. Any-pinned wins.
+    const ws = workspace("w", [
+      session({ id: "s1", pinned_at: "2025-01-01T00:00:00Z" }),
+      session({ id: "s2", archived_at: "2025-01-01T00:00:00Z" }),
+    ]);
+    expect(workspaceTriageTier(ws)).toBe(0);
+  });
+
+  it("returns 1 (live) when neither pinned nor fully sunk", () => {
+    const ws = workspace("w", [session({ id: "s1" })]);
+    expect(workspaceTriageTier(ws)).toBe(1);
+  });
+
+  it("returns 2 (sunk) when every session is archived or snoozed", () => {
+    const ws = workspace("w", [
+      session({ id: "s1", archived_at: "2025-01-01T00:00:00Z" }),
+    ]);
+    expect(workspaceTriageTier(ws)).toBe(2);
+  });
+});
+
+describe("compareWorkspacesByLastActivityDesc triage tier", () => {
+  it("sinks fully-archived workspaces below live ones regardless of activity", () => {
+    // The archived workspace has the most recent activity timestamp; if
+    // the comparator naively used activity only it would sort first.
+    // Triage tier forces it to the bottom.
+    const archived = workspace("archived-newer", [
+      session({
+        id: "sa",
+        created_at: "2025-09-01T00:00:00Z",
+        archived_at: "2025-09-02T00:00:00Z",
+      }),
+    ]);
+    const live = workspace("live-older", [
+      session({ id: "sl", created_at: "2025-01-01T00:00:00Z" }),
+    ]);
+    const list = [archived, live].sort(compareWorkspacesByLastActivityDesc);
+    expect(list.map((w) => w.id)).toEqual(["live-older", "archived-newer"]);
+  });
+
+  it("lifts pinned workspaces above live ones regardless of activity", () => {
+    // The pinned workspace has the older activity timestamp; without
+    // the tier prefix the live one would sort first.
+    const pinned = workspace("pinned-older", [
+      session({
+        id: "sp",
+        created_at: "2025-01-01T00:00:00Z",
+        pinned_at: "2025-01-02T00:00:00Z",
+      }),
+    ]);
+    const live = workspace("live-newer", [
+      session({ id: "sl", created_at: "2025-09-01T00:00:00Z" }),
+    ]);
+    const list = [live, pinned].sort(compareWorkspacesByLastActivityDesc);
+    expect(list.map((w) => w.id)).toEqual(["pinned-older", "live-newer"]);
+  });
+
+  it("preserves activity order within the same tier", () => {
+    const livesA = workspace("live-a", [
+      session({ id: "sa", created_at: "2025-09-01T00:00:00Z" }),
+    ]);
+    const livesB = workspace("live-b", [
+      session({ id: "sb", created_at: "2025-01-01T00:00:00Z" }),
+    ]);
+    const list = [livesB, livesA].sort(compareWorkspacesByLastActivityDesc);
+    expect(list.map((w) => w.id)).toEqual(["live-a", "live-b"]);
   });
 });
 

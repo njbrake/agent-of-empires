@@ -41,6 +41,24 @@ export interface SessionResponse {
    *  rows and prepends a `*` marker. Toggled via the TUI `f`/`F` keybind
    *  or `aoe session favorite|unfavorite`. */
   favorited: boolean;
+  /** RFC3339 timestamp at which the session was web-pinned, or null /
+   *  undefined when not pinned. Distinct from `favorited`: favorite is
+   *  the TUI within-tier attention-sort signal; pin is the hard
+   *  top-of-sort surfacing primitive used by the web sidebar. Derive
+   *  `isPinned = pinned_at != null` client-side; no separate boolean is
+   *  exposed (the timestamp itself is the source of truth). See #1581. */
+  pinned_at?: string | null;
+  /** RFC3339 timestamp at which the session was archived, or null /
+   *  undefined when not archived. Archived workspaces sink into the
+   *  collapsible "Snoozed & archived" footer of their repo group and
+   *  their tmux pane is killed by the archive handler. See #1581. */
+  archived_at?: string | null;
+  /** RFC3339 timestamp at which an active snooze expires, or null /
+   *  undefined when not snoozed. The server gates this on
+   *  `Instance::is_snoozed()` so an expired snooze that is still on disk
+   *  comes back as null on the wire; the web therefore only needs to
+   *  treat any non-null value as an active snooze. See #1581. */
+  snoozed_until?: string | null;
   has_managed_worktree: boolean;
   has_terminal: boolean;
   profile: string;

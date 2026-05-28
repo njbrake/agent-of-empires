@@ -10,6 +10,7 @@ import {
 import {
   compareWorkspacesByLastActivityDesc,
   repoGroupLastActivityMs,
+  workspaceTriageTier,
   type SidebarSortMode,
 } from "../lib/sidebarSort";
 
@@ -61,8 +62,17 @@ export function useRepoGroups(
   const groups = useMemo(() => {
     const rank = new Map(workspaceOrdering.map((id, i) => [id, i] as const));
     const rankOf = (id: string) => rank.get(id) ?? Infinity;
+    // Triage tier (pinned at top, sunk at bottom) wins over every sort
+    // mode, so both rank-based and activity-based comparators apply it
+    // first and fall back to their respective within-tier comparison.
+    // See #1581.
     const sortByRank = (list: Workspace[]) =>
-      [...list].sort((a, b) => rankOf(a.id) - rankOf(b.id));
+      [...list].sort((a, b) => {
+        const aTier = workspaceTriageTier(a);
+        const bTier = workspaceTriageTier(b);
+        if (aTier !== bTier) return aTier - bTier;
+        return rankOf(a.id) - rankOf(b.id);
+      });
     const sortByActivity = (list: Workspace[]) =>
       [...list].sort(compareWorkspacesByLastActivityDesc);
     const sortWorkspaces =

@@ -883,6 +883,73 @@ export async function setSessionDiffBase(
   }
 }
 
+/** Toggle the web-only "pin" marker on a session. Pinned workspaces sink
+ *  to the top of the sidebar in all sort modes (manual and lastActivity).
+ *  Distinct from the TUI favorite signal. See #1581. */
+export async function setSessionPin(
+  id: string,
+  pinned: boolean,
+): Promise<SessionResponse | null> {
+  try {
+    const res = await fetch(`/api/sessions/${id}/pin`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pinned }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as SessionResponse;
+  } catch {
+    return null;
+  }
+}
+
+/** Archive or unarchive a session. On archive, the server kills the tmux
+ *  pane (when `killPane` is true or omitted, matching TUI/CLI semantics)
+ *  and shuts down the cockpit worker for cockpit-mode sessions; the
+ *  reconciler will not respawn it because archived sessions are excluded
+ *  from the resume target list. Sending a message via the dashboard
+ *  auto-unarchives via the existing `touch_last_accessed` invariant in
+ *  the send handler. See #1581. */
+export async function setSessionArchive(
+  id: string,
+  archived: boolean,
+  killPane = true,
+): Promise<SessionResponse | null> {
+  try {
+    const res = await fetch(`/api/sessions/${id}/archive`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ archived, kill_pane: killPane }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as SessionResponse;
+  } catch {
+    return null;
+  }
+}
+
+/** Snooze or unsnooze a session. Pass `null` to unsnooze, or a positive
+ *  number of minutes between 1 and 43200 (30 days) to snooze. The server
+ *  validates against the shared `validate_snooze_duration` so the bounds
+ *  match the TUI dialog presets and the CLI's `aoe session snooze`. See
+ *  #1581. */
+export async function setSessionSnooze(
+  id: string,
+  minutes: number | null,
+): Promise<SessionResponse | null> {
+  try {
+    const res = await fetch(`/api/sessions/${id}/snooze`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ minutes }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as SessionResponse;
+  } catch {
+    return null;
+  }
+}
+
 export interface DeleteSessionOptions {
   delete_worktree?: boolean;
   delete_branch?: boolean;
