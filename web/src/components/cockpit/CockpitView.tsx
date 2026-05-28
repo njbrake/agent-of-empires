@@ -1486,7 +1486,11 @@ function WorkerStoppedBanner({ sessionId }: { sessionId: string }) {
  *  startup recovery path both skip archived sessions, so a fresh
  *  spawn would not survive the next reconciliation tick. The user
  *  unblocks by unarchiving from the sidebar context menu. See #1581. */
-function ArchivedWorkerStoppedBanner({ sessionId }: { sessionId: string }) {
+export function ArchivedWorkerStoppedBanner({
+  sessionId,
+}: {
+  sessionId: string;
+}) {
   return (
     <div
       className="border-b border-amber-900/60 bg-amber-950/40 px-4 py-3 text-amber-200"
@@ -1507,7 +1511,7 @@ function ArchivedWorkerStoppedBanner({ sessionId }: { sessionId: string }) {
  *  so the user knows when the worker will come back on its own;
  *  Unsnooze from the sidebar context menu wakes it sooner. See
  *  #1581. */
-function SnoozedWorkerStoppedBanner({
+export function SnoozedWorkerStoppedBanner({
   sessionId,
   snoozedUntil,
 }: {
