@@ -304,7 +304,11 @@ last_seen_version = "{}"
     /// on `Down(...)` (the click handlers) see a complete cycle.
     pub fn send_mouse_click(&self, button: u8, col: u16, row: u16) {
         assert!(self.spawned, "must call spawn_tui() or spawn() first");
-        let seq = format!("\x1b[<{button};{col};{row};M\x1b[<{button};{col};{row};m");
+        // XTerm SGR 1006 format: `CSI < Pb ; Px ; Py M` for press,
+        // `... m` for release. No semicolon between Py and the final
+        // M/m byte; crossterm parses the trailing-semicolon variant
+        // leniently but spec-compliant terminals don't.
+        let seq = format!("\x1b[<{button};{col};{row}M\x1b[<{button};{col};{row}m");
         let output = Command::new("tmux")
             .arg("-S")
             .arg(&self.socket_path)
