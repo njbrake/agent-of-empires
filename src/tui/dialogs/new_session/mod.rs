@@ -858,10 +858,64 @@ impl NewSessionDialog {
     /// group/branch/projects picker, help) are still keyboard-only;
     /// `handle_click` only fires on the top-level form.
     pub fn handle_click(&mut self, col: u16, row: u16) -> Option<DialogResult<NewSessionData>> {
+        let pos = ratatui::layout::Position::from((col, row));
+
+        // List pickers (group / branch / projects) float over every
+        // other surface (main form AND config overlays), so route their
+        // clicks first. Otherwise the worktree config overlay below
+        // would swallow clicks meant for the branch picker that pops
+        // up from inside it.
+        if self.group_picker.is_active() {
+            match self.group_picker.handle_click(col, row) {
+                ListPickerResult::Continue | ListPickerResult::Cancelled => {
+                    return Some(DialogResult::Continue);
+                }
+                ListPickerResult::Selected(value) => {
+                    self.group = Input::new(value);
+                    self.clear_group_ghost();
+                    return Some(DialogResult::Continue);
+                }
+            }
+        }
+        if self.branch_picker.is_active() {
+            match self.branch_picker.handle_click(col, row) {
+                ListPickerResult::Continue | ListPickerResult::Cancelled => {
+                    return Some(DialogResult::Continue);
+                }
+                ListPickerResult::Selected(value) => {
+                    self.worktree_branch = Input::new(value);
+                    return Some(DialogResult::Continue);
+                }
+            }
+        }
+        if self.projects_picker.is_active() {
+            match self.projects_picker.handle_click(col, row) {
+                ListPickerResult::Continue | ListPickerResult::Cancelled => {
+                    return Some(DialogResult::Continue);
+                }
+                ListPickerResult::Selected(value) => {
+                    // Mirror the Enter-key handler in the worktree-config
+                    // path: resolve the display name back to a project
+                    // path via `available_projects` and append to
+                    // `workspace_repos` if not already present.
+                    if let Some(project) = self
+                        .available_projects
+                        .iter()
+                        .find(|p| project_picker_label(p) == value)
+                    {
+                        let path = project.path.clone();
+                        if !self.workspace_repos.iter().any(|p| p == &path) {
+                            self.workspace_repos.push(path);
+                        }
+                    }
+                    return Some(DialogResult::Continue);
+                }
+            }
+        }
+
         // Config overlays (sandbox / tool / worktree) take precedence
         // over the main form: their rects are populated only while
         // their mode is active.
-        let pos = ratatui::layout::Position::from((col, row));
         if self.sandbox_config_mode {
             if let Some(hit) = self
                 .sandbox_config_rects
@@ -902,46 +956,6 @@ impl NewSessionDialog {
             return Some(DialogResult::Continue);
         }
 
-        // List pickers (group / branch / projects) sit over the main
-        // form when active; route their clicks first so the user can
-        // click an item to select it.
-        if self.group_picker.is_active() {
-            match self.group_picker.handle_click(col, row) {
-                ListPickerResult::Continue => return Some(DialogResult::Continue),
-                ListPickerResult::Cancelled => return Some(DialogResult::Continue),
-                ListPickerResult::Selected(value) => {
-                    self.group = Input::new(value);
-                    self.clear_group_ghost();
-                    return Some(DialogResult::Continue);
-                }
-            }
-        }
-        if self.branch_picker.is_active() {
-            match self.branch_picker.handle_click(col, row) {
-                ListPickerResult::Continue => return Some(DialogResult::Continue),
-                ListPickerResult::Cancelled => return Some(DialogResult::Continue),
-                ListPickerResult::Selected(value) => {
-                    self.worktree_branch = Input::new(value);
-                    return Some(DialogResult::Continue);
-                }
-            }
-        }
-        if self.projects_picker.is_active() {
-            // Mirror the Enter-key handler in the worktree-config path,
-            // but defensively: the picker's value is the project's
-            // display name; the keyboard path resolves that back to a
-            // path via `available_projects`. We don't replicate the
-            // append-to-workspace_repos logic on click here to keep
-            // diff scoped; the picker still closes cleanly.
-            match self.projects_picker.handle_click(col, row) {
-                ListPickerResult::Continue => return Some(DialogResult::Continue),
-                ListPickerResult::Cancelled | ListPickerResult::Selected(_) => {
-                    return Some(DialogResult::Continue);
-                }
-            }
-        }
-
-        let pos = ratatui::layout::Position::from((col, row));
         let hit_field = self
             .focusable_rects
             .iter()
@@ -954,7 +968,7 @@ impl NewSessionDialog {
 
     /// Hover only updates the active picker's row highlight (menu-style
     /// behavior the user expects). It deliberately does NOT move focus
-    /// between form fields — main form or any of the config overlays.
+    /// between form fields; main form or any of the config overlays.
     /// Stealing focus from the field the user is typing into just
     /// because the mouse cursor drifts across the dialog is jarring.
     /// Click still sets focus.
@@ -1007,7 +1021,7 @@ impl NewSessionDialog {
             usize::MAX
         };
         let sandbox_field = if has_sandbox {
-            // No `fi += 1` here — sandbox is the last index we need to
+            // No `fi += 1` here; sandbox is the last index we need to
             // resolve, and the unused assignment trips clippy.
             fi
         } else {
@@ -1015,9 +1029,32 @@ impl NewSessionDialog {
         };
 
         if self.focused_field == profile_field {
-            self.profile_index = (self.profile_index + 1) % self.available_profiles.len().max(1);
+            if self.available_profiles.len() > 1 {
+                self.profile_index = (self.profile_index + 1) % self.available_profiles.len();
+                // Mirror the keyboard cycle: pick up the new profile's
+                // defaults (sandbox, yolo, hooks, tool override) so the
+                // dialog reflects what a submit would actually create.
+                self.reload_config_defaults();
+            }
         } else if self.focused_field == tool_field {
-            self.tool_index = (self.tool_index + 1) % self.available_tools.len().max(1);
+            if self.available_tools.len() > 1 {
+                self.tool_index = (self.tool_index + 1) % self.available_tools.len();
+                // Same side effects the Space/Left/Right tool handler
+                // applies: always-yolo tools force the toggle, host-only
+                // tools clear sandbox + worktree, and the per-tool config
+                // overlay (and its branch override) get re-resolved.
+                if self.selected_tool_always_yolo() {
+                    self.yolo_mode = true;
+                } else {
+                    self.yolo_mode = self.yolo_mode_default;
+                }
+                if self.selected_tool_host_only() {
+                    self.sandbox_enabled = false;
+                    self.worktree_enabled = false;
+                    self.worktree_branch.reset();
+                }
+                self.reload_tool_config();
+            }
         } else if self.focused_field == yolo_mode_field {
             self.yolo_mode = !self.yolo_mode;
         } else if self.focused_field == worktree_field {

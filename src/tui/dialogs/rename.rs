@@ -130,6 +130,10 @@ impl RenameDialog {
                 ListPickerResult::Cancelled => return Some(DialogResult::Continue),
                 ListPickerResult::Selected(value) => {
                     self.new_group = Input::new(value);
+                    // Mirror the keyboard picker path: the ghost
+                    // autocomplete state goes stale once the user
+                    // commits to a value via the picker, so drop it.
+                    self.group_ghost = None;
                     return Some(DialogResult::Continue);
                 }
             }

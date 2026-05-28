@@ -183,7 +183,7 @@ pub struct SettingsView {
     pub(super) field_rects: Vec<(usize, ratatui::layout::Rect)>,
     /// Last `(col, row)` reported by a `MouseEventKind::Moved` event
     /// while a non-editing settings surface is in view. Drives the
-    /// hover highlight on scope chips, categories, and fields — kept
+    /// hover highlight on scope chips, categories, and fields, kept
     /// separate from `selected_*` / `focus` so the mouse never
     /// disturbs the keyboard cursor. Cleared on every keypress so
     /// hover doesn't linger after the user switches modalities.

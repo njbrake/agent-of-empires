@@ -1409,7 +1409,7 @@ fn hover_off_focusables_does_not_change_focus() {
 #[test]
 fn click_on_worktree_while_scratch_on_surfaces_error_not_toggle() {
     let mut dialog = single_tool_dialog();
-    // Turn scratch on; mirror the keyboard behavior — worktree click
+    // Turn scratch on; mirror the keyboard behavior; worktree click
     // while scratch is on must NOT silently re-enable worktree.
     dialog.handle_key(ctrl_key(KeyCode::Char('t')));
     assert!(dialog.scratch);

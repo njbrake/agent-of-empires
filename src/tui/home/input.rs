@@ -337,7 +337,7 @@ impl HomeView {
         //
         // `has_dialog()` returns true while live-send is active, which
         // is exactly when preview drag-select is meant to work. Live
-        // mode is therefore exempt — but a real modal (info / confirm
+        // mode is therefore exempt; but a real modal (info / confirm
         // / palette / picker) opening mid-select must also kill the
         // drag and drop the selection so it can't keep mutating under
         // the modal or finalize on mouse-up behind the overlay.
@@ -533,7 +533,7 @@ impl HomeView {
 
     /// Drain the text captured on the last render that painted a
     /// finalized preview selection. Returns `Some` exactly once per
-    /// finalized drag — `App` calls this immediately after the draw
+    /// finalized drag; `App` calls this immediately after the draw
     /// to write the bytes to the clipboard.
     pub fn take_preview_copy_text(&mut self) -> Option<String> {
         self.preview_copy_text.take()
@@ -921,9 +921,9 @@ impl HomeView {
         // the user exits with Ctrl+q. That works when dialogs are only
         // reachable via keyboard (the hotkey itself gets swallowed by
         // live-send so the dialog never opens). Once a non-live-send
-        // overlay HAS been opened — via the empty-sidebar click that
+        // overlay HAS been opened; via the empty-sidebar click that
         // pops the new-session dialog, a right-click context menu, or
-        // any future click-to-open path — its keys must go to the
+        // any future click-to-open path; its keys must go to the
         // overlay, not the underlying tmux pane. Otherwise the user
         // sees the dialog but Esc / Enter / typed characters silently
         // get routed to the session behind it.
@@ -2642,7 +2642,7 @@ impl HomeView {
         // (or any prediction layer) eats the `Moved` event that fires as
         // the cursor leaves the list, the hover background stays painted
         // on the row the mouse was last on while the keyboard-selected
-        // row also paints — two highlighted rows at once. handle_hover
+        // row also paints; two highlighted rows at once. handle_hover
         // only clears `mouse_pos` when it RECEIVES an off-list Moved, so
         // any keyboard transition has to clear it directly.
         self.mouse_pos = None;
@@ -3082,7 +3082,7 @@ impl HomeView {
     ///     row): keep it open,
     ///   - click outside the menu: close it.
     ///
-    /// In all three cases the click is "consumed" — the caller must not
+    /// In all three cases the click is "consumed"; the caller must not
     /// fall through to the list / preview / dialog handlers underneath.
     /// Returns true when the menu existed (and consumed the click).
     pub fn handle_context_menu_click(&mut self, col: u16, row: u16) -> bool {
@@ -3140,7 +3140,7 @@ impl HomeView {
     }
 
     /// Treat a left-click that landed in the sidebar area but past the
-    /// last session row as "open new session" — matches the `'n'`
+    /// last session row as "open new session"; matches the `'n'`
     /// keybind. Returns true when the click was consumed (dialog
     /// opened or a gating dialog like "please wait" replaced it).
     ///
@@ -3155,7 +3155,7 @@ impl HomeView {
             return false;
         }
         if self.resolve_row_to_index(col, row).is_some() {
-            // A real row resolved here — the regular click path owns it.
+            // A real row resolved here; the regular click path owns it.
             return false;
         }
         self.open_new_session_dialog();
@@ -3375,7 +3375,7 @@ impl HomeView {
             // status-poll-driven re-sort) can move the cursor away from
             // the row the user is actually double-clicking. Without this,
             // `activate_selected_session()` reads `selected_session` —
-            // which tracks `cursor`, not the click target — and we'd open
+            // which tracks `cursor`, not the click target; and we'd open
             // the wrong session.
             return match item {
                 Item::Session { .. } => {

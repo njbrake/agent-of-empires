@@ -35,6 +35,46 @@ fn test_new_session_dialog_escape_cancels() {
     h.assert_screen_contains("No sessions yet");
 }
 
+#[test]
+#[serial]
+fn test_left_click_on_empty_sidebar_opens_new_session_dialog() {
+    // Regression test for the mouse-support PR: a left-click on the
+    // sidebar's empty area below the last session row must open the
+    // new-session dialog (the click equivalent of pressing `n`), and
+    // a subsequent Escape must reach the dialog (not fall through to
+    // any underlying surface). The dialog-receives-keys part is the
+    // half that previously broke when live-send was active; this test
+    // covers the simpler no-live-send path that any user hitting
+    // empty-sidebar-click goes through.
+    require_tmux!();
+
+    let mut h = TuiTestHarness::new("empty_click");
+    h.spawn_tui();
+
+    h.wait_for(" aoe ");
+    // Dismiss the first-run welcome dialog so the sidebar is the
+    // top-most surface receiving clicks.
+    h.send_keys("Enter");
+    h.wait_for("No sessions yet");
+
+    // Click well below the empty-state label in the sidebar column.
+    // The sidebar's empty area is wide; (col=10, row=15) lands inside
+    // `list_inner_area` but past every real row, which is exactly
+    // what `handle_empty_list_click` checks for. Coordinates are
+    // 1-indexed in SGR.
+    h.send_mouse_click(0, 10, 15);
+
+    // Dialog should appear with its trademark fields.
+    h.wait_for(" New Session ");
+    h.assert_screen_contains("Title");
+    h.assert_screen_contains("Path");
+
+    // Keyboard now routes to the dialog. Escape closes it.
+    h.send_keys("Escape");
+    h.wait_for_absent(" New Session ", Duration::from_secs(5));
+    h.assert_screen_contains("No sessions yet");
+}
+
 /// Submit the new session dialog, handling the "Path does not exist. Create?"
 /// prompt if it appears.
 ///

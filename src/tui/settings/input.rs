@@ -24,7 +24,7 @@ impl SettingsView {
     pub fn handle_key(&mut self, key: KeyEvent) -> SettingsAction {
         // Clear transient messages on any key
         self.success_message = None;
-        // Any keypress invalidates the mouse hover highlight — otherwise
+        // Any keypress invalidates the mouse hover highlight; otherwise
         // a stationary cursor keeps highlighting an unrelated row while
         // the keyboard cursor moves elsewhere. Mirrors the sidebar's
         // move_cursor_clears_hover pattern.
@@ -1199,7 +1199,7 @@ impl SettingsView {
 
     /// Track the mouse position so the renderer can paint a hover
     /// highlight on whichever scope chip / category row / field row
-    /// the cursor is over. Hover never moves the keyboard cursor —
+    /// the cursor is over. Hover never moves the keyboard cursor;
     /// see `ConfirmDialog::handle_hover` for why. Editing / search /
     /// help modes clear the hover so the highlight doesn't bleed
     /// behind the overlay.
@@ -1214,7 +1214,7 @@ impl SettingsView {
             return false;
         }
         // Only request a redraw when the resolved hover target
-        // actually changes — a mouse drift inside the same field or
+        // actually changes; a mouse drift inside the same field or
         // entirely off the rects shouldn't repaint every pixel.
         let prev_scope = self.hovered_scope();
         let prev_cat = self.hovered_category();
@@ -1660,7 +1660,7 @@ mod tests {
         #[test]
         #[serial]
         fn hover_never_moves_focus() {
-            // Hover must not shift the keyboard cursor in settings —
+            // Hover must not shift the keyboard cursor in settings;
             // otherwise the mouse drifting across the fields panel
             // silently changes which field a subsequent Enter / Space
             // targets. Click still navigates.

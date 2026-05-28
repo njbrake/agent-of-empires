@@ -483,7 +483,7 @@ impl SettingsView {
         }
 
         // Hover overlay: dim bg on whichever field the mouse sits over.
-        // Suppressed when that field is the selected one — the selected
+        // Suppressed when that field is the selected one; the selected
         // styling is already brighter and should win. Routed after the
         // whole field loop so SectionHeader rows can't bleed an
         // overlay on themselves (they never make it into field_rects).

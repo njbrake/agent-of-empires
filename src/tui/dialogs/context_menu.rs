@@ -28,10 +28,19 @@ pub struct ContextMenuDialog {
 
 /// Resolve a `(col, row)` mouse position to the menu item index it
 /// would hit, given the last rendered `area` and the number of items.
-/// `None` for clicks on the border, inside the menu but past the last
-/// item, or anywhere outside the menu area.
+/// `None` for clicks on any border (top, bottom, or vertical), inside
+/// the menu but past the last item, or anywhere outside the menu area.
+/// All four border directions must be excluded; otherwise a click on
+/// the right-hand vertical border at an item's row would dispatch
+/// Rename/Delete the same as clicking the item text, which is not
+/// what the user intends when they target the border.
 fn row_to_item_idx(area: Rect, items_len: usize, col: u16, row: u16) -> Option<usize> {
     if !area.contains(Position::from((col, row))) {
+        return None;
+    }
+    let inner_x = area.x.saturating_add(1);
+    let last_inner_x = area.right().saturating_sub(1);
+    if col < inner_x || col >= last_inner_x {
         return None;
     }
     let inner_y = area.y.saturating_add(1);
@@ -161,8 +170,9 @@ impl ContextMenuDialog {
             .map(|(_, label)| label.chars().count() as u16)
             .max()
             .unwrap_or(0);
-        // Two columns of inner padding, plus borders.
-        let width = (label_width + 4).max(14);
+        // Border columns (2) + horizontal Padding (2) + breathing
+        // room for the selection chevron (2).
+        let width = (label_width + 6).max(16);
         let height = self.items.len() as u16 + 2;
 
         let mut x = self.anchor.0;
@@ -188,6 +198,7 @@ impl ContextMenuDialog {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
+            .padding(Padding::horizontal(1))
             .border_style(Style::default().fg(theme.accent));
 
         let inner = block.inner(dialog_area);
@@ -358,6 +369,29 @@ mod tests {
         // Top border row is y itself.
         let result = menu.handle_click(12, 10);
         assert!(matches!(result, Some(DialogResult::Continue)));
+    }
+
+    #[test]
+    fn click_on_vertical_border_at_item_row_does_not_dispatch() {
+        // Regression: the left and right border columns sit on the
+        // same row as items, so `row` alone can't distinguish "click
+        // on item text" from "click on the border next to the item."
+        // The router must reject both vertical borders or a click on
+        // the right edge of the menu, at an item's y, would fire
+        // Rename / Delete the same as clicking the label.
+        let mut menu = ContextMenuDialog::for_session((10, 10));
+        stub_render(&mut menu, 10, 10, 14, 4);
+        // (10, 11) = left vertical border, first item's row.
+        assert!(matches!(
+            menu.handle_click(10, 11),
+            Some(DialogResult::Continue)
+        ));
+        // (23, 11) = right vertical border, first item's row
+        // (area.right() - 1 with width 14 starting at x=10).
+        assert!(matches!(
+            menu.handle_click(23, 11),
+            Some(DialogResult::Continue)
+        ));
     }
 
     #[test]

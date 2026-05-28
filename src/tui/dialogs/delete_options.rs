@@ -795,7 +795,7 @@ mod tests {
         dialog.yes_button_area = Rect::new(10, 8, 5, 1);
         dialog.no_button_area = Rect::new(19, 8, 4, 1);
         // simple_dialog has no worktree/sandbox/scratch, so the only
-        // focusable elements are the two buttons — no checkbox rects.
+        // focusable elements are the two buttons; no checkbox rects.
     }
 
     fn stage_rects_for_full(dialog: &mut UnifiedDeleteDialog) {
@@ -820,13 +820,13 @@ mod tests {
 
     #[test]
     fn hover_never_changes_focus() {
-        // Hover must leave focus alone — otherwise mouse drift between
+        // Hover must leave focus alone; otherwise mouse drift between
         // reading the dialog and pressing Enter / Space silently shifts
         // which element the next keystroke targets.
         let mut dialog = simple_dialog();
         stage_rects_for_simple(&mut dialog);
         dialog.focus = FocusElement::NoButton;
-        // Over Yes, over No, over checkbox row, off-rects — all no-ops.
+        // Over Yes, over No, over checkbox row, off-rects; all no-ops.
         for (col, row) in [(12, 8), (20, 8), (10, 5), (50, 50)] {
             assert!(!dialog.handle_hover(col, row), "hover at ({col},{row})");
             assert_eq!(dialog.focus, FocusElement::NoButton);
