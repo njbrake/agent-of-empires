@@ -992,10 +992,41 @@ const SessionRow = memo(function SessionRow({
   );
 });
 
+/** Bounds for `validate_snooze_duration` on the server. Mirrored
+ *  client-side so the modal can pre-validate and disable the submit
+ *  button rather than round-trip a 400. See
+ *  `src/session/config.rs::SNOOZE_MAX_MINUTES`. */
+const SNOOZE_MIN_MINUTES = 1;
+const SNOOZE_MAX_MINUTES = 30 * 24 * 60;
+
+type SnoozeUnit = "m" | "h" | "d" | "w";
+
+const SNOOZE_UNIT_LABELS: Record<SnoozeUnit, string> = {
+  m: "minutes",
+  h: "hours",
+  d: "days",
+  w: "weeks",
+};
+
+function snoozeUnitToMinutes(value: number, unit: SnoozeUnit): number {
+  switch (unit) {
+    case "m":
+      return value;
+    case "h":
+      return value * 60;
+    case "d":
+      return value * 60 * 24;
+    case "w":
+      return value * 60 * 24 * 7;
+  }
+}
+
 /** Centered modal duration picker rendered as a separate portal so it
- *  is independent of the row's context menu. Lists the eight TUI
- *  presets (matching `src/tui/dialogs/snooze_duration.rs`) plus a
- *  Cancel; backdrop click and Escape both dismiss. See #1581. */
+ *  is independent of the row's context menu. Three submit paths:
+ *   - 8 TUI presets (matching `src/tui/dialogs/snooze_duration.rs`).
+ *   - Custom duration: number + unit (m/h/d/w).
+ *   - Until a specific date+time (HTML5 datetime-local input).
+ *  Backdrop click and Escape both dismiss. See #1581. */
 function SnoozeModal({
   title,
   onCancel,
@@ -1005,6 +1036,12 @@ function SnoozeModal({
   onCancel: () => void;
   onPick: (minutes: number) => void;
 }) {
+  const [customValue, setCustomValue] = useState("");
+  const [customUnit, setCustomUnit] = useState<SnoozeUnit>("h");
+  const [untilValue, setUntilValue] = useState("");
+  const [customError, setCustomError] = useState<string | null>(null);
+  const [untilError, setUntilError] = useState<string | null>(null);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCancel();
@@ -1012,13 +1049,58 @@ function SnoozeModal({
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onCancel]);
+
+  const submitCustom = () => {
+    setCustomError(null);
+    const n = Number.parseInt(customValue, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      setCustomError("Enter a positive whole number.");
+      return;
+    }
+    const minutes = snoozeUnitToMinutes(n, customUnit);
+    if (minutes < SNOOZE_MIN_MINUTES || minutes > SNOOZE_MAX_MINUTES) {
+      setCustomError(
+        `Must be between 1 minute and 30 days (got ${minutes} minutes).`,
+      );
+      return;
+    }
+    onPick(minutes);
+  };
+
+  const submitUntil = () => {
+    setUntilError(null);
+    if (!untilValue) {
+      setUntilError("Pick a date and time.");
+      return;
+    }
+    // datetime-local values are wall-clock (no zone). Date.parse
+    // interprets them as local time, which matches user expectation
+    // (snooze "until 9am tomorrow" means 9am in the user's TZ).
+    const target = Date.parse(untilValue);
+    if (!Number.isFinite(target)) {
+      setUntilError("Invalid date.");
+      return;
+    }
+    const deltaMs = target - Date.now();
+    if (deltaMs <= 0) {
+      setUntilError("Pick a time in the future.");
+      return;
+    }
+    const minutes = Math.max(1, Math.round(deltaMs / 60_000));
+    if (minutes > SNOOZE_MAX_MINUTES) {
+      setUntilError("Maximum snooze is 30 days from now.");
+      return;
+    }
+    onPick(minutes);
+  };
+
   return (
     <div
       data-testid="snooze-modal-backdrop"
       onClick={(e) => {
         if (e.target === e.currentTarget) onCancel();
       }}
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4 py-8 overflow-y-auto"
       role="dialog"
       aria-modal="true"
       aria-label="Snooze session"
@@ -1047,6 +1129,90 @@ function SnoozeModal({
               {preset.label}
             </button>
           ))}
+        </div>
+        <div className="px-4 py-3 border-t border-surface-700/40">
+          <div className="text-[11px] font-mono uppercase tracking-widest text-text-muted mb-2">
+            Custom duration
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              value={customValue}
+              onChange={(e) => setCustomValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitCustom();
+              }}
+              placeholder="3"
+              data-testid="snooze-modal-custom-value"
+              aria-label="Custom snooze duration"
+              className="w-20 rounded border border-surface-700 bg-surface-900 px-2 py-1 text-sm text-text-primary focus:border-brand-600 focus:outline-none"
+            />
+            <select
+              value={customUnit}
+              onChange={(e) => setCustomUnit(e.target.value as SnoozeUnit)}
+              data-testid="snooze-modal-custom-unit"
+              aria-label="Custom snooze unit"
+              className="rounded border border-surface-700 bg-surface-900 px-2 py-1 text-sm text-text-primary focus:border-brand-600 focus:outline-none"
+            >
+              {(Object.keys(SNOOZE_UNIT_LABELS) as SnoozeUnit[]).map((u) => (
+                <option key={u} value={u}>
+                  {SNOOZE_UNIT_LABELS[u]}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={submitCustom}
+              data-testid="snooze-modal-custom-submit"
+              className="ml-auto rounded bg-brand-600 px-3 py-1 text-sm font-medium text-text-primary hover:bg-brand-500 cursor-pointer transition-colors"
+            >
+              Snooze
+            </button>
+          </div>
+          {customError && (
+            <div
+              role="alert"
+              data-testid="snooze-modal-custom-error"
+              className="mt-1 text-[11px] text-status-error"
+            >
+              {customError}
+            </div>
+          )}
+        </div>
+        <div className="px-4 py-3 border-t border-surface-700/40">
+          <div className="text-[11px] font-mono uppercase tracking-widest text-text-muted mb-2">
+            Until
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="datetime-local"
+              value={untilValue}
+              onChange={(e) => setUntilValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitUntil();
+              }}
+              data-testid="snooze-modal-until-value"
+              aria-label="Snooze until"
+              className="flex-1 min-w-0 rounded border border-surface-700 bg-surface-900 px-2 py-1 text-sm text-text-primary focus:border-brand-600 focus:outline-none"
+            />
+            <button
+              onClick={submitUntil}
+              data-testid="snooze-modal-until-submit"
+              className="rounded bg-brand-600 px-3 py-1 text-sm font-medium text-text-primary hover:bg-brand-500 cursor-pointer transition-colors"
+            >
+              Snooze
+            </button>
+          </div>
+          {untilError && (
+            <div
+              role="alert"
+              data-testid="snooze-modal-until-error"
+              className="mt-1 text-[11px] text-status-error"
+            >
+              {untilError}
+            </div>
+          )}
         </div>
         <div className="px-4 py-3 border-t border-surface-700/40 flex justify-end">
           <button

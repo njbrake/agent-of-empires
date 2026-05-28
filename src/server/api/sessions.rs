@@ -1213,25 +1213,42 @@ pub async fn update_session_snooze(
     let lock = state.instance_lock(&id).await;
     let _guard = lock.lock().await;
 
-    let mut instances = state.instances.write().await;
-    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({ "message": "Session not found" })),
-        )
-            .into_response();
+    let was_cockpit_mode = {
+        let mut instances = state.instances.write().await;
+        let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "message": "Session not found" })),
+            )
+                .into_response();
+        };
+
+        match body.minutes {
+            Some(minutes) => inst.snooze(minutes),
+            None => inst.unsnooze(),
+        }
+
+        let cockpit;
+        #[cfg(feature = "serve")]
+        {
+            cockpit = inst.cockpit_mode;
+        }
+        #[cfg(not(feature = "serve"))]
+        {
+            cockpit = false;
+        }
+        cockpit
     };
 
-    match body.minutes {
-        Some(minutes) => inst.snooze(minutes),
-        None => inst.unsnooze(),
-    }
-
-    let response =
-        SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen());
-    let profile = inst.source_profile.clone();
+    let profile = {
+        let instances = state.instances.read().await;
+        instances
+            .iter()
+            .find(|i| i.id == id)
+            .map(|i| i.source_profile.clone())
+            .unwrap_or_default()
+    };
     let minutes = body.minutes;
-    drop(instances);
 
     if let Ok(storage) = Storage::new(&profile) {
         let id_clone = id.clone();
@@ -1260,6 +1277,41 @@ pub async fn update_session_snooze(
         }
     }
 
+    // For cockpit-mode sessions, snoozing tears down the worker the
+    // same way archive does. Snooze is a "temporary archive" in the
+    // data model and the cockpit worker (claude-agent-acp subprocess)
+    // is heavy enough that keeping it idle while the row is sunk is a
+    // resource hog. The reconciler skips snoozed sessions, so the
+    // worker stays down until the snooze expires; the next reconciler
+    // tick after expiry brings it back. Unsnooze just lets the
+    // reconciler re-pick the session naturally, no explicit respawn.
+    #[cfg(feature = "serve")]
+    if was_cockpit_mode && minutes.is_some() {
+        match state.cockpit_supervisor.shutdown(&id).await {
+            Ok(()) | Err(crate::cockpit::supervisor::SupervisorError::UnknownSession(_)) => {}
+            Err(e) => tracing::warn!(
+                target: "cockpit.supervisor",
+                session = %id,
+                "shutdown during snooze failed: {e}"
+            ),
+        }
+    }
+    #[cfg(not(feature = "serve"))]
+    let _ = was_cockpit_mode;
+
+    let instances = state.instances.read().await;
+    let response = match instances.iter().find(|i| i.id == id) {
+        Some(inst) => {
+            SessionResponse::from_instance(inst, crate::claude_settings::read_tui_fullscreen())
+        }
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "message": "Session not found" })),
+            )
+                .into_response();
+        }
+    };
     (StatusCode::OK, Json(serde_json::json!(response))).into_response()
 }
 
