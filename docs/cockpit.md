@@ -295,6 +295,16 @@ An iPad with a Bluetooth keyboard (or any device that reports both
 the desktop Enter-to-send convention so hardware-keyboard typing
 feels natural. See #1129.
 
+### iOS Safari dictation
+
+Tapping the on-screen keyboard's mic icon to dictate into the composer
+commits each partial recognition exactly once. The composer detects
+WebKit's `insertReplacementText` burst, suspends its assistant-ui
+controlled-input flush for the duration so WebKit's dictation range
+pointer is not invalidated mid-utterance, then drains the final text
+into the composer state on blur (typically when you tap Send) or
+after a brief idle period. See #1431.
+
 ### Queued prompts (mid-turn + inactive session)
 
 The web composer keeps your messages around even when the session
