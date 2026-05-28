@@ -468,7 +468,7 @@ impl Preview {
 /// makes `compute_scroll` walk one row too far past the bottom, clipping the
 /// top line of the capture, where a freshly started shell's prompt and cursor
 /// sit. That is the "first row is invisible in live mode" bug.
-fn output_visible_height(area_height: u16, has_banner: bool) -> usize {
+pub(crate) fn output_visible_height(area_height: u16, has_banner: bool) -> usize {
     if has_banner {
         area_height.saturating_sub(1) as usize
     } else {

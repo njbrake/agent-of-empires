@@ -478,6 +478,16 @@ pub struct HomeView {
     /// see; tail-anchored display clipped those rows off the top, so
     /// every frame in info-expanded mode looked shifted up.
     pub(super) preview_pane_area: Rect,
+    /// Rows of captured output the renderer actually paints into the preview
+    /// body: the pane height minus the inner ` Output ` / ` Terminal Output `
+    /// banner row when (and only when) that banner is shown. Computed in
+    /// `render_preview` via `preview::output_visible_height` and shared with
+    /// `clamp_scroll_to_capture` and the live-send `[offset/max]` banner so
+    /// every consumer of "how many rows are visible" agrees with what's on
+    /// screen. Subtracting one unconditionally instead would let a phantom
+    /// scroll offset of 1 survive when content exactly fills a banner-less
+    /// pane, stalling live-follow one row early.
+    pub(super) preview_visible_rows: usize,
     /// Outer rect of the preview pane (block + borders + content), captured
     /// during `render_preview`. The live-send preview-only fast path uses
     /// this to call back into `render_preview` with the correct OUTER area,
@@ -779,6 +789,7 @@ impl HomeView {
             preview_scroll_offset: 0,
             preview_area: Rect::default(),
             preview_pane_area: Rect::default(),
+            preview_visible_rows: 0,
             preview_outer_area: Rect::default(),
             diff_area: Rect::default(),
             list_area: Rect::default(),
