@@ -441,7 +441,11 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     // deletes go through the startup sweep instead.
     clearDraft(sessionId);
 
-    toastBus.handler?.info("Session deleted");
+    // Server returns `messages` from `perform_deletion` when there's something
+    // user-facing to report (e.g. "Scratch directory kept at: <path>" when
+    // `keep_scratch` is set). Surface the first one so the kept-path is visible.
+    const toast = result.messages?.[0] ?? "Session deleted";
+    toastBus.handler?.info(toast);
   }, [deletingSession, activeSessionId, setSessionStatus, navigate]);
 
   const handleCreateSession = useCallback((repoPath: string) => {

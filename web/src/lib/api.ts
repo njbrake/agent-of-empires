@@ -897,6 +897,7 @@ export interface DeleteSessionOptions {
 export interface DeleteSessionResult {
   ok: boolean;
   error?: string;
+  messages?: string[];
 }
 
 export async function deleteSession(
@@ -916,7 +917,8 @@ export async function deleteSession(
         error: data.message || `Server error (${res.status})`,
       };
     }
-    return { ok: true };
+    const data = (await res.json().catch(() => ({}))) as { messages?: string[] };
+    return { ok: true, messages: data.messages };
   } catch (e) {
     return {
       ok: false,
