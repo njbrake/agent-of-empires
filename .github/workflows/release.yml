@@ -116,10 +116,17 @@ jobs:
         if: matrix.container != ''
         run: |
           # manylinux_2_28 is AlmaLinux 8 (dnf-based). The image ships gcc,
-          # binutils, make, and perl already; we add git for cargo's git
-          # deps, plus xz which the Node tarball install path may want.
+          # binutils, make, and core perl already; we add git for cargo's
+          # git deps, xz for tarball decompression, and two perl modules
+          # that AlmaLinux 8's minimal perl install does NOT include but
+          # openssl-src's `./Configure` requires:
+          #   perl-IPC-Cmd  - used at `config.pm` line ~19 (mandatory)
+          #   perl-FindBin  - used by Configure's `use FindBin` (mandatory)
+          # Ubuntu's perl bundles both, which is why the previous
+          # ubuntu-latest runner build didn't trip on this. Removing
+          # either one breaks the git2 vendored-openssl build.
           dnf install -y --setopt=install_weak_deps=False \
-            git curl tar gzip xz
+            git curl tar gzip xz perl-IPC-Cmd perl-FindBin
           # Node 22 via NodeSource. Node 22 requires glibc 2.28+, which is
           # exactly what manylinux_2_28 ships, so this resolves cleanly.
           curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
