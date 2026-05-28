@@ -79,7 +79,7 @@ const MAX_WIDTH = 480;
  *  the same set of choices. The TUI extends past these via a manual
  *  numeric entry; the web sidebar omits that path in v1 (the menu
  *  stays flat). See #1581. */
-const SNOOZE_PRESETS: readonly { label: string; minutes: number }[] = [
+export const SNOOZE_PRESETS: readonly { label: string; minutes: number }[] = [
   { label: "1 hour", minutes: 60 },
   { label: "2 hours", minutes: 120 },
   { label: "3 hours", minutes: 180 },
@@ -283,7 +283,7 @@ function formatDurationSecondsShort(seconds: number): string {
  *  closure, not a render. The exact value is throwaway (the server's
  *  response on the next poll is the source of truth), so a few ms
  *  of jitter is harmless. See #1581. */
-function makeOptimisticSnoozedUntil(minutes: number): string {
+export function makeOptimisticSnoozedUntil(minutes: number): string {
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
 
@@ -298,7 +298,7 @@ function makeOptimisticSnoozedUntil(minutes: number): string {
  *   - else       : "Nd" (rounded down)
  *  Past timestamps return "soon" since the wake-up has expired but the
  *  next poll has not yet cleared the row. */
-function formatSnoozeRemainingShort(snoozedUntilIso: string): string {
+export function formatSnoozeRemainingShort(snoozedUntilIso: string): string {
   const target = Date.parse(snoozedUntilIso);
   if (!Number.isFinite(target)) return "snoozed";
   const remainingMs = target - Date.now();
@@ -1109,7 +1109,7 @@ function snoozeUnitToMinutes(value: number, unit: SnoozeUnit): number {
  *   - Custom duration: number + unit (m/h/d/w).
  *   - Until a specific date+time (HTML5 datetime-local input).
  *  Backdrop click and Escape both dismiss. See #1581. */
-function SnoozeModal({
+export function SnoozeModal({
   title,
   onCancel,
   onPick,

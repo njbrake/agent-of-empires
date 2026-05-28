@@ -1916,6 +1916,17 @@
       "components": [
         "web/src/lib/api.ts"
       ]
+    },
+    {
+      "id": "triage.snooze-modal",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/components/__tests__/SnoozeModal.test.tsx"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
     }
   ]
 }
