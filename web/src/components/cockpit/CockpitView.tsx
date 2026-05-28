@@ -47,6 +47,7 @@ import {
   queuedStripLayout,
 } from "./queuedPromptsLayout";
 import { StartupErrorScreen } from "./StartupErrorScreen";
+import { pickWorkerStoppedVariant } from "./workerStoppedBanner";
 import { SubagentCard, ToolCard, ToolGroupCard } from "./ToolCards";
 import { DiffCommentsUserCard } from "../diff/comments/DiffCommentsUserCard";
 import { parseDiffCommentsSentinel } from "../diff/comments/buildPrompt";
@@ -84,6 +85,18 @@ interface Props {
    *  / etc.). Resolves the active AgentProfile that drives card
    *  dispatch and claude-specific capability gates. */
   tool: string | null | undefined;
+  /** RFC3339 archived-at timestamp, or null. Drives the
+   *  archived-specific "worker stopped" banner that replaces the
+   *  generic `aoe cockpit stop`-style message when the user has
+   *  explicitly parked the session via the sidebar archive action.
+   *  See #1581. */
+  archivedAt: string | null;
+  /** RFC3339 snoozed-until timestamp, or null. Drives the
+   *  snoozed-specific "worker stopped" banner with a wake-time
+   *  readout. Server gates this on `is_snoozed()` so expired
+   *  timestamps come back as null and we fall through to the live
+   *  variant. See #1581. */
+  snoozedUntil: string | null;
 }
 
 const STARTER_PROMPTS = [
@@ -92,7 +105,13 @@ const STARTER_PROMPTS = [
   "What does the build pipeline do?",
 ];
 
-export function CockpitView({ sessionId, cockpitWorkerState, tool }: Props) {
+export function CockpitView({
+  sessionId,
+  cockpitWorkerState,
+  tool,
+  archivedAt,
+  snoozedUntil,
+}: Props) {
   // Folds rows above the most recent `/clear` divider out of the
   // thread by default; the disclosure banner toggles this. Lives on
   // the view (not the reducer) because it's a UI preference, not
@@ -111,6 +130,8 @@ export function CockpitView({ sessionId, cockpitWorkerState, tool }: Props) {
             cockpitWorkerState={cockpitWorkerState}
             showClearedTurns={showClearedTurns}
             onToggleClearedTurns={() => setShowClearedTurns((v) => !v)}
+            archivedAt={archivedAt}
+            snoozedUntil={snoozedUntil}
             {...ctx}
           />
         )}
@@ -124,6 +145,8 @@ function CockpitChrome({
   cockpitWorkerState,
   showClearedTurns,
   onToggleClearedTurns,
+  archivedAt,
+  snoozedUntil,
   state,
   status,
   hasEverOpened,
@@ -150,6 +173,8 @@ function CockpitChrome({
   cockpitWorkerState: "absent" | "resuming" | "running";
   showClearedTurns: boolean;
   onToggleClearedTurns: () => void;
+  archivedAt: string | null;
+  snoozedUntil: string | null;
 }) {
   // Count how many activity rows precede the latest `session_cleared`
   // divider so the banner can say "12 earlier turns hidden". The
@@ -280,9 +305,29 @@ function CockpitChrome({
       {state.startupError && (
         <StartupErrorBanner sessionId={sessionId} message={state.startupError} />
       )}
-      {state.workerStopped && !state.startupError && (
-        <WorkerStoppedBanner sessionId={sessionId} />
-      )}
+      {(() => {
+        const variant = pickWorkerStoppedVariant({
+          workerStopped: state.workerStopped,
+          startupError: state.startupError,
+          archivedAt,
+          snoozedUntil,
+        });
+        if (variant === "archived") {
+          return <ArchivedWorkerStoppedBanner sessionId={sessionId} />;
+        }
+        if (variant === "snoozed" && snoozedUntil) {
+          return (
+            <SnoozedWorkerStoppedBanner
+              sessionId={sessionId}
+              snoozedUntil={snoozedUntil}
+            />
+          );
+        }
+        if (variant === "generic") {
+          return <WorkerStoppedBanner sessionId={sessionId} />;
+        }
+        return null;
+      })()}
       {state.workerRestarting && !state.startupError && !state.workerStopped && (
         <WorkerRestartingBanner
           agentUnresponsive={state.agentUnresponsive}
@@ -1429,6 +1474,60 @@ function WorkerStoppedBanner({ sessionId }: { sessionId: string }) {
           Reconnect failed: {retryError}
         </div>
       )}
+    </div>
+  );
+}
+
+/** Replacement for `WorkerStoppedBanner` when the worker was torn
+ *  down because the user archived the session from the sidebar. The
+ *  reconnect button would be misleading here: the reconciler and the
+ *  startup recovery path both skip archived sessions, so a fresh
+ *  spawn would not survive the next reconciliation tick. The user
+ *  unblocks by unarchiving from the sidebar context menu. See #1581. */
+function ArchivedWorkerStoppedBanner({ sessionId }: { sessionId: string }) {
+  return (
+    <div
+      className="border-b border-amber-900/60 bg-amber-950/40 px-4 py-3 text-amber-200"
+      data-testid={`cockpit-archived-banner-${sessionId}`}
+    >
+      <div className="text-sm font-medium">Session archived</div>
+      <div className="mt-1 text-xs text-amber-100/90">
+        This session is parked. The cockpit worker was shut down and the
+        reconciler will not respawn it. Unarchive from the sidebar
+        (right-click the row, then Unarchive) to bring it back.
+      </div>
+    </div>
+  );
+}
+
+/** Replacement for `WorkerStoppedBanner` when the worker was torn
+ *  down because the user snoozed the session. Surfaces the wake time
+ *  so the user knows when the worker will come back on its own;
+ *  Unsnooze from the sidebar context menu wakes it sooner. See
+ *  #1581. */
+function SnoozedWorkerStoppedBanner({
+  sessionId,
+  snoozedUntil,
+}: {
+  sessionId: string;
+  snoozedUntil: string;
+}) {
+  const target = new Date(snoozedUntil);
+  const wallClock = Number.isFinite(target.getTime())
+    ? target.toLocaleString()
+    : snoozedUntil;
+  return (
+    <div
+      className="border-b border-amber-900/60 bg-amber-950/40 px-4 py-3 text-amber-200"
+      data-testid={`cockpit-snoozed-banner-${sessionId}`}
+    >
+      <div className="text-sm font-medium">Session snoozed</div>
+      <div className="mt-1 text-xs text-amber-100/90">
+        The cockpit worker was shut down until{" "}
+        <span className="font-mono">{wallClock}</span>. The reconciler will
+        respawn it automatically once the snooze expires, or you can
+        Unsnooze from the sidebar (right-click the row) to wake it sooner.
+      </div>
     </div>
   );
 }
