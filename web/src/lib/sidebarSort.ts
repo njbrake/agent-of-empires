@@ -85,6 +85,22 @@ export function workspaceTriageTier(ws: Workspace): 0 | 1 | 2 {
   return 1;
 }
 
+/** Resolve the "effective" snoozed_until value the row should render
+ *  with, given a server-derived prop and an optimistic local
+ *  override. `undefined` on the optimistic side means "no override,
+ *  fall through"; `null` means "pretend the server already
+ *  unsnoozed"; a string means "pretend the server already snoozed
+ *  until then." Extracted as a pure helper so the optimistic
+ *  resolution is unit-testable without mounting the whole sidebar.
+ *  See #1581 CodeRabbit review. */
+export function resolveEffectiveSnoozedUntil(
+  optimistic: string | null | undefined,
+  serverValue: string | null | undefined,
+): string | null | undefined {
+  if (optimistic === undefined) return serverValue;
+  return optimistic;
+}
+
 /** Triage state of a single session row, used by the sidebar context
  *  menu to decide which actions to show. The state machine is
  *  mutually exclusive: only one of pinned/archived/snoozed can be the

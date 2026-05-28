@@ -7,6 +7,7 @@ import {
   compareWorkspacesByLastActivityDesc,
   loadSidebarSortMode,
   repoGroupLastActivityMs,
+  resolveEffectiveSnoozedUntil,
   saveSidebarSortMode,
   triageMenuShape,
   triageStateOf,
@@ -245,6 +246,65 @@ describe("workspaceTriageTier", () => {
       session({ id: "s1", archived_at: "2025-01-01T00:00:00Z" }),
     ]);
     expect(workspaceTriageTier(ws)).toBe(2);
+  });
+});
+
+describe("resolveEffectiveSnoozedUntil", () => {
+  it("returns the server value when no optimistic override is set", () => {
+    // Regression: snooze had no optimistic state; the chip waited
+    // for the next sessions-poll to flip, which read laggy compared
+    // to pin / archive's instant feedback. See #1581 CodeRabbit
+    // review. `undefined` on the optimistic side means "no override,
+    // fall through to the server value."
+    expect(resolveEffectiveSnoozedUntil(undefined, null)).toBeNull();
+    expect(
+      resolveEffectiveSnoozedUntil(undefined, "2099-01-01T00:00:00Z"),
+    ).toBe("2099-01-01T00:00:00Z");
+  });
+
+  it("uses an optimistic string to render the snooze chip pre-PATCH", () => {
+    // Regression: clicking a preset must flip the chip immediately,
+    // not wait for the round-trip. Optimistic value wins over the
+    // (still-null) server prop until the next poll mirrors it.
+    expect(
+      resolveEffectiveSnoozedUntil("2099-01-01T00:00:00Z", null),
+    ).toBe("2099-01-01T00:00:00Z");
+  });
+
+  it("uses an explicit null override to hide the chip pre-PATCH on unsnooze", () => {
+    // Clicking Unsnooze flips the chip away while the PATCH is in
+    // flight. The optimistic null wins until the server prop also
+    // returns null and the clear-on-prop-sync effect drops the
+    // override.
+    expect(
+      resolveEffectiveSnoozedUntil(null, "2099-01-01T00:00:00Z"),
+    ).toBeNull();
+  });
+});
+
+describe("rank-based comparator with two unranked workspaces", () => {
+  it("compares with `<`/`>` instead of subtraction to avoid NaN", () => {
+    // Regression: two workspaces missing from the persisted ordering
+    // both resolve to `Infinity`; `Infinity - Infinity` is `NaN`,
+    // which `Array.prototype.sort` treats like equality and silently
+    // skips the id tie-break, leaving order at the mercy of input
+    // order. This test simulates the same rank-based comparator used
+    // by `useRepoGroups.sortByRank` and asserts deterministic order
+    // by id ascending. See #1581 CodeRabbit review.
+    const rank = new Map<string, number>();
+    const rankOf = (id: string) => rank.get(id) ?? Infinity;
+    const cmp = (a: Workspace, b: Workspace) => {
+      const ar = rankOf(a.id);
+      const br = rankOf(b.id);
+      if (ar < br) return -1;
+      if (ar > br) return 1;
+      return a.id.localeCompare(b.id);
+    };
+    const wsZ = workspace("z", [session({ id: "sz" })]);
+    const wsA = workspace("a", [session({ id: "sa" })]);
+    const wsM = workspace("m", [session({ id: "sm" })]);
+    const sorted = [wsZ, wsA, wsM].sort(cmp);
+    expect(sorted.map((w) => w.id)).toEqual(["a", "m", "z"]);
   });
 });
 

@@ -474,7 +474,8 @@ pub async fn cockpit_prompt(
         };
         if let Ok(storage) = crate::session::Storage::new(&profile) {
             let id_clone = id.clone();
-            let _ = tokio::task::spawn_blocking(move || {
+            let session_id_for_log = id.clone();
+            match tokio::task::spawn_blocking(move || {
                 storage.update(|instances, _groups| {
                     if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
                         inst.touch_last_accessed();
@@ -482,7 +483,20 @@ pub async fn cockpit_prompt(
                     Ok(())
                 })
             })
-            .await;
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(
+                    target: "http.api.cockpit",
+                    session = %session_id_for_log,
+                    "failed to save after triage auto-wake: {e}"
+                ),
+                Err(join_err) => tracing::warn!(
+                    target: "http.api.cockpit",
+                    session = %session_id_for_log,
+                    "spawn_blocking join error during triage auto-wake save: {join_err}"
+                ),
+            }
         }
     }
     // Publish the user's prompt into the event stream BEFORE forwarding

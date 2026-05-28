@@ -71,7 +71,17 @@ export function useRepoGroups(
         const aTier = workspaceTriageTier(a);
         const bTier = workspaceTriageTier(b);
         if (aTier !== bTier) return aTier - bTier;
-        return rankOf(a.id) - rankOf(b.id);
+        // Two unranked workspaces both yield `Infinity`, and
+        // `Infinity - Infinity` is `NaN`; `Array.sort` treats NaN
+        // like equality and silently skips the tie-break, leaving
+        // ordering at the mercy of input order. Compare with `<`/`>`
+        // and fall through to a deterministic id tie-break so the
+        // render order is stable across re-renders.
+        const ar = rankOf(a.id);
+        const br = rankOf(b.id);
+        if (ar < br) return -1;
+        if (ar > br) return 1;
+        return a.id.localeCompare(b.id);
       });
     const sortByActivity = (list: Workspace[]) =>
       [...list].sort(compareWorkspacesByLastActivityDesc);

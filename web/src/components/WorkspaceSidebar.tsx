@@ -57,6 +57,7 @@ import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
 import { reportError } from "../lib/toastBus";
 import {
+  resolveEffectiveSnoozedUntil,
   triageMenuShape,
   triageStateOf,
   workspaceIsPinned,
@@ -275,6 +276,17 @@ function formatDurationSecondsShort(seconds: number): string {
   return remM === 0 ? `${h}h` : `${h}h ${remM}m`;
 }
 
+/** Wall-clock target for an optimistic snooze: `Date.now() + minutes
+ *  * 60_000` as an RFC3339 ISO string. Sits outside the component so
+ *  the `Date.now()` call doesn't trip
+ *  `react-hooks/purity`; the event handler that calls it is itself a
+ *  closure, not a render. The exact value is throwaway (the server's
+ *  response on the next poll is the source of truth), so a few ms
+ *  of jitter is harmless. See #1581. */
+function makeOptimisticSnoozedUntil(minutes: number): string {
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
 /** Compact "time remaining" label for the snooze chip computed once at
  *  render time (no per-second timer, by design: snooze rows poll the
  *  sessions API at the existing cadence and the static label is more
@@ -485,7 +497,6 @@ const SessionRow = memo(function SessionRow({
   const isArchived = workspace.sessions.some((s) => s.archived_at != null);
   const snoozedUntil = workspace.sessions.find((s) => s.snoozed_until)
     ?.snoozed_until ?? null;
-  const isSnoozed = snoozedUntil != null;
   const sessionId = firstSession?.id;
   const navigationSessionId = runningSession?.id ?? firstSession?.id ?? null;
   const sessionPath = navigationSessionId
@@ -524,6 +535,14 @@ const SessionRow = memo(function SessionRow({
   const [optimisticArchived, setOptimisticArchived] = useState<boolean | null>(
     null,
   );
+  // Optimistic `snoozed_until` override. `undefined` = no override
+  // (use the prop), a string = pretend the server already returned
+  // this RFC3339 timestamp, `null` = pretend the server already
+  // unsnoozed. Clears once the prop matches the override on the next
+  // poll, matching the pin / archive pattern above.
+  const [optimisticSnoozedUntil, setOptimisticSnoozedUntil] = useState<
+    string | null | undefined
+  >(undefined);
   // Snooze duration picker. Lives in its own portal-rendered modal,
   // independent of the context menu's lifecycle so the parent-menu
   // dismissal listener cannot close the picker out from under us.
@@ -538,6 +557,15 @@ const SessionRow = memo(function SessionRow({
       setOptimisticArchived(null);
     }
   }, [isArchived, optimisticArchived]);
+  useEffect(() => {
+    if (
+      optimisticSnoozedUntil !== undefined &&
+      ((optimisticSnoozedUntil === null && snoozedUntil == null) ||
+        (optimisticSnoozedUntil != null && snoozedUntil != null))
+    ) {
+      setOptimisticSnoozedUntil(undefined);
+    }
+  }, [snoozedUntil, optimisticSnoozedUntil]);
 
   const togglePin = async () => {
     setContextMenu(null);
@@ -569,8 +597,17 @@ const SessionRow = memo(function SessionRow({
     setContextMenu(null);
     setSnoozeModalOpen(false);
     if (!sessionId) return;
+    // Optimistic flip: render the snooze chip + sink the row before
+    // the PATCH round-trip lands, matching the pin / archive
+    // affordance. For positive minutes we synthesise a target
+    // timestamp; the server is the source of truth and the value is
+    // discarded on the next poll, so a few ms of drift is harmless.
+    const optimisticUntil =
+      minutes == null ? null : makeOptimisticSnoozedUntil(minutes);
+    setOptimisticSnoozedUntil(optimisticUntil);
     const result = await setSessionSnooze(sessionId, minutes);
     if (!result) {
+      setOptimisticSnoozedUntil(undefined);
       reportError(
         minutes == null ? "Failed to unsnooze session" : "Failed to snooze session",
       );
@@ -589,6 +626,11 @@ const SessionRow = memo(function SessionRow({
   // prop catches up (cleared in the effects above).
   const effectivePinned = optimisticPinned ?? isPinned;
   const effectiveArchived = optimisticArchived ?? isArchived;
+  const effectiveSnoozedUntil = resolveEffectiveSnoozedUntil(
+    optimisticSnoozedUntil,
+    snoozedUntil,
+  );
+  const effectiveSnoozed = effectiveSnoozedUntil != null;
 
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -770,7 +812,7 @@ const SessionRow = memo(function SessionRow({
             />
           </span>
           <div className="min-w-0 flex-1">
-            <span className={`flex items-center gap-1.5 text-[13px] md:text-[14px] ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"} ${isFavorited || effectivePinned ? "font-semibold" : ""} ${effectiveArchived || isSnoozed ? "italic opacity-70" : ""}`}>
+            <span className={`flex items-center gap-1.5 text-[13px] md:text-[14px] ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"} ${isFavorited || effectivePinned ? "font-semibold" : ""} ${effectiveArchived || effectiveSnoozed ? "italic opacity-70" : ""}`}>
               {effectivePinned && (
                 <span
                   title="Pinned"
@@ -809,14 +851,14 @@ const SessionRow = memo(function SessionRow({
                   <span className="hidden sm:inline">archived</span>
                 </span>
               )}
-              {!isArchived && isSnoozed && snoozedUntil && (
+              {!effectiveArchived && effectiveSnoozed && effectiveSnoozedUntil && (
                 <span
-                  title={`Snoozed until ${new Date(snoozedUntil).toLocaleString()}`}
+                  title={`Snoozed until ${new Date(effectiveSnoozedUntil).toLocaleString()}`}
                   aria-label="Snoozed"
                   className="shrink-0 inline-flex items-center gap-0.5 rounded border border-surface-700/40 bg-surface-800/40 px-1 py-0 text-[10px] font-mono font-medium text-text-dim"
                 >
                   <Moon className="h-3 w-3" />
-                  <span>{formatSnoozeRemainingShort(snoozedUntil)}</span>
+                  <span>{formatSnoozeRemainingShort(effectiveSnoozedUntil)}</span>
                 </span>
               )}
               {firstSession?.cockpit_mode &&
@@ -938,7 +980,7 @@ const SessionRow = memo(function SessionRow({
                   triageStateOf({
                     isPinned: effectivePinned,
                     isArchived: effectiveArchived,
-                    isSnoozed,
+                    isSnoozed: effectiveSnoozed,
                   }),
                 );
                 return (
