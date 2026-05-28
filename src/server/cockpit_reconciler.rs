@@ -106,11 +106,19 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
     // Snapshot per-target resume inputs under the instances read lock.
     // We then drop the lock so the parallel resume tasks (each ~3s for
     // a fresh spawn) don't pin it.
+    //
+    // Triaged sessions (archived or currently-snoozed) are excluded from
+    // the resume targets so the reconciler does not race the web
+    // archive/snooze handler's worker teardown. Without this skip, the
+    // 2s tick would respawn an archived cockpit worker immediately after
+    // the API handler shuts it down, defeating the archive semantics.
+    // Expired snoozes naturally rejoin via `is_snoozed()` returning
+    // false past the deadline. See #1581.
     let raw_targets: Vec<RawTargetTuple> = {
         let instances = state.instances.read().await;
         instances
             .iter()
-            .filter(|i| i.cockpit_mode)
+            .filter(|i| i.cockpit_mode && !i.is_archived() && !i.is_snoozed())
             .map(|i| {
                 (
                     i.id.clone(),
