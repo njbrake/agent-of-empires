@@ -322,7 +322,7 @@ export function formatSnoozeRemainingShort(snoozedUntilIso: string): string {
 // see each other through a module-scoped global. The document
 // listener checks `ref.current` on every click; rows write to it
 // while dragging and on release.
-const DragSuppressContext = createContext<MutableRefObject<number> | null>(null);
+export const DragSuppressContext = createContext<MutableRefObject<number> | null>(null);
 function useDragSuppressRef(): MutableRefObject<number> {
   const ref = useContext(DragSuppressContext);
   if (!ref) {
@@ -439,7 +439,7 @@ function SortableSessionRow(props: {
   );
 }
 
-const SessionRow = memo(function SessionRow({
+export const SessionRow = memo(function SessionRow({
   workspace,
   isActive,
   onClick,

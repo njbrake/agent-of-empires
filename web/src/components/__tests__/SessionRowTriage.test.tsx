@@ -1,0 +1,311 @@
+// @vitest-environment jsdom
+//
+// RTL coverage for the new triage affordances on the sidebar
+// `SessionRow`: the Pin glyph, the Archive chip, the Snooze chip
+// (with the static remaining-time label), and the optimistic flip
+// invariants. Each case wires the smallest possible Workspace + a
+// DragSuppressContext stub so the row mounts without dragging into
+// the dnd-kit plumbing that the production tree provides.
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { useRef, type ReactNode } from "react";
+
+import {
+  DragSuppressContext,
+  SessionRow,
+} from "../WorkspaceSidebar";
+import type { SessionResponse, Workspace } from "../../lib/types";
+
+function session(over: Partial<SessionResponse> = {}): SessionResponse {
+  return {
+    id: "s1",
+    title: "row title",
+    project_path: "/p",
+    group_path: "/p",
+    tool: "claude",
+    status: "Idle",
+    yolo_mode: false,
+    created_at: "2025-01-01T00:00:00Z",
+    last_accessed_at: null,
+    idle_entered_at: null,
+    last_error: null,
+    branch: null,
+    main_repo_path: null,
+    is_sandboxed: false,
+    favorited: false,
+    has_managed_worktree: false,
+    has_terminal: true,
+    profile: "default",
+    cleanup_defaults: {
+      delete_worktree: false,
+      delete_branch: false,
+      delete_sandbox: false,
+    },
+    remote_owner: null,
+    notify_on_waiting: null,
+    notify_on_idle: null,
+    notify_on_error: null,
+    claude_fullscreen: false,
+    workspace_repos: [],
+    ...over,
+  };
+}
+
+function workspace(id: string, sessions: SessionResponse[]): Workspace {
+  return {
+    id,
+    branch: null,
+    projectPath: "/p",
+    displayName: id,
+    agents: ["claude"],
+    primaryAgent: "claude",
+    status: "idle",
+    sessions,
+  };
+}
+
+function Wrap({ children }: { children: ReactNode }) {
+  const ref = useRef(0);
+  return (
+    <DragSuppressContext.Provider value={ref}>
+      {children}
+    </DragSuppressContext.Provider>
+  );
+}
+
+const fetchSpy = vi.fn<typeof fetch>();
+
+beforeEach(() => {
+  fetchSpy.mockReset();
+  vi.stubGlobal("fetch", fetchSpy);
+  fetchSpy.mockImplementation(async () =>
+    new Response(JSON.stringify({ id: "s1" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
+describe("SessionRow chips", () => {
+  it("renders the Pin glyph when any session is pinned", () => {
+    const ws = workspace("w-pinned", [
+      session({ pinned_at: "2026-01-01T00:00:00Z" }),
+    ]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    expect(screen.queryByLabelText("Pinned")).not.toBeNull();
+    expect(screen.queryByLabelText("Archived")).toBeNull();
+    expect(screen.queryByLabelText("Snoozed")).toBeNull();
+  });
+
+  it("renders the Archived chip when any session is archived", () => {
+    const ws = workspace("w-archived", [
+      session({ archived_at: "2026-01-01T00:00:00Z" }),
+    ]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    expect(screen.queryByLabelText("Archived")).not.toBeNull();
+    expect(screen.queryByLabelText("Pinned")).toBeNull();
+    expect(screen.queryByLabelText("Snoozed")).toBeNull();
+  });
+
+  it("renders the Snoozed chip with a remaining-time label", () => {
+    const future = new Date(Date.now() + 90 * 60 * 1000).toISOString();
+    const ws = workspace("w-snoozed", [session({ snoozed_until: future })]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    const chip = screen.queryByLabelText("Snoozed");
+    expect(chip).not.toBeNull();
+    // Bucket sizes: < 1h → minutes, ≥ 1h → "Nh". 90 minutes falls
+    // into the 1h bucket. Allow ±1 due to rounding.
+    expect(chip!.textContent).toMatch(/1h/);
+    expect(screen.queryByLabelText("Archived")).toBeNull();
+  });
+
+  it("hides the Snoozed chip when archived (archive wins visually)", () => {
+    const ws = workspace("w-both", [
+      session({
+        archived_at: "2026-01-01T00:00:00Z",
+        snoozed_until: "2099-01-01T00:00:00Z",
+      }),
+    ]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    expect(screen.queryByLabelText("Archived")).not.toBeNull();
+    // Visual gate: chip only renders for !effectiveArchived &&
+    // effectiveSnoozed. The data layer prevents both flags from
+    // coexisting at the session level, but defensive rendering
+    // hides the snooze chip if the workspace surfaces both.
+    expect(screen.queryByLabelText("Snoozed")).toBeNull();
+  });
+});
+
+describe("SessionRow context menu", () => {
+  it("shows only the Unpin toggle when pinned", () => {
+    const ws = workspace("w-pinned", [
+      session({ pinned_at: "2026-01-01T00:00:00Z" }),
+    ]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    const row = screen.getByTestId("sidebar-session-row");
+    fireEvent.contextMenu(row);
+    const menu = screen.getByTestId("sidebar-context-menu");
+    expect(menu.textContent).toContain("Unpin");
+    expect(menu.textContent).not.toContain("Archive");
+    expect(menu.textContent).not.toContain("Snooze");
+  });
+
+  it("shows only the Unarchive toggle when archived", () => {
+    const ws = workspace("w-archived", [
+      session({ archived_at: "2026-01-01T00:00:00Z" }),
+    ]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    const menu = screen.getByTestId("sidebar-context-menu");
+    expect(menu.textContent).toContain("Unarchive");
+    expect(menu.textContent).not.toContain("Pin");
+    expect(menu.textContent).not.toContain("Snooze");
+  });
+
+  it("shows only the Unsnooze toggle when snoozed", () => {
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const ws = workspace("w-snoozed", [session({ snoozed_until: future })]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    const menu = screen.getByTestId("sidebar-context-menu");
+    expect(menu.textContent).toContain("Unsnooze");
+    expect(menu.textContent).not.toContain("Pin");
+    expect(menu.textContent).not.toContain("Archive");
+  });
+
+  it("shows Pin / Archive / Snooze… for a live row", () => {
+    const ws = workspace("w-live", [session({})]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    const menu = screen.getByTestId("sidebar-context-menu");
+    expect(menu.textContent).toContain("Pin");
+    expect(menu.textContent).toContain("Archive");
+    expect(menu.textContent).toContain("Snooze…");
+  });
+
+  it("hides the triage section in read-only mode", () => {
+    const ws = workspace("w-live", [session({})]);
+    render(
+      <Wrap>
+        <SessionRow
+          workspace={ws}
+          isActive={false}
+          onClick={() => {}}
+          readOnly
+        />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    const menu = screen.getByTestId("sidebar-context-menu");
+    expect(menu.textContent).not.toContain("Pin");
+    expect(menu.textContent).not.toContain("Archive");
+    expect(menu.textContent).not.toContain("Snooze");
+    expect(menu.textContent).not.toContain("Delete");
+  });
+});
+
+describe("SessionRow triage actions", () => {
+  it("Pin click fires PATCH /api/sessions/:id/pin with { pinned: true }", async () => {
+    const ws = workspace("w-live", [session({ id: "sess-pin-it" })]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    fireEvent.click(screen.getByTestId("sidebar-context-menu-pin"));
+    // Wait for the async handler.
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe("/api/sessions/sess-pin-it/pin");
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(init!.body as string)).toEqual({ pinned: true });
+  });
+
+  it("Archive click fires PATCH /api/sessions/:id/archive with { archived: true, kill_pane: true }", async () => {
+    const ws = workspace("w-live", [session({ id: "sess-arch-it" })]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    fireEvent.click(screen.getByTestId("sidebar-context-menu-archive"));
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe("/api/sessions/sess-arch-it/archive");
+    expect(JSON.parse(init!.body as string)).toEqual({
+      archived: true,
+      kill_pane: true,
+    });
+  });
+
+  it("Snooze… opens the modal (does NOT POST until a preset is picked)", () => {
+    const ws = workspace("w-live", [session({ id: "sess-snooze-it" })]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    fireEvent.click(screen.getByTestId("sidebar-context-menu-snooze"));
+    expect(screen.queryByTestId("snooze-modal")).not.toBeNull();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("Unsnooze click fires PATCH /api/sessions/:id/snooze with { minutes: null }", async () => {
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const ws = workspace("w-snoozed", [
+      session({ id: "sess-unsnooze-it", snoozed_until: future }),
+    ]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    fireEvent.click(screen.getByTestId("sidebar-context-menu-unsnooze"));
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe("/api/sessions/sess-unsnooze-it/snooze");
+    expect(JSON.parse(init!.body as string)).toEqual({ minutes: null });
+  });
+});

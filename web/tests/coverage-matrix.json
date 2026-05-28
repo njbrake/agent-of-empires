@@ -1927,6 +1927,28 @@
       "components": [
         "web/src/components/WorkspaceSidebar.tsx"
       ]
+    },
+    {
+      "id": "triage.session-row-chips",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/components/__tests__/SessionRowTriage.test.tsx"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "triage.cockpit-banners",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/components/cockpit/__tests__/TriageBanners.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
     }
   ]
 }
