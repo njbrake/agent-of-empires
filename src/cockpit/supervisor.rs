@@ -47,26 +47,52 @@ const RESPAWN_BACKOFF: Duration = Duration::from_millis(500);
 
 /// Look up the stored ACP session id for `session_id` and, if present,
 /// fire the experimental `session/delete` RPC against the live worker.
-/// Logs the outcome at a level matched to its severity; all outcomes
-/// are non-fatal and the caller proceeds to shutdown + SIGTERM. See
+/// Logs the outcome at a level matched to its severity, tagging with
+/// the adapter kind so operators can tell `claude-agent-acp` apart
+/// from `aoe-agent` / `codex` / `opencode` / future adapters in
+/// debug.log without bouncing through the registry. All outcomes are
+/// non-fatal and the caller proceeds to shutdown + SIGTERM. See
 /// `AcpClient::delete_session` and #1404.
 async fn try_session_delete(client: &AcpClient, session_id: &str) {
-    let acp_id = match super::worker_registry::load(session_id) {
-        Ok(Some(rec)) => rec.stored_acp_session_id,
-        Ok(None) => None,
-        Err(e) => {
-            debug!(
+    // worker_registry::load reads from disk (sync I/O). Offload to
+    // the blocking pool so we don't park a Tokio worker thread on a
+    // delete path that the supervisor holds the per-instance API
+    // lock through.
+    let session_id_owned = session_id.to_string();
+    let loaded =
+        tokio::task::spawn_blocking(move || super::worker_registry::load(&session_id_owned)).await;
+    let record = match loaded {
+        Ok(Ok(rec)) => rec,
+        Ok(Err(e)) => {
+            // Registry read failed (disk error, malformed JSON, etc.).
+            // Skipping `session/delete` here means we lose adapter-side
+            // cleanup for a session that may have a stored ACP id, so
+            // surface at warn even though shutdown still proceeds.
+            warn!(
                 target: "cockpit.acp",
                 session = %session_id,
                 "skipping session/delete: worker_registry load failed: {e}"
             );
             return;
         }
+        Err(e) => {
+            warn!(
+                target: "cockpit.acp",
+                session = %session_id,
+                "skipping session/delete: registry load task join failed: {e}"
+            );
+            return;
+        }
+    };
+    let (acp_id, adapter_kind) = match record {
+        Some(rec) => (rec.stored_acp_session_id, rec.agent_key),
+        None => (None, String::new()),
     };
     let Some(acp_id) = acp_id else {
         debug!(
             target: "cockpit.acp",
             session = %session_id,
+            adapter = %adapter_kind,
             "skipping session/delete: no stored ACP session id (pre-handshake or never assigned)"
         );
         return;
@@ -78,19 +104,22 @@ async fn try_session_delete(client: &AcpClient, session_id: &str) {
         DeleteSessionOutcome::Deleted => debug!(
             target: "cockpit.acp",
             session = %session_id,
+            adapter = %adapter_kind,
             acp_session_id = %acp_id,
             elapsed_ms,
             "session/delete RPC succeeded"
         ),
-        DeleteSessionOutcome::Unsupported => debug!(
+        DeleteSessionOutcome::UnsupportedMethod => debug!(
             target: "cockpit.acp",
             session = %session_id,
+            adapter = %adapter_kind,
             acp_session_id = %acp_id,
-            "adapter does not advertise session/delete; proceeding to SIGTERM"
+            "adapter does not support session/delete; proceeding to SIGTERM"
         ),
         DeleteSessionOutcome::TimedOut => warn!(
             target: "cockpit.acp",
             session = %session_id,
+            adapter = %adapter_kind,
             acp_session_id = %acp_id,
             elapsed_ms,
             "session/delete RPC timed out; proceeding to SIGTERM"
@@ -98,6 +127,7 @@ async fn try_session_delete(client: &AcpClient, session_id: &str) {
         DeleteSessionOutcome::Failed(msg) => warn!(
             target: "cockpit.acp",
             session = %session_id,
+            adapter = %adapter_kind,
             acp_session_id = %acp_id,
             elapsed_ms,
             "session/delete RPC failed: {msg}; proceeding to SIGTERM"

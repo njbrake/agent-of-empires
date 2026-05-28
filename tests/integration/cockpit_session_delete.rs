@@ -136,8 +136,8 @@ async fn session_delete_unsupported_when_capability_absent() {
     let _ = client.shutdown().await;
 
     assert!(
-        matches!(outcome, DeleteSessionOutcome::Unsupported),
-        "expected Unsupported; got {outcome:?}"
+        matches!(outcome, DeleteSessionOutcome::UnsupportedMethod),
+        "expected UnsupportedMethod; got {outcome:?}"
     );
 }
 

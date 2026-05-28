@@ -202,6 +202,12 @@ pub(crate) fn classify_rate_limit_from_message(message: &str) -> Option<RateLimi
 #[serde(rename_all = "camelCase")]
 struct DeleteSessionRequest {
     session_id: agent_client_protocol::schema::SessionId,
+    /// Emit `_meta: {}` so adapters that validate against the strict
+    /// `unstable_session_delete` schema accept the request. Optional
+    /// in the TS schema, but a defensive default avoids `-32602
+    /// invalid_params` from future adapter validators.
+    #[serde(rename = "_meta")]
+    meta: serde_json::Value,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, JsonRpcResponse)]
@@ -216,13 +222,19 @@ pub enum DeleteSessionOutcome {
     /// Adapter returned JSON-RPC `-32601 method_not_found`. Expected on
     /// adapters that don't advertise `sessionCapabilities.delete`
     /// (`aoe-agent`, `codex`, `opencode`, older `claude-agent-acp`).
-    Unsupported,
+    UnsupportedMethod,
     /// The bounded wait elapsed before the adapter responded.
     TimedOut,
     /// Any other failure (non-`-32601` JSON-RPC error, transport drop,
     /// dispatch channel closed). Carries the reason for the log line.
     Failed(String),
 }
+
+/// Adapter error messages flow through here verbatim. Cap at this many
+/// bytes before logging so a chatty or malicious adapter cannot bloat
+/// `debug.log`. 256 leaves room for the prefix while preserving the
+/// JSON-RPC error code and a useful slice of the message.
+const ACP_DELETE_ERROR_MSG_MAX: usize = 256;
 
 /// Hard cap on the wait for `session/delete`. Adapters that succeed
 /// (claude-agent-acp clears a local file) complete in tens of ms; the
@@ -1527,29 +1539,38 @@ impl AcpClient {
             return DeleteSessionOutcome::Failed("client not running".into());
         };
         let (tx, rx) = oneshot::channel();
-        if cmd_tx
-            .send(ClientCmd::DeleteSession {
-                acp_session_id,
-                respond_to: tx,
-            })
-            .await
-            .is_err()
-        {
-            return DeleteSessionOutcome::Failed("connect task gone".into());
-        }
-        // Outer guard: the connect task wraps the request in its own
-        // `ACP_SESSION_DELETE_TIMEOUT`. Wait slightly longer here so
-        // the inner classification (Deleted/Unsupported/Failed) wins
-        // when the task is healthy, while still bounding the caller
-        // when the task is wedged.
+        // Outer guard wraps BOTH the cmd_tx send AND the response wait.
+        // The mpsc send is `await`-able and can block if the connect
+        // task is wedged or the channel is saturated; without the
+        // guard a stalled worker would freeze the delete path
+        // indefinitely while the supervisor holds the per-instance
+        // lock at `sessions.rs:1361`. Wait slightly longer than the
+        // in-task `ACP_SESSION_DELETE_TIMEOUT` so the inner
+        // classification (Deleted/UnsupportedMethod/Failed) wins when
+        // the task is healthy.
+        let request = async {
+            if cmd_tx
+                .send(ClientCmd::DeleteSession {
+                    acp_session_id,
+                    respond_to: tx,
+                })
+                .await
+                .is_err()
+            {
+                return DeleteSessionOutcome::Failed("connect task gone".into());
+            }
+            match rx.await {
+                Ok(outcome) => outcome,
+                Err(_) => DeleteSessionOutcome::Failed("respond channel closed".into()),
+            }
+        };
         match tokio::time::timeout(
             ACP_SESSION_DELETE_TIMEOUT + std::time::Duration::from_millis(500),
-            rx,
+            request,
         )
         .await
         {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(_)) => DeleteSessionOutcome::Failed("respond channel closed".into()),
+            Ok(outcome) => outcome,
             Err(_) => DeleteSessionOutcome::TimedOut,
         }
     }
@@ -3122,19 +3143,29 @@ fn handle_delete_session_cmd(
     respond_to: oneshot::Sender<DeleteSessionOutcome>,
 ) {
     let target = agent_client_protocol::schema::SessionId::from(acp_session_id);
-    let sent = connection.send_request(DeleteSessionRequest { session_id: target });
+    // `block_task()` is documented as safe to await from a spawned
+    // task: it waits on the per-request oneshot the main connection
+    // task feeds via its inbound pump, so the dispatch loop keeps
+    // running while this future is parked. The spawn here keeps the
+    // cmd_rx select arm responsive to other commands during the
+    // round-trip, mirroring the pattern used by SetMode /
+    // SetConfigOption.
+    let sent = connection.send_request(DeleteSessionRequest {
+        session_id: target,
+        meta: serde_json::Value::Object(serde_json::Map::new()),
+    });
     tokio::spawn(async move {
         let outcome =
             match tokio::time::timeout(ACP_SESSION_DELETE_TIMEOUT, sent.block_task()).await {
                 Ok(Ok(_resp)) => DeleteSessionOutcome::Deleted,
                 Ok(Err(err)) => {
                     if err.code == ErrorCode::MethodNotFound {
-                        DeleteSessionOutcome::Unsupported
+                        DeleteSessionOutcome::UnsupportedMethod
                     } else {
                         DeleteSessionOutcome::Failed(format!(
                             "acp error {}: {}",
                             i32::from(err.code),
-                            err.message
+                            truncate_for_log(&err.message, ACP_DELETE_ERROR_MSG_MAX)
                         ))
                     }
                 }
@@ -3142,6 +3173,24 @@ fn handle_delete_session_cmd(
             };
         let _ = respond_to.send(outcome);
     });
+}
+
+/// Defensive truncation of adapter-provided strings before they land
+/// in `debug.log`. A malformed or malicious adapter could emit a
+/// multi-megabyte message; this caps the allocation while preserving
+/// a useful prefix and respecting UTF-8 boundaries.
+fn truncate_for_log(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(end + 3);
+    out.push_str(&s[..end]);
+    out.push_str("...");
+    out
 }
 
 #[allow(clippy::too_many_arguments)]

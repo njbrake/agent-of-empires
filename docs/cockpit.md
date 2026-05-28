@@ -447,22 +447,24 @@ Practical implications:
 
 ## Session deletion
 
-When you delete a cockpit session, aoe first fires the experimental
-`session/delete` ACP request against the live worker (bounded by a
-2-second timeout) and then proceeds with the existing kill path
+When you delete a cockpit session, aoe opportunistically fires the
+experimental `session/delete` ACP request against the live worker
+(bounded by a 2-second timeout) whenever a stored ACP session id
+exists, and then proceeds with the existing kill path
 (`session/cancel` for in-flight prompts, then SIGTERM on the runner,
-then on-disk cleanup). Adapters that advertise
-`sessionCapabilities.delete: {}` in their initialize response
-(claude-agent-acp 0.36+) use the request to release adapter-side
-persisted state, for example clearing the on-disk Claude session
+then on-disk cleanup). aoe does not inspect the initialize-time
+capability flag: adapters that implement the method use the request
+to release adapter-side persisted state, for example
+`claude-agent-acp 0.37.0+` clearing the on-disk Claude session
 record so a recreated session id does not inherit prior transcripts.
-Adapters that do not advertise the capability (`aoe-agent`, `codex`,
+Adapters that do not implement the method (`aoe-agent`, `codex`,
 `opencode`, older `claude-agent-acp`) reply with JSON-RPC
-`-32601 method_not_found`; aoe treats that as expected and proceeds
-to SIGTERM without the operator noticing. A wedged adapter is bounded
-by the 2-second timeout, so delete never stalls the UI. Outcomes are
-logged under `target = "cockpit.acp"` in `debug.log`: success and
-unsupported land at `debug`, timeout and other errors at `warn`. See
+`-32601 method_not_found`; aoe logs that at `debug` and proceeds to
+SIGTERM. A wedged adapter is bounded by the 2-second timeout, so
+delete never stalls the UI. Outcomes are logged under
+`target = "cockpit.acp"` in `debug.log` with an `adapter=<agent_key>`
+field so operators can correlate behavior across adapters: success
+and `-32601` land at `debug`, timeout and other errors at `warn`. See
 [#1404](https://github.com/agent-of-empires/agent-of-empires/issues/1404).
 
 ## Conversation persistence
