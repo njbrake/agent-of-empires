@@ -346,12 +346,18 @@ base(
       });
 
       const warnings = created.warnings ?? [];
-      const secondaryWarning = warnings.find(
-        (w) => w.includes("git fetch") && w.includes(secondary),
+      // The warning shape comes from `record_fetch_warning` in
+      // src/git/worktree.rs: `git fetch {remote} {branch} failed for
+      // {repo}: {detail}`. Pin the format so a future rewording of
+      // the warning forces this test to be reconsidered (it's a
+      // user-facing string the wizard pipes to a toast).
+      const warningPattern = new RegExp(
+        `^git fetch \\S+ \\S+ failed for ${secondary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: .+`,
       );
+      const secondaryWarning = warnings.find((w) => warningPattern.test(w));
       expect(
         secondaryWarning,
-        `expected fetch-failure warning mentioning ${secondary}, got: ${JSON.stringify(warnings)}`,
+        `expected warning matching ${warningPattern} for ${secondary}, got: ${JSON.stringify(warnings)}`,
       ).toBeDefined();
 
       // Workspace was still created. Both worktree dirs exist.
