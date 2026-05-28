@@ -56,6 +56,29 @@ pub struct SessionResponse {
     /// favorited rows and render the `*` marker without re-implementing
     /// the predicate. Cross-feature parity with the TUI's `f`/`F` keybind.
     pub favorited: bool,
+    /// RFC3339 timestamp at which the session was web-pinned, or omitted
+    /// when not pinned. Distinct from `favorited`: favorite is the TUI
+    /// within-tier attention-sort signal, while pin is the hard
+    /// top-of-sort surfacing primitive used by the web sidebar. The
+    /// client derives a "pinned" boolean as `pinned_at != null`; no
+    /// separate boolean field is exposed (the timestamp itself is the
+    /// source of truth, matching `archived_at` and `snoozed_until`). See
+    /// #1581.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<String>,
+    /// RFC3339 timestamp at which the session was archived, or omitted
+    /// when not archived. The web sidebar sinks archived workspaces into
+    /// the "Snoozed & archived" collapsible section. See #1581.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    /// RFC3339 timestamp at which a snooze expires, or omitted when not
+    /// snoozed. The web sidebar treats a non-null future timestamp the
+    /// same as archived (sinks the workspace) and renders the remaining
+    /// duration. Expired timestamps are stale-but-harmless: the
+    /// `Instance::is_snoozed()` predicate returns false past the deadline,
+    /// and the response simply omits the field. See #1581.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snoozed_until: Option<String>,
     pub has_managed_worktree: bool,
     pub has_terminal: bool,
     pub profile: String,
@@ -198,6 +221,20 @@ impl SessionResponse {
             is_sandboxed: inst.is_sandboxed(),
             scratch: inst.scratch,
             favorited: inst.is_favorited(),
+            pinned_at: inst.pinned_at.map(|t| t.to_rfc3339()),
+            archived_at: inst.archived_at.map(|t| t.to_rfc3339()),
+            // Surface `snoozed_until` only when the snooze is still
+            // active. `is_snoozed()` returns false once the timestamp
+            // has expired, even though the persisted field stays set
+            // until the next mutation rewrites it. Mirroring that
+            // semantics on the wire prevents the web sidebar from
+            // showing a "snoozed 0m" chip on rows that have already
+            // woken on disk.
+            snoozed_until: if inst.is_snoozed() {
+                inst.snoozed_until.map(|t| t.to_rfc3339())
+            } else {
+                None
+            },
             has_managed_worktree: inst
                 .worktree_info
                 .as_ref()
