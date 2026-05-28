@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
+use agent_client_protocol::schema::ErrorCode;
 use agent_client_protocol::schema::{
     CancelNotification, ClientCapabilities, ContentBlock, CreateTerminalRequest,
     CreateTerminalResponse, FileSystemCapabilities, InitializeRequest, KillTerminalRequest,
@@ -28,7 +29,10 @@ use agent_client_protocol::schema::{
     TerminalOutputRequest, TerminalOutputResponse, TextContent, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
-use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder};
+use agent_client_protocol::{
+    Agent, ByteStreams, Client, ConnectionTo, JsonRpcRequest, JsonRpcResponse, Responder,
+};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
@@ -184,6 +188,49 @@ pub(crate) fn classify_rate_limit_from_message(message: &str) -> Option<RateLimi
     })
 }
 
+/// Experimental `session/delete` ACP request. Adapters advertising
+/// `sessionCapabilities.delete: {}` (claude-agent-acp >= 0.36) handle
+/// this by releasing adapter-side state for the session (e.g. clearing
+/// the persisted Claude session record on disk). Other adapters reply
+/// with `-32601 method_not_found` and the supervisor falls through to
+/// the existing SIGTERM path. The Rust ACP schema crate (0.12) does
+/// not yet expose `SessionCapabilities.delete`, so the request type is
+/// defined here against the wire format from the TypeScript SDK. See
+/// #1404.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonRpcRequest)]
+#[request(method = "session/delete", response = DeleteSessionResponse)]
+#[serde(rename_all = "camelCase")]
+struct DeleteSessionRequest {
+    session_id: agent_client_protocol::schema::SessionId,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, JsonRpcResponse)]
+struct DeleteSessionResponse {}
+
+/// Outcome of an experimental `session/delete` call. Every variant is
+/// non-fatal; the supervisor logs and proceeds to SIGTERM regardless.
+#[derive(Debug)]
+pub enum DeleteSessionOutcome {
+    /// Adapter accepted the request and returned a successful response.
+    Deleted,
+    /// Adapter returned JSON-RPC `-32601 method_not_found`. Expected on
+    /// adapters that don't advertise `sessionCapabilities.delete`
+    /// (`aoe-agent`, `codex`, `opencode`, older `claude-agent-acp`).
+    Unsupported,
+    /// The bounded wait elapsed before the adapter responded.
+    TimedOut,
+    /// Any other failure (non-`-32601` JSON-RPC error, transport drop,
+    /// dispatch channel closed). Carries the reason for the log line.
+    Failed(String),
+}
+
+/// Hard cap on the wait for `session/delete`. Adapters that succeed
+/// (claude-agent-acp clears a local file) complete in tens of ms; the
+/// timeout protects the delete path from a wedged adapter. Not a
+/// `CockpitConfig` field on purpose: this is best-effort experimental
+/// cleanup with no operator-visible failure mode.
+const ACP_SESSION_DELETE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Configuration for spawning an ACP agent.
 #[derive(Debug, Clone)]
 pub struct SpawnConfig {
@@ -236,6 +283,14 @@ enum ClientCmd {
     SetConfigOption {
         config_id: String,
         value: String,
+    },
+    /// Send the experimental `session/delete` RPC for the given ACP
+    /// session id and report the outcome via `respond_to`. Issued by
+    /// the supervisor before the existing shutdown path during cockpit
+    /// session deletion. See #1404.
+    DeleteSession {
+        acp_session_id: String,
+        respond_to: oneshot::Sender<DeleteSessionOutcome>,
     },
     Shutdown,
 }
@@ -1455,6 +1510,48 @@ impl AcpClient {
             .resolver
             .send(ApprovalResolutionMessage::Cancelled)
             .map_err(|_| AcpError::AgentExited)
+    }
+
+    /// Best-effort experimental `session/delete` RPC. Sent before
+    /// `shutdown` during cockpit session deletion so adapters that
+    /// persist session-side state (claude-agent-acp clears the on-disk
+    /// Claude session record) get a chance to clean up before SIGTERM.
+    ///
+    /// All outcomes are non-fatal. Adapters that don't implement the
+    /// method return `-32601 method_not_found` and surface as
+    /// `Unsupported`; the supervisor proceeds to the existing kill
+    /// path either way. Bounded by `ACP_SESSION_DELETE_TIMEOUT` so a
+    /// wedged adapter cannot stall delete. See #1404.
+    pub async fn delete_session(&self, acp_session_id: String) -> DeleteSessionOutcome {
+        let Some(cmd_tx) = self.cmd_tx.as_ref() else {
+            return DeleteSessionOutcome::Failed("client not running".into());
+        };
+        let (tx, rx) = oneshot::channel();
+        if cmd_tx
+            .send(ClientCmd::DeleteSession {
+                acp_session_id,
+                respond_to: tx,
+            })
+            .await
+            .is_err()
+        {
+            return DeleteSessionOutcome::Failed("connect task gone".into());
+        }
+        // Outer guard: the connect task wraps the request in its own
+        // `ACP_SESSION_DELETE_TIMEOUT`. Wait slightly longer here so
+        // the inner classification (Deleted/Unsupported/Failed) wins
+        // when the task is healthy, while still bounding the caller
+        // when the task is wedged.
+        match tokio::time::timeout(
+            ACP_SESSION_DELETE_TIMEOUT + std::time::Duration::from_millis(500),
+            rx,
+        )
+        .await
+        {
+            Ok(Ok(outcome)) => outcome,
+            Ok(Err(_)) => DeleteSessionOutcome::Failed("respond channel closed".into()),
+            Err(_) => DeleteSessionOutcome::TimedOut,
+        }
     }
 
     /// Shutdown the connection task and kill the subprocess.
@@ -3012,6 +3109,41 @@ fn extract_diff_from_locations(
     None
 }
 
+/// Dispatch the experimental `session/delete` RPC from the connect
+/// task's cmd_rx arm. The wait is detached via `tokio::spawn` so the
+/// cmd_rx select arm keeps polling other commands during the
+/// round-trip; the outcome is delivered to the caller via the
+/// `respond_to` oneshot. Bounded by `ACP_SESSION_DELETE_TIMEOUT` so a
+/// wedged adapter still resolves the oneshot in time for the caller's
+/// outer guard. See #1404.
+fn handle_delete_session_cmd(
+    connection: &ConnectionTo<Agent>,
+    acp_session_id: String,
+    respond_to: oneshot::Sender<DeleteSessionOutcome>,
+) {
+    let target = agent_client_protocol::schema::SessionId::from(acp_session_id);
+    let sent = connection.send_request(DeleteSessionRequest { session_id: target });
+    tokio::spawn(async move {
+        let outcome =
+            match tokio::time::timeout(ACP_SESSION_DELETE_TIMEOUT, sent.block_task()).await {
+                Ok(Ok(_resp)) => DeleteSessionOutcome::Deleted,
+                Ok(Err(err)) => {
+                    if err.code == ErrorCode::MethodNotFound {
+                        DeleteSessionOutcome::Unsupported
+                    } else {
+                        DeleteSessionOutcome::Failed(format!(
+                            "acp error {}: {}",
+                            i32::from(err.code),
+                            err.message
+                        ))
+                    }
+                }
+                Err(_) => DeleteSessionOutcome::TimedOut,
+            };
+        let _ = respond_to.send(outcome);
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_connection_task<W, R>(
     transport: ByteStreams<W, R>,
@@ -4018,6 +4150,16 @@ async fn run_connection_task<W, R>(
                                                 }
                                             });
                                         }
+                                        Some(ClientCmd::DeleteSession {
+                                            acp_session_id: target_id,
+                                            respond_to,
+                                        }) => {
+                                            handle_delete_session_cmd(
+                                                &connection,
+                                                target_id,
+                                                respond_to,
+                                            );
+                                        }
                                         Some(ClientCmd::Prompt(rejected_text)) => {
                                             // Surface the dropped prompt
                                             // to the UI so the user can
@@ -4154,6 +4296,12 @@ async fn run_connection_task<W, R>(
                                 }
                             }
                         });
+                    }
+                    Some(ClientCmd::DeleteSession {
+                        acp_session_id: target_id,
+                        respond_to,
+                    }) => {
+                        handle_delete_session_cmd(&connection, target_id, respond_to);
                     }
                     Some(ClientCmd::SetConfigOption { config_id, value }) => {
                         info!(

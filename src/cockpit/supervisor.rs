@@ -29,7 +29,7 @@ use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use super::acp_client::{AcpClient, AcpError, SpawnConfig};
+use super::acp_client::{AcpClient, AcpError, DeleteSessionOutcome, SpawnConfig};
 use super::agent_registry::{AgentRegistry, AgentSpec};
 use super::approvals::{ApprovalDecision, Nonce};
 use super::state::{CockpitSessionId, Event};
@@ -44,6 +44,66 @@ const RESTART_WINDOW: Duration = Duration::from_secs(60);
 /// Brief backoff before respawning an exited worker so we don't
 /// hot-loop when the agent process crashes immediately on startup.
 const RESPAWN_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Look up the stored ACP session id for `session_id` and, if present,
+/// fire the experimental `session/delete` RPC against the live worker.
+/// Logs the outcome at a level matched to its severity; all outcomes
+/// are non-fatal and the caller proceeds to shutdown + SIGTERM. See
+/// `AcpClient::delete_session` and #1404.
+async fn try_session_delete(client: &AcpClient, session_id: &str) {
+    let acp_id = match super::worker_registry::load(session_id) {
+        Ok(Some(rec)) => rec.stored_acp_session_id,
+        Ok(None) => None,
+        Err(e) => {
+            debug!(
+                target: "cockpit.acp",
+                session = %session_id,
+                "skipping session/delete: worker_registry load failed: {e}"
+            );
+            return;
+        }
+    };
+    let Some(acp_id) = acp_id else {
+        debug!(
+            target: "cockpit.acp",
+            session = %session_id,
+            "skipping session/delete: no stored ACP session id (pre-handshake or never assigned)"
+        );
+        return;
+    };
+    let started = Instant::now();
+    let outcome = client.delete_session(acp_id.clone()).await;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    match &outcome {
+        DeleteSessionOutcome::Deleted => debug!(
+            target: "cockpit.acp",
+            session = %session_id,
+            acp_session_id = %acp_id,
+            elapsed_ms,
+            "session/delete RPC succeeded"
+        ),
+        DeleteSessionOutcome::Unsupported => debug!(
+            target: "cockpit.acp",
+            session = %session_id,
+            acp_session_id = %acp_id,
+            "adapter does not advertise session/delete; proceeding to SIGTERM"
+        ),
+        DeleteSessionOutcome::TimedOut => warn!(
+            target: "cockpit.acp",
+            session = %session_id,
+            acp_session_id = %acp_id,
+            elapsed_ms,
+            "session/delete RPC timed out; proceeding to SIGTERM"
+        ),
+        DeleteSessionOutcome::Failed(msg) => warn!(
+            target: "cockpit.acp",
+            session = %session_id,
+            acp_session_id = %acp_id,
+            elapsed_ms,
+            "session/delete RPC failed: {msg}; proceeding to SIGTERM"
+        ),
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum SupervisorError {
@@ -1452,6 +1512,16 @@ impl<S: BroadcastSink> Supervisor<S> {
         if let Some(handle) = workers.remove(session_id) {
             // Worker is alive — tear it down.
             drop(workers);
+            // Best-effort experimental `session/delete` RPC before
+            // SIGTERM. Adapters that advertise
+            // `sessionCapabilities.delete: {}` (claude-agent-acp >= 0.36)
+            // release adapter-side persisted state here. Other
+            // adapters return -32601 and we proceed to the existing
+            // kill path either way. Bounded by
+            // `ACP_SESSION_DELETE_TIMEOUT` inside `delete_session`
+            // (~2s) so a wedged adapter cannot stall the user's
+            // delete. See #1404.
+            try_session_delete(&handle.client, session_id).await;
             let _ = handle.client.shutdown().await;
             handle.drain_task.abort();
             // SIGTERM the runner (if there is one) so the agent
