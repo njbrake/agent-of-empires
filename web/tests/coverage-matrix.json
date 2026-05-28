@@ -1941,6 +1941,18 @@
       ]
     },
     {
+      "id": "sidebar.context-menu-clamp",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/lib/__tests__/menuPosition.test.ts"
+      ],
+      "components": [
+        "web/src/lib/menuPosition.ts",
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
       "id": "triage.session-row-chips",
       "kind": "vitest",
       "risk": "medium",

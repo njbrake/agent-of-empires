@@ -4,6 +4,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -54,6 +55,7 @@ import {
   setSessionSnooze,
 } from "../lib/api";
 import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
+import { clampMenuPosition } from "../lib/menuPosition";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
 import { reportError } from "../lib/toastBus";
 import {
@@ -664,6 +666,22 @@ export const SessionRow = memo(function SessionRow({
   useEffect(() => {
     if (renaming) renameRef.current?.select();
   }, [renaming]);
+
+  useLayoutEffect(() => {
+    if (!contextMenu || !menuRef.current) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    const next = clampMenuPosition({
+      x: contextMenu.x,
+      y: contextMenu.y,
+      menuWidth: rect.width,
+      menuHeight: rect.height,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    });
+    if (next.x !== contextMenu.x || next.y !== contextMenu.y) {
+      setContextMenu(next);
+    }
+  }, [contextMenu]);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -1374,6 +1392,22 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
   useEffect(() => {
     if (renaming) renameRef.current?.select();
   }, [renaming]);
+
+  useLayoutEffect(() => {
+    if (!contextMenu || !menuRef.current) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    const next = clampMenuPosition({
+      x: contextMenu.x,
+      y: contextMenu.y,
+      menuWidth: rect.width,
+      menuHeight: rect.height,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    });
+    if (next.x !== contextMenu.x || next.y !== contextMenu.y) {
+      setContextMenu(next);
+    }
+  }, [contextMenu]);
 
   useEffect(() => {
     if (!contextMenu) return;
