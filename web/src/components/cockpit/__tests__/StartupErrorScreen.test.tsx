@@ -22,14 +22,14 @@ describe("StartupErrorScreen", () => {
           kind: "incompatible_agent_version",
           package_name: "@agentclientprotocol/claude-agent-acp",
           installed: "0.32.0",
-          required: "0.37.0",
+          required: "0.38.0",
           install_command:
             "npm install -g @agentclientprotocol/claude-agent-acp@latest",
         }}
       />,
     );
     expect(container.textContent).toContain("0.32.0");
-    expect(container.textContent).toContain("0.37.0");
+    expect(container.textContent).toContain("0.38.0");
     expect(container.textContent).toContain(
       "@agentclientprotocol/claude-agent-acp",
     );
@@ -81,14 +81,14 @@ describe("StartupErrorScreen", () => {
           kind: "unparseable_agent_version",
           package_name: "@agentclientprotocol/claude-agent-acp",
           raw_version: "not-semver",
-          required: "0.37.0",
+          required: "0.38.0",
           install_command:
             "npm install -g @agentclientprotocol/claude-agent-acp@latest",
         }}
       />,
     );
     expect(container.textContent).toContain("not-semver");
-    expect(container.textContent).toContain("0.37.0");
+    expect(container.textContent).toContain("0.38.0");
   });
 
   it("renders unsupported_protocol_version without an install command", () => {
