@@ -445,7 +445,7 @@ impl HomeView {
             settings.render(frame, area, theme);
             // Render unsaved changes confirmation dialog over settings
             if self.settings_close_confirm {
-                if let Some(dialog) = &self.confirm_dialog {
+                if let Some(dialog) = &mut self.confirm_dialog {
                     dialog.render(frame, area, theme);
                 }
             }
@@ -614,6 +614,10 @@ impl HomeView {
             tool_picker_dialog,
             send_message_dialog,
             update_confirm_dialog,
+            // context_menu renders last so its small popup sits on top of
+            // any underlying dialog (e.g. an info dialog opened by a
+            // gated rename/delete attempt).
+            context_menu,
         );
     }
 

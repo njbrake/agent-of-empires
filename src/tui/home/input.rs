@@ -12,11 +12,11 @@ use crate::tui::app::Action;
 #[cfg(feature = "serve")]
 use crate::tui::dialogs::ServeAction;
 use crate::tui::dialogs::{
-    builtin_commands, CommandPaletteDialog, ConfirmDialog, DeleteDialogConfig, DialogResult,
-    GroupDeleteOptionsDialog, HookTrustAction, HooksInstallDialog, InfoDialog, NewSessionData,
-    NewSessionDialog, NoAgentsAction, PaletteAction, PaletteCommand, PaletteGroup,
-    ProfilePickerAction, ProjectsDialog, RenameDialog, RenameMode, RestartDialog,
-    SendMessageDialog, UnifiedDeleteDialog,
+    builtin_commands, CommandPaletteDialog, ConfirmDialog, ContextMenuAction, ContextMenuDialog,
+    DeleteDialogConfig, DialogResult, GroupDeleteOptionsDialog, HookTrustAction,
+    HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog, NoAgentsAction,
+    PaletteAction, PaletteCommand, PaletteGroup, ProfilePickerAction, ProjectsDialog, RenameDialog,
+    RenameMode, RestartDialog, SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::responsive;
@@ -211,6 +211,24 @@ impl HomeView {
 
     pub fn hit_diff(&self, col: u16, row: u16) -> bool {
         self.diff_area.contains(Position::from((col, row)))
+    }
+
+    /// Forward a left-click to the diff view's file-list panel. No-op
+    /// when no diff view is open.
+    pub fn handle_diff_click(&mut self, col: u16, row: u16) {
+        if let Some(view) = &mut self.diff_view {
+            view.handle_click(col, row);
+        }
+    }
+
+    /// Forward a hover event to the diff view's file-list panel.
+    /// Returns true when the focused file changed.
+    pub fn handle_diff_hover(&mut self, col: u16, row: u16) -> bool {
+        if let Some(view) = &mut self.diff_view {
+            view.handle_hover(col, row)
+        } else {
+            false
+        }
     }
 
     fn open_tool_picker(&mut self) {
@@ -553,6 +571,34 @@ impl HomeView {
     /// Only the destructive delete dialog wires Yes/No clicks today;
     /// the existing modals continue to swallow mouse events implicitly
     /// via `has_dialog()` gates in the other handlers.
+    /// Dispatch the Submit branch of a confirm dialog. Returns
+    /// `Some(Action)` for confirm actions that emit a TUI action
+    /// (`stop_session`, `quit_during_creation`); side-effect-only
+    /// actions (`delete_group`, `force_remove_session`) run inline and
+    /// return None. Shared by the keyboard Enter path and the
+    /// mouse-click path so both flows produce the same end state.
+    pub(super) fn dispatch_confirm_submit(&mut self, action: &str) -> Option<Action> {
+        match action {
+            "delete_group" => {
+                if let Err(e) = self.delete_selected_group() {
+                    tracing::error!(target: "tui.input", "Failed to delete group: {}", e);
+                }
+                None
+            }
+            "stop_session" => self.pending_stop_session.take().map(Action::StopSession),
+            "force_remove_session" => {
+                if let Some(session_id) = self.pending_force_remove_session.take() {
+                    if let Err(e) = self.force_remove_session(&session_id) {
+                        tracing::error!(target: "tui.input", "Failed to force remove session: {}", e);
+                    }
+                }
+                None
+            }
+            "quit_during_creation" => Some(Action::Quit),
+            _ => None,
+        }
+    }
+
     pub fn handle_dialog_click(&mut self, col: u16, row: u16) -> bool {
         if let Some(dialog) = &mut self.unified_delete_dialog {
             if let Some(result) = dialog.handle_click(col, row) {
@@ -570,10 +616,283 @@ impl HomeView {
                 }
                 return true;
             }
-            // Click landed inside the dialog area but missed both
-            // buttons (e.g. on a checkbox or the title): swallow it so
+            // Click landed inside the dialog area but missed every
+            // hit rect (e.g. on the title or border): swallow it so
             // the underlying list doesn't shift selection out from
             // under the modal.
+            return true;
+        }
+        if let Some(dialog) = &mut self.new_dialog {
+            if let Some(result) = dialog.handle_click(col, row) {
+                match result {
+                    DialogResult::Continue => {}
+                    DialogResult::Cancel => {
+                        self.new_dialog = None;
+                    }
+                    DialogResult::Submit(_data) => {
+                        // The new-session dialog's submit is fired only
+                        // by the Enter key path; clicks set focus or
+                        // toggle the focused row and return Continue,
+                        // never Submit. This arm is defensive.
+                    }
+                }
+            }
+            // Always swallow clicks while the new-session dialog is
+            // open so the underlying list / preview don't react.
+            return true;
+        }
+        if let Some(view) = &mut self.settings_view {
+            // Settings is a full-screen takeover: every click inside
+            // the area is for it, even when the click landed on the
+            // background between widgets. `handle_click` mutates
+            // focus / scope / selection on hits and returns None on
+            // misses, but we still swallow the click either way.
+            let _ = view.handle_click(col, row);
+            return true;
+        }
+        if let Some(dialog) = &self.confirm_dialog {
+            if let Some(result) = dialog.handle_click(col, row) {
+                let action = dialog.action().to_string();
+                match result {
+                    DialogResult::Continue => {}
+                    DialogResult::Cancel => {
+                        self.confirm_dialog = None;
+                        self.pending_stop_session = None;
+                        self.pending_force_remove_session = None;
+                    }
+                    DialogResult::Submit(()) => {
+                        self.confirm_dialog = None;
+                        self.pending_dialog_click_action = self.dispatch_confirm_submit(&action);
+                    }
+                }
+            }
+            // Always swallow clicks while the confirm dialog is open.
+            return true;
+        }
+        if let Some(dialog) = &self.info_dialog {
+            if let Some(DialogResult::Cancel) = dialog.handle_click(col, row) {
+                self.info_dialog = None;
+            }
+            return true;
+        }
+        if let Some(dialog) = &self.update_confirm_dialog {
+            if let Some(result) = dialog.handle_click(col, row) {
+                match result {
+                    DialogResult::Continue => {}
+                    DialogResult::Cancel => {
+                        self.update_confirm_dialog = None;
+                    }
+                    DialogResult::Submit(()) => {
+                        let method = dialog.method.clone();
+                        let version = dialog.latest_version.clone();
+                        self.update_confirm_dialog = None;
+                        self.pending_dialog_click_action =
+                            Some(Action::SpawnUpdate(method, version));
+                    }
+                }
+            }
+            return true;
+        }
+        if let Some(dialog) = &self.welcome_dialog {
+            if let Some(DialogResult::Submit(())) = dialog.handle_click(col, row) {
+                self.welcome_dialog = None;
+            }
+            return true;
+        }
+        if let Some(dialog) = &self.changelog_dialog {
+            if let Some(DialogResult::Submit(())) = dialog.handle_click(col, row) {
+                self.changelog_dialog = None;
+            }
+            return true;
+        }
+        if let Some(dialog) = &self.snooze_duration_dialog {
+            if let Some(DialogResult::Submit(minutes)) = dialog.handle_click(col, row) {
+                self.snooze_duration_dialog = None;
+                let sid = self.pending_snooze_session.take();
+                if let Some(id) = sid {
+                    if let Err(e) = self.snooze_session_for(&id, minutes) {
+                        tracing::error!("snooze_session_for failed: {}", e);
+                    }
+                }
+            }
+            return true;
+        }
+        if let Some(dialog) = &self.no_agents_dialog {
+            if let Some(DialogResult::Submit(action)) = dialog.handle_click(col, row) {
+                match action {
+                    NoAgentsAction::Recheck => {
+                        let tools = crate::tmux::AvailableTools::detect();
+                        if tools.any_available() {
+                            self.set_available_tools(tools);
+                            self.no_agents_dialog = None;
+                        }
+                    }
+                    NoAgentsAction::Quit => {
+                        self.no_agents_dialog = None;
+                        self.pending_dialog_click_action = Some(Action::Quit);
+                    }
+                }
+            }
+            return true;
+        }
+        if let Some(picker) = &mut self.tool_picker_dialog {
+            match picker.handle_click(col, row) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.tool_picker_dialog = None;
+                }
+                DialogResult::Submit(tool_name) => {
+                    self.tool_picker_dialog = None;
+                    self.view_mode = ViewMode::Tool(tool_name);
+                    self.preview_scroll_offset = 0;
+                    self.tool_preview_cache = super::PreviewCache::default();
+                }
+            }
+            return true;
+        }
+        if let Some(dialog) = &mut self.group_delete_options_dialog {
+            if let Some(result) = dialog.handle_click(col, row) {
+                match result {
+                    DialogResult::Continue => {}
+                    DialogResult::Cancel => {
+                        self.group_delete_options_dialog = None;
+                    }
+                    DialogResult::Submit(options) => {
+                        self.group_delete_options_dialog = None;
+                        if options.delete_sessions {
+                            if let Err(e) = self.delete_group_with_sessions(&options) {
+                                tracing::error!(target: "tui.input", "Failed to delete group with sessions: {}", e);
+                            }
+                        } else if let Err(e) = self.delete_selected_group() {
+                            tracing::error!(target: "tui.input", "Failed to delete group: {}", e);
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        if let Some(dialog) = &mut self.rename_dialog {
+            // The rename dialog click handler only ever returns Continue;
+            // submitting requires the user to press Enter on a valid input.
+            // Always swallow the click so the underlying list doesn't react.
+            let _ = dialog.handle_click(col, row);
+            return true;
+        }
+        if let Some(dialog) = &mut self.restart_dialog {
+            let _ = dialog.handle_click(col, row);
+            return true;
+        }
+        if let Some(dialog) = &mut self.sort_picker_dialog {
+            match dialog.handle_click(col, row) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.sort_picker_dialog = None;
+                }
+                DialogResult::Submit(order) => {
+                    self.sort_picker_dialog = None;
+                    if order != self.sort_order {
+                        self.apply_sort_order(order);
+                    }
+                }
+            }
+            return true;
+        }
+        if let Some(dialog) = &mut self.group_picker_dialog {
+            match dialog.handle_click(col, row) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.group_picker_dialog = None;
+                }
+                DialogResult::Submit(mode) => {
+                    self.group_picker_dialog = None;
+                    if mode != self.group_by {
+                        self.apply_group_by(mode);
+                    }
+                }
+            }
+            return true;
+        }
+        if let Some(palette) = &mut self.command_palette {
+            match palette.handle_click(col, row) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.command_palette = None;
+                }
+                DialogResult::Submit(action) => {
+                    self.command_palette = None;
+                    // No `update_info` here (the mouse handler doesn't
+                    // thread it through); palette commands that rely on
+                    // it (Update prompts) only do so from the keyboard
+                    // path. The fallback is harmless.
+                    self.pending_dialog_click_action = self.dispatch_palette_action(action, None);
+                }
+            }
+            return true;
+        }
+        if let Some(dialog) = &self.hooks_install_dialog {
+            if let Some(result) = dialog.handle_click(col, row) {
+                match result {
+                    DialogResult::Continue => {}
+                    DialogResult::Cancel => {
+                        self.hooks_install_dialog = None;
+                        self.pending_hooks_install_data = None;
+                    }
+                    DialogResult::Submit(_) => {
+                        self.hooks_install_dialog = None;
+                        if let Ok(mut config) =
+                            crate::session::config::load_config().map(|c| c.unwrap_or_default())
+                        {
+                            config.app_state.has_acknowledged_agent_hooks = true;
+                            if let Err(e) = crate::session::config::save_config(&config) {
+                                tracing::warn!(target: "tui.input", "Failed to save config: {e}");
+                            }
+                        }
+                        if let Some(data) = self.pending_hooks_install_data.take() {
+                            self.pending_dialog_click_action = self.continue_session_creation(data);
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        if let Some(dialog) = &self.hook_trust_dialog {
+            if let Some(result) = dialog.handle_click(col, row) {
+                match result {
+                    DialogResult::Continue => {}
+                    DialogResult::Cancel => {
+                        self.hook_trust_dialog = None;
+                        self.pending_hook_trust_data = None;
+                    }
+                    DialogResult::Submit(action) => {
+                        self.hook_trust_dialog = None;
+                        if let Some(data) = self.pending_hook_trust_data.take() {
+                            let emit = match action {
+                                HookTrustAction::Trust {
+                                    hooks,
+                                    hooks_hash,
+                                    project_path,
+                                } => {
+                                    if let Err(e) = repo_config::trust_repo(
+                                        std::path::Path::new(&project_path),
+                                        &hooks_hash,
+                                    ) {
+                                        tracing::error!(target: "tui.input", "Failed to trust repo: {}", e);
+                                    }
+                                    let merged =
+                                        repo_config::merge_hooks_with_config(&data.profile, hooks);
+                                    self.create_session_with_hooks(data, merged)
+                                }
+                                HookTrustAction::Skip => {
+                                    let fallback =
+                                        repo_config::resolve_global_profile_hooks(&data.profile);
+                                    self.create_session_with_hooks(data, fallback)
+                                }
+                            };
+                            self.pending_dialog_click_action = emit;
+                        }
+                    }
+                }
+            }
             return true;
         }
         // Other dialogs also need to swallow clicks while open. The
@@ -596,11 +915,19 @@ impl HomeView {
         // and the regular home-view path.
         self.clear_preview_selection();
 
-        // Live-send capture wins over every other key handler. While
-        // `live_send` is `Some` the home view is acting as a thin relay
-        // to the target pane; dialog hotkeys, search, and list navigation
-        // all suspend until the user exits with Ctrl+q.
-        if self.live_send.is_some() {
+        // Live-send capture normally wins over every other key handler:
+        // the home view acts as a thin relay to the target pane, so
+        // dialog hotkeys, search, and list navigation all suspend until
+        // the user exits with Ctrl+q. That works when dialogs are only
+        // reachable via keyboard (the hotkey itself gets swallowed by
+        // live-send so the dialog never opens). Once a non-live-send
+        // overlay HAS been opened — via the empty-sidebar click that
+        // pops the new-session dialog, a right-click context menu, or
+        // any future click-to-open path — its keys must go to the
+        // overlay, not the underlying tmux pane. Otherwise the user
+        // sees the dialog but Esc / Enter / typed characters silently
+        // get routed to the session behind it.
+        if self.live_send.is_some() && !self.has_non_live_send_overlay() {
             self.handle_live_send_key(key);
             return None;
         }
@@ -707,6 +1034,27 @@ impl HomeView {
                     return None;
                 }
             }
+        }
+
+        // Right-click context menu. Routed before every other dialog so
+        // keys go to the popup that the user just opened on top of the
+        // sidebar. Submit dispatches to the same helpers the `r` / `d`
+        // key bindings use; Cancel just dismisses.
+        if let Some(menu) = &mut self.context_menu {
+            match menu.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.context_menu = None;
+                }
+                DialogResult::Submit(action) => {
+                    self.context_menu = None;
+                    match action {
+                        ContextMenuAction::Rename => self.open_rename_for_selected(),
+                        ContextMenuAction::Delete => self.open_delete_for_selected(),
+                    }
+                }
+            }
+            return None;
         }
 
         // Handle no-agents dialog (highest priority, blocks all interaction)
@@ -975,22 +1323,8 @@ impl HomeView {
                 DialogResult::Submit(_) => {
                     let action = dialog.action().to_string();
                     self.confirm_dialog = None;
-                    if action == "delete_group" {
-                        if let Err(e) = self.delete_selected_group() {
-                            tracing::error!(target: "tui.input", "Failed to delete group: {}", e);
-                        }
-                    } else if action == "stop_session" {
-                        if let Some(session_id) = self.pending_stop_session.take() {
-                            return Some(Action::StopSession(session_id));
-                        }
-                    } else if action == "force_remove_session" {
-                        if let Some(session_id) = self.pending_force_remove_session.take() {
-                            if let Err(e) = self.force_remove_session(&session_id) {
-                                tracing::error!(target: "tui.input", "Failed to force remove session: {}", e);
-                            }
-                        }
-                    } else if action == "quit_during_creation" {
-                        return Some(Action::Quit);
+                    if let Some(emit) = self.dispatch_confirm_submit(&action) {
+                        return Some(emit);
                     }
                 }
             }
@@ -1546,26 +1880,7 @@ impl HomeView {
                 self.update_selected();
             }
             KeyCode::Char('n') if !self.strict_hotkeys => {
-                if self.creating_stub_id.is_some() {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Please Wait",
-                        "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
-                    ));
-                } else if !self.available_tools.any_available() {
-                    self.show_no_agents();
-                } else {
-                    let existing_groups: Vec<String> =
-                        self.all_groups().iter().map(|g| g.path.clone()).collect();
-                    let current_profile = self.config_profile();
-                    let profiles =
-                        list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                    self.new_dialog = Some(NewSessionDialog::new(
-                        self.available_tools.clone(),
-                        existing_groups,
-                        &current_profile,
-                        profiles,
-                    ));
-                }
+                self.open_new_session_dialog();
             }
             KeyCode::Char('N') if self.strict_hotkeys && self.search_matches.is_empty() => {
                 if self.creating_stub_id.is_some() {
@@ -1893,286 +2208,16 @@ impl HomeView {
                 }
             }
             KeyCode::Char('d') if !self.strict_hotkeys => {
-                // Deletion only allowed in Agent View
-                if self.view_mode == ViewMode::Terminal {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Cannot Delete Terminal",
-                        "Terminals cannot be deleted directly. Switch to Agent View (press 't') and delete the agent session instead.",
-                    ));
-                    return None;
-                }
-                if let Some(session_id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(session_id) {
-                        if inst.status == Status::Creating {
-                            return None;
-                        }
-                        if inst.status == Status::Deleting {
-                            let message = format!(
-                                "'{}' is stuck deleting. Force remove it from the session list? \
-                                 (worktrees, branches, and containers will not be cleaned up)",
-                                inst.title
-                            );
-                            self.pending_force_remove_session = Some(session_id.clone());
-                            self.confirm_dialog = Some(ConfirmDialog::new(
-                                "Force Remove",
-                                &message,
-                                "force_remove_session",
-                            ));
-                            return None;
-                        }
-
-                        let config = DeleteDialogConfig {
-                            worktree_branch: inst
-                                .worktree_info
-                                .as_ref()
-                                .filter(|wt| wt.managed_by_aoe)
-                                .map(|wt| wt.branch.clone())
-                                .or_else(|| inst.workspace_info.as_ref().map(|w| w.branch.clone())),
-                            has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
-                            project_path: Some(inst.project_path.clone()),
-                            is_scratch: inst.scratch,
-                        };
-
-                        let profile = self.config_profile();
-                        self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
-                            inst.title.clone(),
-                            config,
-                            &profile,
-                        ));
-                    } else {
-                        let profile = self.config_profile();
-                        self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
-                            "Unknown Session".to_string(),
-                            DeleteDialogConfig::default(),
-                            &profile,
-                        ));
-                    }
-                } else if let Some(group_path) = &self.selected_group {
-                    if self.group_by == GroupByMode::Project {
-                        self.info_dialog = Some(InfoDialog::new(
-                            "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press 'g' and pick Manual to manage groups.",
-                        ));
-                        return None;
-                    }
-                    let prefix = format!("{}/", group_path);
-                    let session_count = self
-                        .instances
-                        .iter()
-                        .filter(|i| {
-                            i.group_path == *group_path || i.group_path.starts_with(&prefix)
-                        })
-                        .count();
-
-                    if session_count > 0 {
-                        let has_managed_worktrees =
-                            self.group_has_managed_worktrees(group_path, &prefix);
-                        let has_containers = self.group_has_containers(group_path, &prefix);
-                        self.group_delete_options_dialog = Some(GroupDeleteOptionsDialog::new(
-                            group_path.clone(),
-                            session_count,
-                            has_managed_worktrees,
-                            has_containers,
-                        ));
-                    } else {
-                        let message =
-                            format!("Are you sure you want to delete group '{}'?", group_path);
-                        self.confirm_dialog =
-                            Some(ConfirmDialog::new("Delete Group", &message, "delete_group"));
-                    }
-                }
+                self.open_delete_for_selected();
             }
             KeyCode::Char('D') if self.strict_hotkeys => {
-                // Strict mode: Shift+D = delete (was lowercase 'd' action)
-                if self.view_mode == ViewMode::Terminal {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Cannot Delete Terminal",
-                        "Terminals cannot be deleted directly. Switch to Agent View (press Shift+T) and delete the agent session instead.",
-                    ));
-                    return None;
-                }
-                if let Some(session_id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(session_id) {
-                        if inst.status == Status::Creating {
-                            return None;
-                        }
-                        if inst.status == Status::Deleting {
-                            let message = format!(
-                                "'{}' is stuck deleting. Force remove it from the session list? \
-                                 (worktrees, branches, and containers will not be cleaned up)",
-                                inst.title
-                            );
-                            self.pending_force_remove_session = Some(session_id.clone());
-                            self.confirm_dialog = Some(ConfirmDialog::new(
-                                "Force Remove",
-                                &message,
-                                "force_remove_session",
-                            ));
-                            return None;
-                        }
-
-                        let config = DeleteDialogConfig {
-                            worktree_branch: inst
-                                .worktree_info
-                                .as_ref()
-                                .filter(|wt| wt.managed_by_aoe)
-                                .map(|wt| wt.branch.clone())
-                                .or_else(|| inst.workspace_info.as_ref().map(|w| w.branch.clone())),
-                            has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
-                            project_path: Some(inst.project_path.clone()),
-                            is_scratch: inst.scratch,
-                        };
-
-                        let profile = self.config_profile();
-                        self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
-                            inst.title.clone(),
-                            config,
-                            &profile,
-                        ));
-                    } else {
-                        let profile = self.config_profile();
-                        self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
-                            "Unknown Session".to_string(),
-                            DeleteDialogConfig::default(),
-                            &profile,
-                        ));
-                    }
-                } else if let Some(group_path) = &self.selected_group {
-                    if self.group_by == GroupByMode::Project {
-                        self.info_dialog = Some(InfoDialog::new(
-                            "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press Ctrl+G and pick Manual to manage groups.",
-                        ));
-                        return None;
-                    }
-                    let prefix = format!("{}/", group_path);
-                    let session_count = self
-                        .instances
-                        .iter()
-                        .filter(|i| {
-                            i.group_path == *group_path || i.group_path.starts_with(&prefix)
-                        })
-                        .count();
-
-                    if session_count > 0 {
-                        let has_managed_worktrees =
-                            self.group_has_managed_worktrees(group_path, &prefix);
-                        let has_containers = self.group_has_containers(group_path, &prefix);
-                        self.group_delete_options_dialog = Some(GroupDeleteOptionsDialog::new(
-                            group_path.clone(),
-                            session_count,
-                            has_managed_worktrees,
-                            has_containers,
-                        ));
-                    } else {
-                        let message =
-                            format!("Are you sure you want to delete group '{}'?", group_path);
-                        self.confirm_dialog =
-                            Some(ConfirmDialog::new("Delete Group", &message, "delete_group"));
-                    }
-                }
+                self.open_delete_for_selected();
             }
             KeyCode::Char('r') if !self.strict_hotkeys => {
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        if matches!(inst.status, Status::Deleting | Status::Creating) {
-                            return None;
-                        }
-                        // Rename is anchored to the selected session, so the dialog
-                        // must open against that session's profile, not the
-                        // view-level active/config profile (which can differ in
-                        // all-profiles mode).
-                        let current_profile = inst.source_profile.clone();
-                        let profiles =
-                            list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                        let existing_groups: Vec<String> =
-                            self.all_groups().iter().map(|g| g.path.clone()).collect();
-                        self.rename_dialog = Some(RenameDialog::new(
-                            &inst.title,
-                            &inst.group_path,
-                            &current_profile,
-                            profiles,
-                            existing_groups,
-                        ));
-                    }
-                } else if let Some(group_path) = &self.selected_group {
-                    if self.group_by == GroupByMode::Project {
-                        self.info_dialog = Some(InfoDialog::new(
-                            "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press 'g' and pick Manual to manage groups.",
-                        ));
-                        return None;
-                    }
-                    let group_path = group_path.clone();
-                    let current_profile = self
-                        .selected_group_profile
-                        .clone()
-                        .unwrap_or_else(|| self.config_profile());
-                    let profiles =
-                        list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                    let existing_groups: Vec<String> =
-                        self.all_groups().iter().map(|g| g.path.clone()).collect();
-                    self.group_rename_context = Some(super::GroupRenameContext {
-                        old_path: group_path.clone(),
-                        old_profile: current_profile.clone(),
-                    });
-                    self.rename_dialog = Some(RenameDialog::new_for_group(
-                        &group_path,
-                        &current_profile,
-                        profiles,
-                        existing_groups,
-                    ));
-                }
+                self.open_rename_for_selected();
             }
             KeyCode::Char('R') if self.strict_hotkeys => {
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        if matches!(inst.status, Status::Deleting | Status::Creating) {
-                            return None;
-                        }
-                        // See the corresponding `r` handler above: rename targets
-                        // the selected session, so anchor on its source_profile.
-                        let current_profile = inst.source_profile.clone();
-                        let profiles =
-                            list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                        let existing_groups: Vec<String> =
-                            self.all_groups().iter().map(|g| g.path.clone()).collect();
-                        self.rename_dialog = Some(RenameDialog::new(
-                            &inst.title,
-                            &inst.group_path,
-                            &current_profile,
-                            profiles,
-                            existing_groups,
-                        ));
-                    }
-                } else if let Some(group_path) = &self.selected_group {
-                    if self.group_by == GroupByMode::Project {
-                        self.info_dialog = Some(InfoDialog::new(
-                            "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press Ctrl+G and pick Manual to manage groups.",
-                        ));
-                        return None;
-                    }
-                    let group_path = group_path.clone();
-                    let current_profile = self
-                        .selected_group_profile
-                        .clone()
-                        .unwrap_or_else(|| self.config_profile());
-                    let profiles =
-                        list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                    let existing_groups: Vec<String> =
-                        self.all_groups().iter().map(|g| g.path.clone()).collect();
-                    self.group_rename_context = Some(super::GroupRenameContext {
-                        old_path: group_path.clone(),
-                        old_profile: current_profile.clone(),
-                    });
-                    self.rename_dialog = Some(RenameDialog::new_for_group(
-                        &group_path,
-                        &current_profile,
-                        profiles,
-                        existing_groups,
-                    ));
-                }
+                self.open_rename_for_selected();
             }
             KeyCode::Char('m') if !self.strict_hotkeys => {
                 self.open_send_message_dialog();
@@ -2995,6 +3040,291 @@ impl HomeView {
             .and_then(|(c, r)| self.resolve_row_to_index(c, r))
     }
 
+    /// Handle a right-click at `(col, row)`. When it lands on a sidebar
+    /// row, move the cursor onto that row (so Rename/Delete target what
+    /// the user actually clicked, not whatever was selected before) and
+    /// open the context menu anchored to the click position. The
+    /// renderer clamps the menu into the visible area so a near-edge
+    /// click never produces an off-screen popup.
+    ///
+    /// Returns true when the menu opened. A right-click that doesn't
+    /// resolve to a row (header, scroll arrow, empty space below the
+    /// last row) is a no-op so the caller can choose to fall through.
+    pub fn handle_right_click(&mut self, col: u16, row: u16) -> bool {
+        // `resolve_row_to_index` already short-circuits when any
+        // non-live-send overlay (incl. the context menu itself) is open
+        // and inside the diff takeover, so no extra dialog gating here.
+        let Some(idx) = self.resolve_row_to_index(col, row) else {
+            return false;
+        };
+        if self.cursor != idx {
+            self.cursor = idx;
+            self.update_selected();
+        }
+        // Mirror the row-aware menu copy from the web sidebar so a group
+        // row reads as "Rename Group / Delete Group" instead of bare
+        // "Rename / Delete".
+        let is_group = matches!(self.flat_items[idx], super::Item::Group { .. });
+        let anchor = (col.saturating_add(1), row.saturating_add(1));
+        self.context_menu = Some(if is_group {
+            ContextMenuDialog::for_group(anchor)
+        } else {
+            ContextMenuDialog::for_session(anchor)
+        });
+        true
+    }
+
+    /// Route a left-click into the context menu, if it's open. Three
+    /// outcomes from the menu's perspective:
+    ///   - click on a Rename / Delete row: dispatch the action (which
+    ///     opens the matching follow-up dialog) and close the menu,
+    ///   - click on the menu's border (or anywhere inside that isn't a
+    ///     row): keep it open,
+    ///   - click outside the menu: close it.
+    ///
+    /// In all three cases the click is "consumed" — the caller must not
+    /// fall through to the list / preview / dialog handlers underneath.
+    /// Returns true when the menu existed (and consumed the click).
+    pub fn handle_context_menu_click(&mut self, col: u16, row: u16) -> bool {
+        let Some(menu) = &mut self.context_menu else {
+            return false;
+        };
+        match menu.handle_click(col, row) {
+            None => {
+                self.context_menu = None;
+            }
+            Some(DialogResult::Continue) => {
+                // Inside the menu but not on a row (border): keep open.
+            }
+            Some(DialogResult::Cancel) => {
+                self.context_menu = None;
+            }
+            Some(DialogResult::Submit(action)) => {
+                self.context_menu = None;
+                match action {
+                    ContextMenuAction::Rename => self.open_rename_for_selected(),
+                    ContextMenuAction::Delete => self.open_delete_for_selected(),
+                }
+            }
+        }
+        true
+    }
+
+    /// Open the new-session dialog, with the same gating the `'n'` key
+    /// applies: a "please wait" info dialog when a session is already
+    /// being created, the no-agents dialog when no tool is available,
+    /// otherwise the full dialog. Shared by `'n'` and the
+    /// click-in-empty-sidebar shortcut so they can't drift.
+    pub(super) fn open_new_session_dialog(&mut self) {
+        if self.creating_stub_id.is_some() {
+            self.info_dialog = Some(InfoDialog::new(
+                "Please Wait",
+                "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
+            ));
+            return;
+        }
+        if !self.available_tools.any_available() {
+            self.show_no_agents();
+            return;
+        }
+        let existing_groups: Vec<String> =
+            self.all_groups().iter().map(|g| g.path.clone()).collect();
+        let current_profile = self.config_profile();
+        let profiles = list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+        self.new_dialog = Some(NewSessionDialog::new(
+            self.available_tools.clone(),
+            existing_groups,
+            &current_profile,
+            profiles,
+        ));
+    }
+
+    /// Treat a left-click that landed in the sidebar area but past the
+    /// last session row as "open new session" — matches the `'n'`
+    /// keybind. Returns true when the click was consumed (dialog
+    /// opened or a gating dialog like "please wait" replaced it).
+    ///
+    /// Gated to fire only when no overlay is already up and the diff
+    /// view isn't open, so a click on an empty list while a modal is
+    /// covering it doesn't punch through.
+    pub fn handle_empty_list_click(&mut self, col: u16, row: u16) -> bool {
+        if self.has_non_live_send_overlay() || self.diff_view.is_some() {
+            return false;
+        }
+        if !self.list_inner_area.contains(Position::from((col, row))) {
+            return false;
+        }
+        if self.resolve_row_to_index(col, row).is_some() {
+            // A real row resolved here — the regular click path owns it.
+            return false;
+        }
+        self.open_new_session_dialog();
+        true
+    }
+
+    /// Open the rename dialog for whatever the sidebar has selected (a
+    /// session row, or a manual-mode group). Project-mode groups can't be
+    /// renamed, so they raise an info dialog explaining how to switch
+    /// modes. No-op when nothing is selected, or when the selected session
+    /// is mid-create or mid-delete (renaming under those states would race
+    /// the cascade).
+    ///
+    /// Shared by the `'r'` / `'R'` key handlers and the right-click
+    /// context menu so all three entry points stay byte-identical.
+    pub(super) fn open_rename_for_selected(&mut self) {
+        if let Some(id) = &self.selected_session {
+            if let Some(inst) = self.get_instance(id) {
+                if matches!(inst.status, Status::Deleting | Status::Creating) {
+                    return;
+                }
+                // Rename is anchored to the selected session, so the dialog
+                // must open against that session's profile, not the
+                // view-level active/config profile (which can differ in
+                // all-profiles mode).
+                let current_profile = inst.source_profile.clone();
+                let profiles = list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+                let existing_groups: Vec<String> =
+                    self.all_groups().iter().map(|g| g.path.clone()).collect();
+                self.rename_dialog = Some(RenameDialog::new(
+                    &inst.title,
+                    &inst.group_path,
+                    &current_profile,
+                    profiles,
+                    existing_groups,
+                ));
+            }
+        } else if let Some(group_path) = &self.selected_group {
+            if self.group_by == GroupByMode::Project {
+                let hint = if self.strict_hotkeys {
+                    "Project groups are automatic. Press Ctrl+G and pick Manual to manage groups."
+                } else {
+                    "Project groups are automatic. Press 'g' and pick Manual to manage groups."
+                };
+                self.info_dialog = Some(InfoDialog::new("Cannot Modify Project Groups", hint));
+                return;
+            }
+            let group_path = group_path.clone();
+            let current_profile = self
+                .selected_group_profile
+                .clone()
+                .unwrap_or_else(|| self.config_profile());
+            let profiles = list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+            let existing_groups: Vec<String> =
+                self.all_groups().iter().map(|g| g.path.clone()).collect();
+            self.group_rename_context = Some(super::GroupRenameContext {
+                old_path: group_path.clone(),
+                old_profile: current_profile.clone(),
+            });
+            self.rename_dialog = Some(RenameDialog::new_for_group(
+                &group_path,
+                &current_profile,
+                profiles,
+                existing_groups,
+            ));
+        }
+    }
+
+    /// Open the delete dialog (or a force-remove confirm, or a group
+    /// delete-options dialog) for the sidebar's current selection. Mirrors
+    /// the gating of the historical `'d'` / `'D'` key handlers:
+    ///   - Terminal view rejects deletion with an info dialog,
+    ///   - Creating sessions are inert,
+    ///   - Stuck-Deleting sessions get a force-remove confirm,
+    ///   - Project-mode groups can't be deleted (info dialog).
+    ///
+    /// Shared by the `'d'` / `'D'` key handlers and the right-click
+    /// context menu.
+    pub(super) fn open_delete_for_selected(&mut self) {
+        // Deletion only allowed in Agent View.
+        if self.view_mode == ViewMode::Terminal {
+            let hint = if self.strict_hotkeys {
+                "Terminals cannot be deleted directly. Switch to Agent View (press Shift+T) and delete the agent session instead."
+            } else {
+                "Terminals cannot be deleted directly. Switch to Agent View (press 't') and delete the agent session instead."
+            };
+            self.info_dialog = Some(InfoDialog::new("Cannot Delete Terminal", hint));
+            return;
+        }
+        if let Some(session_id) = &self.selected_session {
+            if let Some(inst) = self.get_instance(session_id) {
+                if inst.status == Status::Creating {
+                    return;
+                }
+                if inst.status == Status::Deleting {
+                    let message = format!(
+                        "'{}' is stuck deleting. Force remove it from the session list? \
+                         (worktrees, branches, and containers will not be cleaned up)",
+                        inst.title
+                    );
+                    self.pending_force_remove_session = Some(session_id.clone());
+                    self.confirm_dialog = Some(ConfirmDialog::new(
+                        "Force Remove",
+                        &message,
+                        "force_remove_session",
+                    ));
+                    return;
+                }
+
+                let config = DeleteDialogConfig {
+                    worktree_branch: inst
+                        .worktree_info
+                        .as_ref()
+                        .filter(|wt| wt.managed_by_aoe)
+                        .map(|wt| wt.branch.clone())
+                        .or_else(|| inst.workspace_info.as_ref().map(|w| w.branch.clone())),
+                    has_sandbox: inst.sandbox_info.as_ref().is_some_and(|s| s.enabled),
+                    project_path: Some(inst.project_path.clone()),
+                    is_scratch: inst.scratch,
+                };
+
+                let profile = self.config_profile();
+                self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
+                    inst.title.clone(),
+                    config,
+                    &profile,
+                ));
+            } else {
+                let profile = self.config_profile();
+                self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
+                    "Unknown Session".to_string(),
+                    DeleteDialogConfig::default(),
+                    &profile,
+                ));
+            }
+        } else if let Some(group_path) = &self.selected_group {
+            if self.group_by == GroupByMode::Project {
+                let hint = if self.strict_hotkeys {
+                    "Project groups are automatic. Press Ctrl+G and pick Manual to manage groups."
+                } else {
+                    "Project groups are automatic. Press 'g' and pick Manual to manage groups."
+                };
+                self.info_dialog = Some(InfoDialog::new("Cannot Modify Project Groups", hint));
+                return;
+            }
+            let prefix = format!("{}/", group_path);
+            let session_count = self
+                .instances
+                .iter()
+                .filter(|i| i.group_path == *group_path || i.group_path.starts_with(&prefix))
+                .count();
+
+            if session_count > 0 {
+                let has_managed_worktrees = self.group_has_managed_worktrees(group_path, &prefix);
+                let has_containers = self.group_has_containers(group_path, &prefix);
+                self.group_delete_options_dialog = Some(GroupDeleteOptionsDialog::new(
+                    group_path.clone(),
+                    session_count,
+                    has_managed_worktrees,
+                    has_containers,
+                ));
+            } else {
+                let message = format!("Are you sure you want to delete group '{}'?", group_path);
+                self.confirm_dialog =
+                    Some(ConfirmDialog::new("Delete Group", &message, "delete_group"));
+            }
+        }
+    }
+
     /// Route a left-click at (col, row) inside the session list. A
     /// single click on a session row selects it AND requests live-send
     /// mode for that row (same `Action::EnterLiveSend` that Tab would
@@ -3098,6 +3428,63 @@ impl HomeView {
     /// Returns `true` only when the resolved hovered item changes, so the
     /// caller can skip a redraw on every pixel-level mouse twitch.
     pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
+        // Open overlay dialogs / menus get hover routed first so their
+        // focus highlight tracks the mouse the same way a desktop UI
+        // would. The sidebar's own hover state still updates underneath
+        // so the row highlight is correct the instant the dialog closes.
+        let mut overlay_changed = false;
+        if let Some(menu) = &mut self.context_menu {
+            overlay_changed |= menu.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.unified_delete_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.new_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(view) = &mut self.settings_view {
+            overlay_changed |= view.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.confirm_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.update_confirm_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.snooze_duration_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.no_agents_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.hook_trust_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(picker) = &mut self.tool_picker_dialog {
+            overlay_changed |= picker.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.group_delete_options_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.rename_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.restart_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.hooks_install_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.sort_picker_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.group_picker_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(palette) = &mut self.command_palette {
+            overlay_changed |= palette.handle_hover(col, row);
+        }
+
         let new_pos = if self.list_inner_area.contains(Position::from((col, row))) {
             Some((col, row))
         } else {
@@ -3106,7 +3493,7 @@ impl HomeView {
         let prev_idx = self.hovered_index();
         self.mouse_pos = new_pos;
         let new_idx = self.hovered_index();
-        prev_idx != new_idx
+        overlay_changed || prev_idx != new_idx
     }
 
     /// Route a mouse-wheel-down at (col, row); see handle_scroll_up.

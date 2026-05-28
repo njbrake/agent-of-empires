@@ -86,6 +86,11 @@ pub struct DiffView {
     /// this hand-off, HomeView's next `commit` would overwrite the
     /// disk value with its stale memory copy. See #1175.
     pub(crate) pending_override: Option<(String, Option<String>)>,
+
+    /// Inner rect of the file-list panel, captured during `render`.
+    /// Lets a click on a file row select it and a hover highlight it
+    /// the same way `j`/`k` would.
+    pub(crate) file_list_inner: ratatui::layout::Rect,
 }
 
 impl DiffView {
@@ -142,6 +147,7 @@ impl DiffView {
             file_list_width: config.app_state.diff_file_list_width.unwrap_or(35),
             warning_dialog,
             pending_override: None,
+            file_list_inner: ratatui::layout::Rect::default(),
         };
 
         view.refresh_files()?;
@@ -338,6 +344,7 @@ impl DiffView {
             file_list_width: 35,
             warning_dialog: None,
             pending_override: None,
+            file_list_inner: ratatui::layout::Rect::default(),
         }
     }
 }

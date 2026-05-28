@@ -7,11 +7,15 @@ use ratatui::widgets::*;
 use super::DialogResult;
 use crate::tui::styles::Theme;
 
-pub struct WelcomeDialog;
+pub struct WelcomeDialog {
+    dialog_area: Rect,
+}
 
 impl WelcomeDialog {
     pub fn new() -> Self {
-        Self
+        Self {
+            dialog_area: Rect::default(),
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<()> {
@@ -21,8 +25,22 @@ impl WelcomeDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    /// A click anywhere inside the welcome dialog dismisses it,
+    /// matching the keyboard's "any of Enter/Esc/Space submits".
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<()>> {
+        if self
+            .dialog_area
+            .contains(ratatui::layout::Position::from((col, row)))
+        {
+            Some(DialogResult::Submit(()))
+        } else {
+            None
+        }
+    }
+
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_area = super::centered_rect(area, 64, 14);
+        self.dialog_area = dialog_area;
 
         frame.render_widget(Clear, dialog_area);
 

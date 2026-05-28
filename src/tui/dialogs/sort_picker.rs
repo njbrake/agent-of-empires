@@ -20,12 +20,58 @@ const OPTIONS: &[SortOrder] = &[
 pub struct SortPickerDialog {
     selected: usize,
     current: SortOrder,
+    list_area: Rect,
+    dialog_area: Rect,
 }
 
 impl SortPickerDialog {
     pub fn new(current: SortOrder) -> Self {
         let selected = OPTIONS.iter().position(|o| *o == current).unwrap_or(0);
-        Self { selected, current }
+        Self {
+            selected,
+            current,
+            list_area: Rect::default(),
+            dialog_area: Rect::default(),
+        }
+    }
+
+    fn row_to_idx(&self, col: u16, row: u16) -> Option<usize> {
+        if !self
+            .list_area
+            .contains(ratatui::layout::Position::from((col, row)))
+        {
+            return None;
+        }
+        let i = (row - self.list_area.y) as usize;
+        if i >= OPTIONS.len() {
+            return None;
+        }
+        Some(i)
+    }
+
+    pub fn handle_click(&mut self, col: u16, row: u16) -> DialogResult<SortOrder> {
+        if !self
+            .dialog_area
+            .contains(ratatui::layout::Position::from((col, row)))
+        {
+            return DialogResult::Cancel;
+        }
+        let Some(idx) = self.row_to_idx(col, row) else {
+            return DialogResult::Continue;
+        };
+        self.selected = idx;
+        DialogResult::Submit(OPTIONS[idx])
+    }
+
+    pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
+        let Some(idx) = self.row_to_idx(col, row) else {
+            return false;
+        };
+        if self.selected == idx {
+            return false;
+        }
+        self.selected = idx;
+        true
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<SortOrder> {
@@ -48,11 +94,12 @@ impl SortPickerDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width: u16 = 32;
         let dialog_height: u16 = OPTIONS.len() as u16 + 5;
 
         let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
+        self.dialog_area = dialog_area;
         frame.render_widget(Clear, dialog_area);
 
         let block = Block::default()
@@ -92,6 +139,7 @@ impl SortPickerDialog {
             }
             lines.push(Line::from(spans));
         }
+        self.list_area = chunks[0];
         frame.render_widget(Paragraph::new(lines), chunks[0]);
 
         let hint = Line::from(vec![

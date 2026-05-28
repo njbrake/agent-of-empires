@@ -25,6 +25,7 @@ use crate::update::{get_cached_releases, ReleaseInfo};
 pub struct ChangelogDialog {
     scroll_offset: usize,
     display_lines: Vec<DisplayLine>,
+    dialog_area: Rect,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +90,22 @@ impl ChangelogDialog {
         Self {
             scroll_offset: 0,
             display_lines,
+            dialog_area: Rect::default(),
+        }
+    }
+
+    /// A click anywhere inside the changelog dialog dismisses it,
+    /// matching the keyboard's "any of Enter/Esc/q/Space submits"
+    /// model. Returns None for clicks outside so the caller can decide
+    /// whether to swallow them.
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<()>> {
+        if self
+            .dialog_area
+            .contains(ratatui::layout::Position::from((col, row)))
+        {
+            Some(DialogResult::Submit(()))
+        } else {
+            None
         }
     }
 
@@ -129,10 +146,11 @@ impl ChangelogDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = (area.width * 80 / 100).clamp(60, 100);
         let dialog_height = (area.height * 80 / 100).clamp(16, 40);
         let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
+        self.dialog_area = dialog_area;
 
         frame.render_widget(Clear, dialog_area);
 
@@ -497,6 +515,7 @@ mod tests {
         ChangelogDialog {
             scroll_offset: 0,
             display_lines: lines,
+            dialog_area: Rect::default(),
         }
     }
 

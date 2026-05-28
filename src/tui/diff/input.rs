@@ -54,6 +54,28 @@ impl DiffView {
         self.handle_normal_key(key)
     }
 
+    /// Route a left-click. Currently only the file-list panel accepts
+    /// click input (select the clicked file). Clicks elsewhere are
+    /// swallowed by the modal but no-op.
+    pub fn handle_click(&mut self, col: u16, row: u16) {
+        let pos = ratatui::layout::Position::from((col, row));
+        if self.file_list_inner.contains(pos) {
+            let row_in_list = (row - self.file_list_inner.y) as usize;
+            if row_in_list < self.files.len() && self.selected_file != row_in_list {
+                self.selected_file = row_in_list;
+                self.scroll_offset = 0;
+            }
+        }
+    }
+
+    /// Hover does not move the file-list selection. Otherwise pressing
+    /// j/k after a stray mouse drift would jump to whichever file the
+    /// cursor last crossed instead of advancing from the actually
+    /// selected one. Click still selects.
+    pub fn handle_hover(&mut self, _col: u16, _row: u16) -> bool {
+        false
+    }
+
     fn handle_normal_key(&mut self, key: KeyEvent) -> DiffAction {
         match (key.code, key.modifiers) {
             // Close view

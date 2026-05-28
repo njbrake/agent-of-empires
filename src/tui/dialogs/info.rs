@@ -12,6 +12,12 @@ pub struct InfoDialog {
     message: String,
     width: u16,
     height: u16,
+    /// Rect of the rendered `[OK]` button, captured during `render`.
+    /// Lets `handle_click` accept either a click on the button OR a
+    /// click anywhere on the dialog area (the latter is a quick
+    /// "dismiss" gesture matching the keyboard's bare-Space behavior).
+    ok_button_area: Rect,
+    dialog_area: Rect,
 }
 
 impl InfoDialog {
@@ -21,6 +27,23 @@ impl InfoDialog {
             message: message.to_string(),
             width: 50,
             height: 9,
+            ok_button_area: Rect::default(),
+            dialog_area: Rect::default(),
+        }
+    }
+
+    /// A left-click anywhere inside the info dialog dismisses it,
+    /// matching the keyboard's "any of Esc/Enter/Space closes" model.
+    /// `None` when the click landed outside the dialog area, so the
+    /// caller can decide whether to swallow it anyway.
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<()>> {
+        if self
+            .dialog_area
+            .contains(ratatui::layout::Position::from((col, row)))
+        {
+            Some(DialogResult::Cancel)
+        } else {
+            None
         }
     }
 
@@ -40,8 +63,9 @@ impl InfoDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_area = super::centered_rect(area, self.width, self.height);
+        self.dialog_area = dialog_area;
 
         frame.render_widget(Clear, dialog_area);
 
@@ -67,15 +91,24 @@ impl InfoDialog {
             .wrap(Wrap { trim: true });
         frame.render_widget(message, chunks[0]);
 
-        // OK button
+        // OK button. Centered inside the bottom chunk; the rect
+        // tracks where the glyph actually lands so a click on the
+        // button is targeted (not just "click anywhere to dismiss").
         let button = Line::from(vec![Span::styled(
             "[OK]",
             Style::default().fg(theme.accent).bold(),
         )]);
+        let button_area = chunks[1];
+        if button_area.width >= 4 {
+            let left_pad = (button_area.width - 4) / 2;
+            self.ok_button_area = Rect::new(button_area.x + left_pad, button_area.y, 4, 1);
+        } else {
+            self.ok_button_area = Rect::default();
+        }
 
         frame.render_widget(
             Paragraph::new(button).alignment(Alignment::Center),
-            chunks[1],
+            button_area,
         );
     }
 }

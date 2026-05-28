@@ -626,7 +626,19 @@ impl App {
                                                     // draining keystrokes). A user double-clicking
                                                     // during dictation can click again after the burst
                                                     // ends.
-                                                    MouseEventKind::Down(MouseButton::Left) if hit_list => { let _ = self.home.handle_click(mouse.column, mouse.row); }
+                                                    MouseEventKind::Down(MouseButton::Left) => {
+                                                        if self.home.handle_context_menu_click(mouse.column, mouse.row) {
+                                                            // Click consumed by the context menu
+                                                            // (item dispatched, kept open, or
+                                                            // dismissed on outside-click).
+                                                        } else if hit_list {
+                                                            let action = self.home.handle_click(mouse.column, mouse.row);
+                                                            if action.is_none() {
+                                                                let _ = self.home.handle_empty_list_click(mouse.column, mouse.row);
+                                                            }
+                                                        }
+                                                    }
+                                                    MouseEventKind::Down(MouseButton::Right) if hit_list => { self.home.handle_right_click(mouse.column, mouse.row); }
                                                     MouseEventKind::Moved => { self.home.handle_hover(mouse.column, mouse.row); }
                                                     _ => {}
                                                 }
@@ -709,10 +721,11 @@ impl App {
                             // before dispatching the action.
                             //
                             // Priority order for `Down(Left)`:
-                            //   1. modal dialog click (e.g. delete Yes/No)
-                            //   2. drag-start (divider, or preview text
+                            //   1. context menu outside-click (close it)
+                            //   2. modal dialog click (e.g. delete Yes/No)
+                            //   3. drag-start (divider, or preview text
                             //      selection)
-                            //   3. list row click (existing select/activate)
+                            //   4. list row click (existing select/activate)
                             // A bare press on the preview seeds a 1x1
                             // PreviewSelect; `handle_drag_end` collapses it
                             // back to no selection on release if the cursor
@@ -721,7 +734,17 @@ impl App {
                                 mouse.kind,
                                 MouseEventKind::Down(MouseButton::Left)
                             ) {
-                                if self.home.handle_dialog_click(mouse.column, mouse.row)
+                                if self
+                                    .home
+                                    .handle_context_menu_click(mouse.column, mouse.row)
+                                {
+                                    // Click consumed by the context menu:
+                                    // either dispatched an item (Rename /
+                                    // Delete), kept the menu open (border
+                                    // hit), or dismissed it (click outside).
+                                    self.draw(terminal)?;
+                                    None
+                                } else if self.home.handle_dialog_click(mouse.column, mouse.row)
                                 {
                                     // A modal swallowed the click — drop any
                                     // leftover preview highlight so it doesn't
@@ -747,8 +770,26 @@ impl App {
                                     let action = self
                                         .home
                                         .handle_click(mouse.column, mouse.row);
+                                    // A click inside the list area that
+                                    // didn't resolve to a row (empty space
+                                    // below the last session) opens the
+                                    // new-session dialog, mirroring `n`.
+                                    if action.is_none() {
+                                        let _ = self
+                                            .home
+                                            .handle_empty_list_click(mouse.column, mouse.row);
+                                    }
                                     self.draw(terminal)?;
                                     action
+                                } else if hit_diff {
+                                    // The diff view file-list panel
+                                    // accepts clicks to select files,
+                                    // matching j/k navigation. Other
+                                    // diff regions are no-op.
+                                    let _ = self.home.clear_preview_selection();
+                                    self.home.handle_diff_click(mouse.column, mouse.row);
+                                    self.draw(terminal)?;
+                                    None
                                 } else {
                                     let _ = self.home.clear_preview_selection();
                                     None
@@ -779,13 +820,33 @@ impl App {
                                     // sees empty cells).
                                     self.home.handle_drag_end()
                                 }
+                                // Right-click opens the sidebar context menu
+                                // (Rename / Delete) for the clicked row.
+                                // hit_list is the only place it makes sense
+                                // today; other surfaces fall through.
+                                MouseEventKind::Down(MouseButton::Right) if hit_list => {
+                                    self.home.handle_right_click(mouse.column, mouse.row)
+                                }
                                 // Moved events are dispatched unconditionally
                                 // (no `hit_list` guard) so the handler can
                                 // clear the hover state the moment the
                                 // cursor leaves the list, even when the new
                                 // position lands on the preview or border.
                                 MouseEventKind::Moved => {
-                                    self.home.handle_hover(mouse.column, mouse.row)
+                                    // Route hover to the diff view's
+                                    // file list when one is open AND
+                                    // the mouse is over it; that's an
+                                    // OR with the home view's own hover
+                                    // (which already covers list +
+                                    // overlay dialogs).
+                                    let mut changed =
+                                        self.home.handle_hover(mouse.column, mouse.row);
+                                    if hit_diff {
+                                        changed |= self
+                                            .home
+                                            .handle_diff_hover(mouse.column, mouse.row);
+                                    }
+                                    changed
                                 }
                                 _ => false,
                             };
@@ -812,6 +873,14 @@ impl App {
                                 if let Some(session_id) = self.pending_cockpit_open.take() {
                                     self.run_cockpit_view(&session_id, terminal).await?;
                                 }
+                            }
+                            // Drain any Action stashed by a modal-dialog
+                            // click (e.g. clicking `[Yes]` on a stop or
+                            // quit confirm). The keyboard path returns
+                            // these through handle_key; the click path
+                            // can't, so it stashes them here.
+                            if let Some(action) = self.home.pending_dialog_click_action.take() {
+                                self.execute_action(action, terminal)?;
                             }
                             continue;
                         }

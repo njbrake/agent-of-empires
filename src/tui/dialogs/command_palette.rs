@@ -334,6 +334,14 @@ pub struct CommandPaletteDialog {
     matches: Vec<usize>,
     /// Cursor within `matches`.
     selected: usize,
+    /// Captured by `render`: the screen row of each visible (non-header)
+    /// item along with its `matches` index. Drives click + hover routing
+    /// without having to re-derive the scroll math.
+    visible_item_rows: Vec<(u16, usize)>,
+    /// Rect of the rendered dialog frame. Used by click routing to
+    /// distinguish "inside dialog but missed a row" (no-op) from
+    /// "outside dialog" (cancel).
+    dialog_area: Rect,
 }
 
 impl CommandPaletteDialog {
@@ -343,9 +351,54 @@ impl CommandPaletteDialog {
             entries,
             matches: Vec::new(),
             selected: 0,
+            visible_item_rows: Vec::new(),
+            dialog_area: Rect::default(),
         };
         dialog.recompute_matches();
         dialog
+    }
+
+    pub fn handle_click(&mut self, col: u16, row: u16) -> DialogResult<PaletteAction> {
+        if !self
+            .dialog_area
+            .contains(ratatui::layout::Position::from((col, row)))
+        {
+            return DialogResult::Cancel;
+        }
+        // Hit-test the visible item rows.
+        let Some(display_idx) = self
+            .visible_item_rows
+            .iter()
+            .find(|(r, _)| *r == row)
+            .map(|(_, idx)| *idx)
+        else {
+            return DialogResult::Continue;
+        };
+        self.selected = display_idx;
+        let Some(&entry_idx) = self.matches.get(self.selected) else {
+            return DialogResult::Continue;
+        };
+        let cmd = self.entries.swap_remove(entry_idx);
+        DialogResult::Submit(cmd.payload)
+    }
+
+    pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
+        if col == 0 && row == 0 {
+            return false;
+        }
+        let Some(display_idx) = self
+            .visible_item_rows
+            .iter()
+            .find(|(r, _)| *r == row)
+            .map(|(_, idx)| *idx)
+        else {
+            return false;
+        };
+        if self.selected == display_idx {
+            return false;
+        }
+        self.selected = display_idx;
+        true
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<PaletteAction> {
@@ -427,10 +480,12 @@ impl CommandPaletteDialog {
         self.selected = 0;
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.visible_item_rows.clear();
         let dialog_width: u16 = area.width.saturating_sub(8).clamp(40, 70);
         let dialog_height: u16 = area.height.saturating_sub(6).clamp(10, 20);
         let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
+        self.dialog_area = dialog_area;
 
         frame.render_widget(Clear, dialog_area);
 
@@ -482,12 +537,16 @@ impl CommandPaletteDialog {
         let visible = list_area.height as usize;
 
         let mut lines: Vec<Line> = Vec::new();
+        // Parallel to `lines`: None for a group-header line, Some(idx)
+        // for an item line where idx is the `matches` index.
+        let mut line_to_display_idx: Vec<Option<usize>> = Vec::new();
         let mut selected_line: usize = 0;
         if self.matches.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  No matches",
                 Style::default().fg(theme.dimmed),
             )));
+            line_to_display_idx.push(None);
         } else {
             let mut last_group: Option<PaletteGroup> = None;
             for (display_idx, &entry_idx) in self.matches.iter().enumerate() {
@@ -501,6 +560,7 @@ impl CommandPaletteDialog {
                         cmd.group.label(),
                         Style::default().fg(theme.accent).bold(),
                     )));
+                    line_to_display_idx.push(None);
                     last_group = Some(cmd.group);
                 }
 
@@ -539,10 +599,18 @@ impl CommandPaletteDialog {
                     spans.push(Span::styled(cmd.hotkey, Style::default().fg(theme.hint)));
                 }
                 lines.push(Line::from(spans));
+                line_to_display_idx.push(Some(display_idx));
             }
         }
         let start = selected_line.saturating_sub(visible.saturating_sub(1));
         let end = (start + visible).min(lines.len());
+        // Capture screen rows for visible item lines so a click can map
+        // directly back to the `matches` display index.
+        for (i, line_idx) in (start..end).enumerate() {
+            if let Some(idx) = line_to_display_idx.get(line_idx).copied().flatten() {
+                self.visible_item_rows.push((list_area.y + i as u16, idx));
+            }
+        }
         frame.render_widget(Paragraph::new(lines[start..end].to_vec()), list_area);
 
         // Hint footer

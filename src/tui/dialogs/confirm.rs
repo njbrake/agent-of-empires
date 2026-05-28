@@ -13,6 +13,8 @@ pub struct ConfirmDialog {
     message: String,
     action: String,
     selected: bool, // true = Yes, false = No
+    yes_button_area: Rect,
+    no_button_area: Rect,
 }
 
 impl ConfirmDialog {
@@ -22,7 +24,32 @@ impl ConfirmDialog {
             message: message.to_string(),
             action: action.to_string(),
             selected: false,
+            yes_button_area: Rect::default(),
+            no_button_area: Rect::default(),
         }
+    }
+
+    /// Route a left-click. `Some(Submit)` for `[Yes]`, `Some(Cancel)`
+    /// for `[No]`, `None` for clicks that hit elsewhere inside the
+    /// dialog. Mirrors UnifiedDeleteDialog so the home view's
+    /// `handle_dialog_click` can fan out the same way.
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<()>> {
+        let pos = ratatui::layout::Position::from((col, row));
+        if self.yes_button_area.contains(pos) {
+            return Some(DialogResult::Submit(()));
+        }
+        if self.no_button_area.contains(pos) {
+            return Some(DialogResult::Cancel);
+        }
+        None
+    }
+
+    /// Hover does not change the Yes/No selection. Otherwise the mouse
+    /// drifting over the opposite button between the user reading the
+    /// prompt and pressing Enter would silently flip which action
+    /// fires. Click commits explicitly via `handle_click`.
+    pub fn handle_hover(&mut self, _col: u16, _row: u16) -> bool {
+        false
     }
 
     pub fn action(&self) -> &str {
@@ -56,7 +83,7 @@ impl ConfirmDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_area = super::centered_rect(area, 50, 8);
 
         frame.render_widget(Clear, dialog_area);
@@ -83,7 +110,9 @@ impl ConfirmDialog {
             .wrap(Wrap { trim: true });
         frame.render_widget(message, chunks[0]);
 
-        let _ = render_yes_no(frame, chunks[1], theme, self.selected);
+        let (yes, no) = render_yes_no(frame, chunks[1], theme, self.selected);
+        self.yes_button_area = yes;
+        self.no_button_area = no;
     }
 }
 
