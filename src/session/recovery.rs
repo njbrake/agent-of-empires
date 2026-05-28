@@ -104,21 +104,24 @@ fn recovery_lock_path() -> Result<PathBuf> {
 /// Pure predicate: should this instance go through the startup recovery
 /// cascade? Excludes cockpit-mode sessions (handled by `cockpit_reconciler`),
 /// sessions whose agent has `ResumeStrategy::Unsupported`, sessions without
-/// a valid `agent_session_id`, and sunk rows (archived or currently snoozed).
-/// Live tmux panes are filtered separately by the caller using
-/// `Instance::has_live_tmux_pane()`.
+/// a valid `agent_session_id`, and sunk rows (archived, currently snoozed, or
+/// explicitly stopped). Live tmux panes are filtered separately by the caller
+/// using `Instance::has_live_tmux_pane()`.
 ///
-/// Archive and snooze are explicit "leave this session alone" signals; the
-/// archive path actively kills the tmux pane, so without this guard the next
-/// TUI launch (or daemon startup) would observe a dead pane on a resumable
-/// agent and respawn the row the user just dismissed. Snooze shares the
-/// guard because `is_snoozed()` returns false once the timer expires, so the
-/// row naturally re-enters recovery eligibility on its own schedule rather
-/// than the moment a pane goes missing.
+/// Archive, snooze, and stop are explicit "leave this session alone" signals;
+/// each of them kills the tmux pane, so without this guard the next TUI
+/// launch (or daemon startup) would observe a dead pane on a resumable agent
+/// and respawn the row the user just dismissed. Snooze flips back to
+/// recoverable on its own schedule (`is_snoozed()` returns false once the
+/// timer expires). Stop only flips back to recoverable when the user
+/// explicitly reopens the session (Enter / send-message / live-send), which
+/// transitions `Status::Stopped` to `Status::Starting` before recovery is
+/// consulted.
 pub fn is_recovery_candidate(inst: &Instance) -> bool {
     !inst.is_cockpit_mode()
         && !inst.is_archived()
         && !inst.is_snoozed()
+        && inst.status != super::Status::Stopped
         && should_attempt_resume(inst.agent_session_id.as_deref(), &inst.tool)
 }
 
@@ -317,6 +320,33 @@ mod tests {
         assert!(
             is_recovery_candidate(&inst),
             "unarchive must restore recovery eligibility"
+        );
+    }
+
+    /// Regression for #1583: pressing `x` in the session picker stops a
+    /// session, which sets `Status::Stopped` and kills the tmux pane. The
+    /// next TUI launch (or daemon startup) sees a dead pane on a resume-
+    /// capable agent; without a Stopped guard, the cascade respawns the row
+    /// the user just stopped. Only an explicit user action (Enter / send /
+    /// live-send) transitions Stopped to Starting, which is consulted before
+    /// recovery runs.
+    #[test]
+    fn stopped_instance_is_not_recovery_candidate() {
+        let mut inst = Instance::new("stopped", "/tmp/test");
+        inst.agent_session_id = Some("33333333-3333-4333-8333-333333333333".into());
+        assert!(
+            is_recovery_candidate(&inst),
+            "baseline: claude + valid sid is a recovery candidate"
+        );
+        inst.status = super::super::Status::Stopped;
+        assert!(
+            !is_recovery_candidate(&inst),
+            "stopped sessions must be excluded from startup recovery"
+        );
+        inst.status = super::super::Status::Starting;
+        assert!(
+            is_recovery_candidate(&inst),
+            "transitioning off Stopped (e.g. user reopens) must restore recovery eligibility"
         );
     }
 
