@@ -496,22 +496,25 @@ export function SettingsView({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-surface-900">
-      {/* Header */}
-      <div className="h-12 bg-surface-850 border-b border-surface-700 flex items-center px-4 shrink-0">
+      {/* Header: ProfileSelector wraps onto its own row on mobile via basis-full so the Back affordance and title keep their space */}
+      <div
+        data-testid="settings-header"
+        className="bg-surface-850 border-b border-surface-700 shrink-0 flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 md:flex-nowrap md:h-12 md:py-0"
+      >
         <button
           onClick={onClose}
-          className="text-brand-500 mr-3 cursor-pointer text-sm"
+          className="text-brand-500 cursor-pointer text-sm shrink-0"
         >
           &larr; Back
         </button>
-        <span className="text-sm font-semibold text-text-bright">Settings</span>
+        <span className="text-sm font-semibold text-text-bright shrink-0">Settings</span>
         {saving && (
-          <span className="ml-2 text-xs text-text-dim">Saving...</span>
+          <span className="text-xs text-text-dim shrink-0">Saving...</span>
         )}
         {saveError && (
-          <span className="ml-2 text-xs text-red-400">{saveError}</span>
+          <span className="text-xs text-red-400 truncate min-w-0">{saveError}</span>
         )}
-        <div className="flex-1 flex justify-center">
+        <div className="basis-full flex justify-center overflow-x-auto md:basis-auto md:ml-auto md:overflow-visible md:justify-end shrink-0">
           <ProfileSelector
             selectedProfile={selectedProfile}
             onSelect={setSelectedProfile}
