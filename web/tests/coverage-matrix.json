@@ -432,6 +432,105 @@
       ]
     },
     {
+      "id": "sidebar.reorder-stationary-click",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/sidebar-reorder-stationary-click-navigates.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.reorder-tiny-drag-noop",
+      "kind": "mocked-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/sidebar-reorder-tiny-drag-noop.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.reorder-click-after-drag-suppressed",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/sidebar-reorder-click-after-drag-suppressed.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.reorder-cross-group-noop",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/sidebar-reorder-cross-group-noop.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.reorder-read-only",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/sidebar-reorder-read-only.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.reorder-mobile-tap-navigates",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/sidebar-reorder-mobile-tap-navigates.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.reorder-mobile-flick-scrolls",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/sidebar-reorder-mobile-flick-scrolls.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.reorder-mobile-press-hold",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/sidebar-reorder-mobile-press-hold-reorders.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.sidebar-reorder-reload-persists",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-reorder-reload-persists.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
       "id": "sidebar.client-side-navigation",
       "kind": "mocked-playwright",
       "risk": "medium",
@@ -1272,6 +1371,54 @@
       ],
       "components": [
         "web/src/components/settings/ThemeSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-theme-custom",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/settings-theme-custom.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ThemeSettings.tsx",
+        "web/src/lib/theme.ts"
+      ]
+    },
+    {
+      "id": "story.settings-theme-custom-malformed",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/settings-theme-custom-malformed.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ThemeSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-theme-color-mode",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/settings-theme-color-mode.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ThemeSettings.tsx",
+        "web/src/hooks/useResolvedTheme.ts"
+      ]
+    },
+    {
+      "id": "story.settings-theme-failure-revert",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/settings-theme-failure-revert.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ThemeSettings.tsx",
+        "web/src/components/SettingsView.tsx",
+        "web/src/hooks/useResolvedTheme.ts"
       ]
     },
     {
