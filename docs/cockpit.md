@@ -239,6 +239,13 @@ state are always in sync.
 - **TUI status indicators**: a cockpit session that's healthy shows
   as Idle/Active in the TUI session list, since cockpit health is
   observed via the ACP event stream rather than tmux pane probing.
+- **`--auth=passphrase` daemons**: the local TUI attaches to a
+  same-host daemon without going through the passphrase exchange.
+  Loopback callers are treated as fs-trusted because the daemon's
+  serve files under `~/.agent-of-empires/serve.*` are already 0600,
+  so the filesystem permission boundary protects same-host access.
+  Remote callers proxied through a tunnel still hit the passphrase
+  wall as expected. See #1525.
 
 ### TUI cockpit view keybinds
 
