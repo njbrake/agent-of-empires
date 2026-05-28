@@ -2708,7 +2708,10 @@ fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
 /// `COLORTERM=truecolor` at launch keeps color on without leaking the override
 /// to other agents.
 fn apply_agent_launch_env(cmd: &mut String, agent: Option<&'static crate::agents::AgentDef>) {
-    if !matches!(agent.map(|a| a.name), Some("antigravity" | "codex")) {
+    if !matches!(
+        agent.map(|a| a.name),
+        Some("antigravity" | "codex" | "gajae-code")
+    ) {
         return;
     }
 
@@ -4340,6 +4343,20 @@ mod tests {
         assert!(cmd_str.contains("FORCE_COLOR=1"));
         assert!(cmd_str.contains("COLORTERM=truecolor"));
         assert!(cmd_str.contains("codex"));
+    }
+
+    #[test]
+    fn test_build_host_command_gajae_code_forces_color() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "gajae-code".to_string();
+        let cmd = inst.build_host_command(crate::agents::get_agent("gajae-code"), &None);
+        let cmd_str = cmd.unwrap();
+
+        assert!(cmd_str.contains("env -u NO_COLOR"));
+        assert!(cmd_str.contains("TERM=xterm-256color"));
+        assert!(cmd_str.contains("FORCE_COLOR=1"));
+        assert!(cmd_str.contains("COLORTERM=truecolor"));
+        assert!(cmd_str.contains("gjc"));
     }
 
     #[test]

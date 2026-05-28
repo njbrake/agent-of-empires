@@ -257,6 +257,18 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         clean_files: &[],
     },
     AgentConfigMount {
+        tool_name: "gajae-code",
+        host_rel: ".gjc/agent",
+        container_suffix: ".gjc/agent",
+        skip_entries: &["sandbox", "sessions", "terminal-sessions", "logs"],
+        seed_files: &[],
+        copy_dirs: &["skills"],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+        clean_files: &[],
+    },
+    AgentConfigMount {
         tool_name: "antigravity",
         host_rel: ".gemini/antigravity-cli",
         container_suffix: ".gemini/antigravity-cli",
@@ -1955,6 +1967,13 @@ mod tests {
             .collect();
         assert_eq!(hermes_mounts.len(), 1);
         assert_eq!(hermes_mounts[0].host_rel, ".hermes");
+
+        let gajae_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
+            .iter()
+            .filter(|m| m.tool_name == "gajae-code")
+            .collect();
+        assert_eq!(gajae_mounts.len(), 1);
+        assert_eq!(gajae_mounts[0].host_rel, ".gjc/agent");
 
         let antigravity_mounts: Vec<_> = AGENT_CONFIG_MOUNTS
             .iter()

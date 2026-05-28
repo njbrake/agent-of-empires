@@ -1272,6 +1272,32 @@ pub fn detect_qwen_status(raw_content: &str) -> Status {
 }
 
 pub fn detect_antigravity_status(raw_content: &str) -> Status {
+    detect_gajae_like_status(
+        raw_content,
+        &[
+            "not signed in",
+            "signing in",
+            "authorization url",
+            "authorization code",
+            "google sign-in",
+        ],
+    )
+}
+
+pub fn detect_gajae_code_status(raw_content: &str) -> Status {
+    detect_gajae_like_status(
+        raw_content,
+        &[
+            "api key",
+            "anthropic_api_key",
+            "openai_api_key",
+            "select provider",
+            "sign in",
+        ],
+    )
+}
+
+fn detect_gajae_like_status(raw_content: &str, auth_markers: &[&str]) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
     let non_empty_lines: Vec<&str> = lines
@@ -1289,11 +1315,9 @@ pub fn detect_antigravity_status(raw_content: &str) -> Status {
         .collect::<Vec<&str>>()
         .join("\n");
 
-    if last_lines_lower.contains("not signed in")
-        || last_lines_lower.contains("signing in")
-        || last_lines_lower.contains("authorization url")
-        || last_lines_lower.contains("authorization code")
-        || last_lines_lower.contains("google sign-in")
+    if auth_markers
+        .iter()
+        .any(|marker| last_lines_lower.contains(marker))
     {
         return Status::Waiting;
     }
@@ -2881,6 +2905,45 @@ path: /workspace/secrets.env
         assert_eq!(
             detect_antigravity_status("random output text"),
             Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_detect_gajae_code_status_idle_on_ready_prompt() {
+        let content = "\
+╭─── gjc v0.1.3 · GJC forge ─────────────────────────────╮
+│                                                        │
+╰────────────────────────────────────────────────────────╯
+
+> Type your message...";
+        assert_eq!(detect_gajae_code_status(content), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_gajae_code_status_running() {
+        assert_eq!(
+            detect_gajae_code_status("processing request\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_gajae_code_status("⠋ Thinking about your request"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_gajae_code_status("Editing src/session/instance.rs"),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_detect_gajae_code_status_waiting() {
+        assert_eq!(
+            detect_gajae_code_status("run command?\nenter to select"),
+            Status::Waiting
+        );
+        assert_eq!(
+            detect_gajae_code_status("OPENAI_API_KEY is required"),
+            Status::Waiting
         );
     }
 
