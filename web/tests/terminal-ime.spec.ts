@@ -116,5 +116,8 @@ test.describe("Terminal IME input", () => {
     await expect
       .poll(() => sentText(handle, start), { timeout: 5_000 })
       .toContain("\x1b[200~\n\x1b[201~");
+    // xterm.js fires both keydown and keypress for Enter; the handler must
+    // suppress both, otherwise a stray bare CR leaks through and submits.
+    expect(sentText(handle, start)).not.toContain("\r");
   });
 });

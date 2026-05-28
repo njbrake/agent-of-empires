@@ -262,9 +262,16 @@ export function useTerminal(
     // Shift+Enter → bracketed paste containing a newline. Agents like
     // Claude Code treat pasted newlines as literal text (inserted, not
     // submitted). Bracketed paste passes cleanly through tmux without
-    // requiring extended-keys negotiation.
+    // requiring extended-keys negotiation. Gated on bare Shift+Enter so
+    // Ctrl/Alt/Cmd+Shift+Enter still reach the app as distinct combos.
     term.attachCustomKeyEventHandler((ev) => {
-      if (ev.key === "Enter" && ev.shiftKey) {
+      if (
+        ev.key === "Enter" &&
+        ev.shiftKey &&
+        !ev.ctrlKey &&
+        !ev.metaKey &&
+        !ev.altKey
+      ) {
         if (ev.type === "keydown") {
           const ws = wsRef.current;
           if (ws?.readyState === WebSocket.OPEN) {
