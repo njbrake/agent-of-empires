@@ -7,9 +7,10 @@
 //! single hook to call after `initialize` succeeds, instead of scattering
 //! ad-hoc semver checks at every spawn site.
 //!
-//! Today only `ClaudeAgentAcp` carries a minimum version (>=0.37.0,
+//! Today only `ClaudeAgentAcp` carries a minimum version (>=0.38.0,
 //! required for `memory_recall` tool-call emission, native `cancelled`
-//! stop reason, and several other behaviors aoe builds on). Other agents
+//! stop reason, Opus 4.8 model availability, and several other behaviors
+//! aoe builds on). Other agents
 //! get a permissive policy (protocol check only). Long-term aoe should
 //! prefer ACP capability flags over package-version gating; until upstream
 //! exposes those, package versions are the only precise contract.
@@ -47,7 +48,7 @@ impl ExpectedAgent {
     /// separators, and the `.exe` / `.cmd` suffixes Windows shims add.
     /// Without this normalization a wrapped or Windows-installed
     /// `claude-agent-acp` would land in `Other` and silently bypass the
-    /// >=0.37.0 gate.
+    /// >=0.38.0 gate.
     pub fn from_command(command: &str) -> Self {
         // Scan every whitespace-separated token. The actual binary can
         // be the first token (`/usr/local/bin/claude-agent-acp`) but
@@ -55,7 +56,7 @@ impl ExpectedAgent {
         // (`bash claude-agent-acp`, `env -u FOO claude-agent-acp`,
         // `npx claude-agent-acp`, etc.). Match against the first token
         // that classifies as a known adapter so wrappers don't bypass
-        // the >=0.37.0 gate.
+        // the >=0.38.0 gate.
         command
             .split_whitespace()
             .find_map(|token| {
@@ -98,7 +99,7 @@ impl ExpectedAgent {
         match self {
             Self::ClaudeAgentAcp => CompatibilityPolicy {
                 expected_name: Some("@agentclientprotocol/claude-agent-acp"),
-                min_version: Some(semver::Version::new(0, 37, 0)),
+                min_version: Some(semver::Version::new(0, 38, 0)),
                 required_protocol: ProtocolVersion::V1,
                 fail_on_missing_agent_info: true,
             },
@@ -186,7 +187,7 @@ impl StartupError {
                 expected_package,
                 install_command,
             } => format!(
-                "Adapter did not report its package version. aoe requires {expected_package} >=0.37.0. Run: {install_command}",
+                "Adapter did not report its package version. aoe requires {expected_package} >=0.38.0. Run: {install_command}",
             ),
             Self::MismatchedAgentName {
                 expected,
@@ -384,12 +385,12 @@ mod tests {
             panic!()
         };
         assert_eq!(installed, "0.32.0");
-        assert_eq!(required, "0.37.0");
+        assert_eq!(required, "0.38.0");
     }
 
     #[test]
     fn claude_at_minimum_accepted() {
-        let init = make_init("@agentclientprotocol/claude-agent-acp", "0.37.0");
+        let init = make_init("@agentclientprotocol/claude-agent-acp", "0.38.0");
         validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap();
     }
 
@@ -422,7 +423,7 @@ mod tests {
 
     #[test]
     fn claude_mismatched_name_rejected() {
-        let init = make_init("some-other-package", "0.37.0");
+        let init = make_init("some-other-package", "0.38.0");
         let err = validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap_err();
         assert_eq!(err.kind(), "mismatched_agent_name");
     }
@@ -505,7 +506,7 @@ mod tests {
         );
         // `npx`-style npm-package-spec invocations are out of scope:
         // npx itself resolves the package and the spawned binary's
-        // argv[0] is `claude-agent-acp`, not `claude-agent-acp@0.37.0`.
+        // argv[0] is `claude-agent-acp`, not `claude-agent-acp@0.38.0`.
         // The version-suffixed form would only show up if a user wired
         // it manually into AgentSpec.command, which is not a supported
         // configuration today.
