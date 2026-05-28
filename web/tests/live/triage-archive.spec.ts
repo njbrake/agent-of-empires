@@ -65,6 +65,14 @@ base.describe("sidebar archive via context menu (#1581)", () => {
       const sunkSection = page.locator("[data-testid='sidebar-sunk-section']");
       await expect(sunkSection).toBeVisible({ timeout: 5_000 });
 
+      // Regression for #1600: with every workspace in the repo group
+      // sunk, the orphan group header must disappear from the live
+      // list. The sole live session in this project was just archived,
+      // so no repo group header should remain.
+      await expect(
+        page.locator("[data-testid='sidebar-group-header']"),
+      ).toHaveCount(0);
+
       // Default collapsed: the archived row is not visible until the
       // footer is expanded.
       const archivedRowInFooter = sunkSection.locator(
@@ -155,6 +163,12 @@ base.describe("sidebar archive via context menu (#1581)", () => {
           { timeout: 5_000 },
         )
         .toBeNull();
+
+      // Regression for #1600: once the row is back in the live tier
+      // the repo group header reappears.
+      await expect(
+        page.locator("[data-testid='sidebar-group-header']"),
+      ).toHaveCount(1, { timeout: 5_000 });
     } finally {
       await serve.stop();
     }

@@ -1933,7 +1933,8 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/lib/__tests__/sidebarSort.test.ts"
+        "src/lib/__tests__/sidebarSort.test.ts",
+        "tests/live/triage-archive.spec.ts"
       ],
       "components": [
         "web/src/lib/sidebarSort.ts",
@@ -1945,7 +1946,8 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": [
-        "src/lib/__tests__/menuPosition.test.ts"
+        "src/lib/__tests__/menuPosition.test.ts",
+        "tests/sidebar-context-menu-clamp.spec.ts"
       ],
       "components": [
         "web/src/lib/menuPosition.ts",
