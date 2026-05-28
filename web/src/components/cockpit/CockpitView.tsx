@@ -1538,7 +1538,7 @@ export function SnoozedWorkerStoppedBanner({
   );
 }
 
-function StartupErrorBanner({
+export function StartupErrorBanner({
   sessionId,
   message,
 }: {
