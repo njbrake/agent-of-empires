@@ -1288,11 +1288,13 @@ pub fn detect_gajae_code_status(raw_content: &str) -> Status {
     detect_gajae_like_status(
         raw_content,
         &[
-            "api key",
-            "anthropic_api_key",
-            "openai_api_key",
-            "select provider",
-            "sign in",
+            "api key is required",
+            "anthropic_api_key is required",
+            "openai_api_key is required",
+            "select provider:",
+            "not signed in",
+            "please sign in",
+            "sign in to",
         ],
     )
 }
@@ -2931,6 +2933,14 @@ path: /workspace/secrets.env
         );
         assert_eq!(
             detect_gajae_code_status("Editing src/session/instance.rs"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_gajae_code_status("Thinking about API key rotation\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_gajae_code_status("Processing sign in docs\nesc to interrupt"),
             Status::Running
         );
     }
