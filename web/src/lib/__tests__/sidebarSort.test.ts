@@ -224,6 +224,37 @@ describe("workspaceIsSunk", () => {
     const ws = workspace("w", []);
     expect(workspaceIsSunk(ws)).toBe(false);
   });
+
+  it("returns true when every session is archived-only (no snooze)", () => {
+    // Branch coverage on the lambda: `archived_at != null` true side
+    // alone, no snoozed_until contribution.
+    const ws = workspace("w", [
+      session({ id: "s1", archived_at: "2025-01-01T00:00:00Z" }),
+      session({ id: "s2", archived_at: "2025-02-01T00:00:00Z" }),
+    ]);
+    expect(workspaceIsSunk(ws)).toBe(true);
+  });
+
+  it("returns true when every session is snoozed-only (no archive)", () => {
+    // Branch coverage on the lambda: `snoozed_until != null` true
+    // side alone, after archived_at false short-circuits the `||`.
+    const ws = workspace("w", [
+      session({ id: "s1", snoozed_until: "2099-01-01T00:00:00Z" }),
+      session({ id: "s2", snoozed_until: "2099-02-01T00:00:00Z" }),
+    ]);
+    expect(workspaceIsSunk(ws)).toBe(true);
+  });
+
+  it("returns false when one session has neither flag", () => {
+    // Branch coverage: the lambda's `archived_at != null` false side
+    // AND `snoozed_until != null` false side both fire, then `every`
+    // short-circuits with false.
+    const ws = workspace("w", [
+      session({ id: "s1", archived_at: "2025-01-01T00:00:00Z" }),
+      session({ id: "s2" }), // live session breaks the every().
+    ]);
+    expect(workspaceIsSunk(ws)).toBe(false);
+  });
 });
 
 describe("workspaceTriageTier", () => {
@@ -320,6 +351,36 @@ describe("snoozeTimestampCloseEnough", () => {
   it("falls back to literal equality for unparseable strings", () => {
     expect(snoozeTimestampCloseEnough("not-a-date", "not-a-date")).toBe(true);
     expect(snoozeTimestampCloseEnough("not-a-date", "also-bad")).toBe(false);
+  });
+
+  it("covers both `||` short-circuit branches when only one side is unparseable", () => {
+    // Branch coverage: the `!Number.isFinite(a) || !Number.isFinite(b)`
+    // check has 4 outcomes (a/b each parseable or not). The other
+    // cases above hit both-finite and both-unparseable; these two
+    // exercise the mixed cases so v8 sees every branch leg.
+    expect(
+      snoozeTimestampCloseEnough("2099-01-01T00:00:00Z", "not-a-date"),
+    ).toBe(false);
+    expect(
+      snoozeTimestampCloseEnough("not-a-date", "2099-01-01T00:00:00Z"),
+    ).toBe(false);
+  });
+
+  it("rejects exactly at the 2-minute tolerance boundary", () => {
+    // Inclusive boundary at 2 minutes (= 120_000 ms). Just-over
+    // counts as different snoozes; just-under counts as the same.
+    expect(
+      snoozeTimestampCloseEnough(
+        "2099-01-01T00:00:00Z",
+        "2099-01-01T00:02:00Z",
+      ),
+    ).toBe(true);
+    expect(
+      snoozeTimestampCloseEnough(
+        "2099-01-01T00:00:00Z",
+        "2099-01-01T00:02:00.001Z",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -420,6 +481,17 @@ describe("triageStateOf", () => {
     expect(
       triageStateOf({ isPinned: false, isArchived: false, isSnoozed: true }),
     ).toBe("snoozed");
+  });
+
+  it("returns 'archived' when archived + snoozed are both set (no pin)", () => {
+    // Branch coverage: the archived/snoozed branch combo without
+    // pin. Archive wins because the data layer makes it impossible
+    // for a session to be both at once, but workspace aggregators
+    // can surface both via different sessions. Archive is the
+    // stronger sink so the menu picks it.
+    expect(
+      triageStateOf({ isPinned: false, isArchived: true, isSnoozed: true }),
+    ).toBe("archived");
   });
 
   it("prefers pinned over archived and snoozed (defensive priority)", () => {

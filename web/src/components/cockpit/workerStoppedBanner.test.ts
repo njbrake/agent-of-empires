@@ -80,4 +80,48 @@ describe("pickWorkerStoppedVariant", () => {
       }),
     ).toBe("generic");
   });
+
+  it("returns 'generic' when only snoozedUntil is null but archivedAt is null too (branch combo)", () => {
+    // Branch coverage: the snoozedUntil-falsy leg of the third `if`
+    // (after archivedAt also falsy). The "generic" test above hits
+    // this path with all-null; this case uses an empty string on
+    // startupError to confirm that branch's falsy side as well.
+    expect(
+      pickWorkerStoppedVariant({
+        workerStopped: true,
+        startupError: "",
+        archivedAt: null,
+        snoozedUntil: null,
+      }),
+    ).toBe("generic");
+  });
+
+  it("returns 'archived' when startupError is empty string (not truthy)", () => {
+    // Branch coverage: a non-null but falsy startupError must fall
+    // through to the archived check rather than short-circuiting on
+    // the second `if`.
+    expect(
+      pickWorkerStoppedVariant({
+        workerStopped: true,
+        startupError: "",
+        archivedAt: "2026-01-01T00:00:00Z",
+        snoozedUntil: null,
+      }),
+    ).toBe("archived");
+  });
+
+  it("returns 'snoozed' when archivedAt is null and snoozedUntil is non-null", () => {
+    // Mirror of the 'archived' branch with the third `if` taking the
+    // falsy side and the fourth `if` taking truthy. Ensures the
+    // archivedAt-null leg is exercised independently of the
+    // archived-wins-over-snoozed defensive case.
+    expect(
+      pickWorkerStoppedVariant({
+        workerStopped: true,
+        startupError: null,
+        archivedAt: null,
+        snoozedUntil: "2099-01-01T00:00:00Z",
+      }),
+    ).toBe("snoozed");
+  });
 });

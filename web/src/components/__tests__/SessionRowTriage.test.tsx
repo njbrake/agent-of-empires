@@ -313,6 +313,82 @@ describe("SessionRow triage actions", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("Unpin click fires PATCH /api/sessions/:id/pin with { pinned: false }", async () => {
+    const ws = workspace("w-pinned", [
+      session({ id: "sess-unpin", pinned_at: "2026-01-01T00:00:00Z" }),
+    ]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    fireEvent.click(screen.getByTestId("sidebar-context-menu-pin"));
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe("/api/sessions/sess-unpin/pin");
+    expect(JSON.parse(init!.body as string)).toEqual({ pinned: false });
+  });
+
+  it("Unarchive click fires PATCH /api/sessions/:id/archive with { archived: false }", async () => {
+    const ws = workspace("w-archived", [
+      session({ id: "sess-unarc", archived_at: "2026-01-01T00:00:00Z" }),
+    ]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    fireEvent.click(screen.getByTestId("sidebar-context-menu-archive"));
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe("/api/sessions/sess-unarc/archive");
+    expect(JSON.parse(init!.body as string)).toEqual({
+      archived: false,
+      kill_pane: true,
+    });
+  });
+
+  it("reverts optimistic pin override on PATCH failure", async () => {
+    // Branch coverage: the wake-call-failed path through togglePin.
+    fetchSpy.mockImplementation(async () =>
+      new Response("nope", { status: 500 }),
+    );
+    const ws = workspace("w-live", [session({ id: "sess-pin-fail" })]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    fireEvent.click(screen.getByTestId("sidebar-context-menu-pin"));
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    // The optimistic pin flipped on, then reverted off. The glyph
+    // should not be visible after the failure settles.
+    await vi.waitFor(() =>
+      expect(screen.queryByLabelText("Pinned")).toBeNull(),
+    );
+  });
+
+  it("reverts optimistic archive override on PATCH failure", async () => {
+    fetchSpy.mockImplementation(async () =>
+      new Response("nope", { status: 500 }),
+    );
+    const ws = workspace("w-live", [session({ id: "sess-arch-fail" })]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    fireEvent.click(screen.getByTestId("sidebar-context-menu-archive"));
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    await vi.waitFor(() =>
+      expect(screen.queryByLabelText("Archived")).toBeNull(),
+    );
+  });
+
   it("Unsnooze click fires PATCH /api/sessions/:id/snooze with { minutes: null }", async () => {
     const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     const ws = workspace("w-snoozed", [
