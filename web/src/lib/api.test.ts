@@ -16,7 +16,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchAbout, isDebugBuild, type ServerAbout } from "./api";
+import {
+  fetchAbout,
+  isDebugBuild,
+  setSessionArchive,
+  setSessionPin,
+  setSessionSnooze,
+  type ServerAbout,
+} from "./api";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -92,6 +99,91 @@ describe("fetchAbout", () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse(makeAbout()));
     await fetchAbout();
     expect(fetchSpy).toHaveBeenCalledWith("/api/about", undefined);
+  });
+});
+
+describe("setSessionPin", () => {
+  it("PATCHes /api/sessions/{id}/pin with the pinned bool", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ id: "sess-1", pinned_at: "2026-01-01T00:00:00Z" }),
+    );
+    await setSessionPin("sess-1", true);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe("/api/sessions/sess-1/pin");
+    expect(init?.method).toBe("PATCH");
+    expect(JSON.parse(init!.body as string)).toEqual({ pinned: true });
+  });
+
+  it("forwards `pinned: false` for the unpin path", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ id: "sess-1" }));
+    await setSessionPin("sess-1", false);
+    expect(JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string)).toEqual({
+      pinned: false,
+    });
+  });
+
+  it("returns null on non-2xx", async () => {
+    fetchSpy.mockResolvedValueOnce(new Response("", { status: 500 }));
+    expect(await setSessionPin("sess-1", true)).toBeNull();
+  });
+
+  it("returns null on network failure", async () => {
+    fetchSpy.mockRejectedValueOnce(new Error("offline"));
+    expect(await setSessionPin("sess-1", true)).toBeNull();
+  });
+});
+
+describe("setSessionArchive", () => {
+  it("defaults kill_pane to true (TUI/CLI parity)", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ id: "sess-1" }));
+    await setSessionArchive("sess-1", true);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe("/api/sessions/sess-1/archive");
+    expect(JSON.parse(init!.body as string)).toEqual({
+      archived: true,
+      kill_pane: true,
+    });
+  });
+
+  it("forwards an explicit kill_pane=false", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ id: "sess-1" }));
+    await setSessionArchive("sess-1", true, false);
+    expect(JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string)).toEqual({
+      archived: true,
+      kill_pane: false,
+    });
+  });
+
+  it("PATCHes archived=false to unarchive", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ id: "sess-1" }));
+    await setSessionArchive("sess-1", false);
+    expect(JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string)).toEqual({
+      archived: false,
+      kill_pane: true,
+    });
+  });
+});
+
+describe("setSessionSnooze", () => {
+  it("PATCHes minutes as a positive integer", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ id: "sess-1" }));
+    await setSessionSnooze("sess-1", 60);
+    const [url, init] = fetchSpy.mock.calls[0]!;
+    expect(url).toBe("/api/sessions/sess-1/snooze");
+    expect(JSON.parse(init!.body as string)).toEqual({ minutes: 60 });
+  });
+
+  it("PATCHes minutes=null to unsnooze", async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ id: "sess-1" }));
+    await setSessionSnooze("sess-1", null);
+    expect(JSON.parse(fetchSpy.mock.calls[0]![1]!.body as string)).toEqual({
+      minutes: null,
+    });
+  });
+
+  it("returns null on 400 (server rejected an out-of-range duration)", async () => {
+    fetchSpy.mockResolvedValueOnce(new Response("", { status: 400 }));
+    expect(await setSessionSnooze("sess-1", 0)).toBeNull();
   });
 });
 
