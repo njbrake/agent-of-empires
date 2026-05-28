@@ -11,7 +11,7 @@
     <a href="https://clawhub.ai/njbrake/aoe"><img src="https://img.shields.io/badge/ClawHub-aoe-blue" alt="ClawHub"></a>
     <br>
     <a href="https://www.youtube.com/@agent-of-empires"><img src="https://img.shields.io/badge/YouTube-channel-red?logo=youtube" alt="YouTube"></a>
-    <a href="https://x.com/natebrake"><img src="https://img.shields.io/badge/follow-%40natebrake-black?logo=x&logoColor=white" alt="Follow @natebrake"></a>
+    <a href="https://x.com/agentofempires"><img src="https://img.shields.io/badge/follow-%40agentofempires-black?logo=x&logoColor=white" alt="Follow @agentofempires"></a>
     <a href="https://discord.gg/5N3QKX3f6s"><img src="https://img.shields.io/badge/Discord-Mozilla.ai-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   </p>
 </p>
@@ -120,7 +120,7 @@ In the TUI, press `?` for help. The bottom information bar shows all available k
 
 ## Roadmap
 
-The AoE roadmap is public: see the [project board](https://github.com/users/njbrake/projects/1) for what's planned, in progress, and recently shipped. Issues and PRs welcome.
+The AoE roadmap is public: see the [project board](https://github.com/orgs/agent-of-empires/projects/1) for what's planned, in progress, and recently shipped. Issues and PRs welcome.
 
 ## FAQ
 
@@ -204,9 +204,9 @@ unchanged.
 
 Inspired by [agent-deck](https://github.com/asheshgoplani/agent-deck) (Go + Bubble Tea).
 
-## Author
+## Maintainers
 
-Created by [Nate Brake](https://x.com/natebrake) ([@natebrake](https://x.com/natebrake)), Machine Learning Engineer at [Mozilla.ai](https://www.mozilla.ai/).
+Maintained by the Agent of Empires community, with support from [Mozilla.ai](https://www.mozilla.ai/). See [CONTRIBUTORS](https://github.com/agent-of-empires/agent-of-empires/graphs/contributors) for the full list of contributors.
 
 ## License
 
