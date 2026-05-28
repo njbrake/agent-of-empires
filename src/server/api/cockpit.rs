@@ -708,18 +708,29 @@ pub(crate) fn read_log_tail(
     let len = file.metadata()?.len();
     let read_from = len.saturating_sub(WORKER_LOG_MAX_READ_BYTES);
     let truncated = len > WORKER_LOG_MAX_READ_BYTES;
+
+    // If the read window starts inside a line, the first line we parse
+    // is a partial line. If the previous byte is '\n' the first line is
+    // whole and we keep it. Probing one byte before `read_from` is the
+    // cheap way to tell them apart without re-reading the prefix.
+    let mut prev_byte = [0u8; 1];
+    let prev_is_newline = if truncated && read_from > 0 {
+        file.seek(SeekFrom::Start(read_from - 1))?;
+        file.read_exact(&mut prev_byte)?;
+        prev_byte[0] == b'\n'
+    } else {
+        false
+    };
+
     file.seek(SeekFrom::Start(read_from))?;
-    let mut buf = String::new();
-    // Lossy read so a partial UTF-8 boundary at the window edge cannot
-    // 500 the endpoint; the tail is for human eyeballs, exact bytes are
-    // not required.
     let mut raw = Vec::with_capacity((len - read_from) as usize);
     file.read_to_end(&mut raw)?;
-    buf.push_str(&String::from_utf8_lossy(&raw));
+    // Lossy decode so a partial UTF-8 boundary at the window edge cannot
+    // 500 the endpoint; the tail is for human eyeballs, exact bytes are
+    // not required.
+    let buf = String::from_utf8_lossy(&raw);
     let mut lines: Vec<String> = buf.lines().map(|l| l.to_string()).collect();
-    if truncated && !lines.is_empty() {
-        // Drop the first (possibly partial) line so the caller only
-        // sees whole log lines.
+    if truncated && !prev_is_newline && !lines.is_empty() {
         lines.remove(0);
     }
     let total = lines.len();
@@ -1378,6 +1389,23 @@ mod tests {
         let (lines, _, exists) = read_log_tail(&path, 999).unwrap();
         assert_eq!(lines, vec!["only", "three", "lines"]);
         assert!(exists);
+    }
+
+    #[test]
+    fn read_log_tail_keeps_first_line_when_window_starts_on_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("aligned.log");
+        let mut f = std::fs::File::create(&path).unwrap();
+        let big_line = "x".repeat((WORKER_LOG_MAX_READ_BYTES as usize) - 1);
+        writeln!(f, "{big_line}").unwrap();
+        writeln!(f, "first whole line").unwrap();
+        writeln!(f, "second whole line").unwrap();
+        drop(f);
+        let (lines, truncated, exists) = read_log_tail(&path, 10).unwrap();
+        assert!(truncated);
+        assert!(exists);
+        assert_eq!(lines.first().map(String::as_str), Some("first whole line"));
+        assert_eq!(lines.last().map(String::as_str), Some("second whole line"));
     }
 
     #[test]
