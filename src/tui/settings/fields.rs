@@ -92,6 +92,7 @@ pub enum FieldKey {
     StatusBar,
     Mouse,
     Clipboard,
+    HistoryLimit,
     // Session
     DefaultTool,
     StrictHotkeys,
@@ -1461,6 +1462,12 @@ fn build_tmux_fields(
     let (clipboard, clipboard_override) =
         resolve_value(scope, global.tmux.clipboard, tmux.and_then(|t| t.clipboard));
 
+    let (history_limit, history_limit_override) = resolve_value(
+        scope,
+        global.tmux.history_limit,
+        tmux.and_then(|t| t.history_limit),
+    );
+
     let status_bar_selected = match status_bar {
         TmuxStatusBarMode::Auto => 0,
         TmuxStatusBarMode::Enabled => 1,
@@ -1549,6 +1556,18 @@ fn build_tmux_fields(
                     selected: global_clipboard_selected,
                     options: tmux_options,
                 },
+            ),
+        },
+        SettingField {
+            key: FieldKey::HistoryLimit,
+            label: "History Limit",
+            description: "Scrollback lines kept by tmux for each AoE session",
+            value: FieldValue::Number(u64::from(history_limit)),
+            category: SettingsCategory::Tmux,
+            has_override: history_limit_override,
+            inherited_display: inherited_if(
+                history_limit_override,
+                FieldValue::Number(u64::from(global.tmux.history_limit)),
             ),
         },
     ]
@@ -2590,6 +2609,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 _ => TmuxClipboardMode::Disabled,
             };
         }
+        (FieldKey::HistoryLimit, FieldValue::Number(v)) => {
+            config.tmux.history_limit = (*v).min(u64::from(u32::MAX)) as u32;
+        }
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {
             config.session.default_tool =
@@ -2977,6 +2999,10 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 _ => TmuxClipboardMode::Disabled,
             };
             set_profile_override(mode, &mut config.tmux, |s, val| s.clipboard = val);
+        }
+        (FieldKey::HistoryLimit, FieldValue::Number(v)) => {
+            let limit = (*v).min(u64::from(u32::MAX)) as u32;
+            set_profile_override(limit, &mut config.tmux, |s, val| s.history_limit = val);
         }
         // Session
         (FieldKey::DefaultTool, FieldValue::Select { selected, .. }) => {

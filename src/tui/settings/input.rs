@@ -736,6 +736,11 @@ impl SettingsView {
                     t.clipboard = None;
                 }
             }
+            FieldKey::HistoryLimit => {
+                if let Some(ref mut t) = config.tmux {
+                    t.history_limit = None;
+                }
+            }
             // Session
             FieldKey::DefaultTool => {
                 if let Some(ref mut s) = config.session {

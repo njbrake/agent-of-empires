@@ -218,6 +218,9 @@ pub struct TmuxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clipboard: Option<TmuxClipboardMode>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -520,6 +523,9 @@ pub fn apply_tmux_overrides(target: &mut super::config::TmuxConfig, source: &Tmu
     }
     if let Some(clipboard) = source.clipboard {
         target.clipboard = clipboard;
+    }
+    if let Some(history_limit) = source.history_limit {
+        target.history_limit = history_limit;
     }
 }
 
@@ -869,6 +875,7 @@ mod tests {
                 status_bar: Some(TmuxStatusBarMode::Enabled),
                 mouse: None,
                 clipboard: None,
+                history_limit: None,
             }),
             ..Default::default()
         };
@@ -910,6 +917,22 @@ mod tests {
 
         let merged = merge_configs(global, &profile);
         assert_eq!(merged.tmux.clipboard, TmuxClipboardMode::Disabled);
+    }
+
+    #[test]
+    fn test_merge_configs_with_tmux_history_limit_override() {
+        let global = Config::default();
+
+        let profile = ProfileConfig {
+            tmux: Some(TmuxConfigOverride {
+                history_limit: Some(50000),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        assert_eq!(merged.tmux.history_limit, 50000);
     }
 
     #[test]
@@ -995,6 +1018,7 @@ mod tests {
                 status_bar: Some(TmuxStatusBarMode::Enabled),
                 mouse: Some(TmuxMouseMode::Enabled),
                 clipboard: Some(TmuxClipboardMode::Enabled),
+                history_limit: Some(50000),
             }),
             ..Default::default()
         };
@@ -1002,11 +1026,16 @@ mod tests {
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("[tmux]"));
         assert!(serialized.contains(r#"mouse = "enabled""#));
+        assert!(serialized.contains("history_limit = 50000"));
 
         let deserialized: ProfileConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(
             deserialized.tmux.as_ref().unwrap().mouse,
             Some(TmuxMouseMode::Enabled)
+        );
+        assert_eq!(
+            deserialized.tmux.as_ref().unwrap().history_limit,
+            Some(50000)
         );
     }
 

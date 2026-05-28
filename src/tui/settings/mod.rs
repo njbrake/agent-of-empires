@@ -471,9 +471,21 @@ impl SettingsView {
                 crate::session::poller::set_session_id_poller_max_threads(
                     self.global_config.session.session_id_poller_max_threads,
                 );
+                if let Err(e) = crate::tmux::status_bar::apply_history_limit_to_live_sessions(
+                    self.resolved_base.tmux.history_limit,
+                ) {
+                    tracing::debug!(target: "tui.settings", "Failed to live-apply tmux history-limit: {}", e);
+                }
             }
             SettingsScope::Profile => {
                 save_profile_config(&self.profile, &self.profile_config)?;
+                let resolved =
+                    crate::session::profile_config::resolve_config_or_warn(&self.profile);
+                if let Err(e) = crate::tmux::status_bar::apply_history_limit_to_live_sessions(
+                    resolved.tmux.history_limit,
+                ) {
+                    tracing::debug!(target: "tui.settings", "Failed to live-apply tmux history-limit: {}", e);
+                }
             }
             SettingsScope::Repo => {
                 if let (Some(ref project_path), Some(ref repo_config)) =

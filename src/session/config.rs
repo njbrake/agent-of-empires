@@ -1254,6 +1254,10 @@ pub struct TmuxConfig {
     /// wrapped agent reaches the terminal.
     #[serde(default)]
     pub clipboard: TmuxClipboardMode,
+
+    /// Number of scrollback lines tmux keeps for each AoE session.
+    #[serde(default = "default_tmux_history_limit")]
+    pub history_limit: u32,
 }
 
 impl Default for TmuxConfig {
@@ -1262,8 +1266,15 @@ impl Default for TmuxConfig {
             status_bar: TmuxStatusBarMode::Auto,
             mouse: TmuxMouseMode::Auto,
             clipboard: TmuxClipboardMode::Auto,
+            history_limit: default_tmux_history_limit(),
         }
     }
+}
+
+pub const DEFAULT_TMUX_HISTORY_LIMIT: u32 = 2000;
+
+fn default_tmux_history_limit() -> u32 {
+    DEFAULT_TMUX_HISTORY_LIMIT
 }
 
 /// Check if user has a tmux configuration file.
@@ -1870,6 +1881,7 @@ mod tests {
         assert_eq!(tmux.status_bar, TmuxStatusBarMode::Auto);
         assert_eq!(tmux.mouse, TmuxMouseMode::Auto);
         assert_eq!(tmux.clipboard, TmuxClipboardMode::Auto);
+        assert_eq!(tmux.history_limit, DEFAULT_TMUX_HISTORY_LIMIT);
     }
 
     #[test]
@@ -1880,9 +1892,13 @@ mod tests {
 
     #[test]
     fn test_tmux_config_deserialize() {
-        let toml = r#"status_bar = "enabled""#;
+        let toml = r#"
+            status_bar = "enabled"
+            history_limit = 50000
+        "#;
         let tmux: TmuxConfig = toml::from_str(toml).unwrap();
         assert_eq!(tmux.status_bar, TmuxStatusBarMode::Enabled);
+        assert_eq!(tmux.history_limit, 50000);
     }
 
     #[test]
@@ -1948,6 +1964,7 @@ mod tests {
         let toml = r#""#;
         let tmux: TmuxConfig = toml::from_str(toml).unwrap();
         assert_eq!(tmux.clipboard, TmuxClipboardMode::Auto);
+        assert_eq!(tmux.history_limit, DEFAULT_TMUX_HISTORY_LIMIT);
     }
 
     #[test]
