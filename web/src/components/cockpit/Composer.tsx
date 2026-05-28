@@ -654,26 +654,26 @@ function PopoverItems({ trigger }: { trigger: string }) {
 
 /** Insert the picked slash command into the composer text. The Action
  *  popover already stripped the user's `/<typed>` from the input via
- *  `removeOnExecute`, so we set the canonical `/<name> ` form, always
- *  with a trailing space. The trailing space serves two roles: for
- *  `acceptsInput=true` commands it positions the cursor for free-form
- *  arg typing, and for every command it halts assistant-ui's
+ *  `removeOnExecute`, so we set the canonical `/<name>` form and add
+ *  a trailing space. The trailing space halts assistant-ui's
  *  `detectTrigger` backward scan (which keys off whitespace as the
  *  trigger boundary) so the popover does not immediately re-open on
- *  the inserted `/<name>` and consume the next Enter as a re-pick.
- *  See #1512. */
+ *  the inserted `/<name>` and consume the next Enter as a re-pick;
+ *  it also positions the cursor for free-form arg typing when the
+ *  agent advertised the command as `acceptsInput=true`. See #1512. */
 export function insertSlashCommand(
   runtime: ReturnType<typeof useComposerRuntime>,
   item: Unstable_TriggerItem,
 ) {
   if (!runtime) return;
   const current = runtime.getState().text;
+  const suffix = " ";
   // Preserve any text that was already in the buffer (e.g. user typed
   // a long prompt then ran `/foo` mid-message). We just append the
   // command at the end; the typed `/typed` token has already been
   // removed by removeOnExecute, so trailing whitespace is rare.
   const sep = current.length > 0 && !current.endsWith(" ") ? " " : "";
-  runtime.setText(`${current}${sep}/${item.id} `);
+  runtime.setText(`${current}${sep}/${item.id}${suffix}`);
 }
 
 /** Insert a literal "\n" at the textarea's caret. Used by the
