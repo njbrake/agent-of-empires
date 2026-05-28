@@ -654,6 +654,141 @@ describe("useTerminal lifecycle", () => {
     }
   });
 
+  it("session change nulls the old socket's handlers before close (no ghost retry)", async () => {
+    // Regression for #1455: a session change must detach the previous
+    // socket's onopen/onmessage/onclose/onerror BEFORE close(), otherwise
+    // the still-bound onclose closure runs after cleanup and schedules a
+    // setTimeout that calls connect() on the OLD sessionId, dialing a
+    // ghost socket and overwriting wsRef.current for the new session.
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { rerender } = renderHook(
+        (props: { id: string | null }) => {
+          const term = useTerminal(props.id, "ws", false, false);
+          if (term.containerRef && !term.containerRef.current) {
+            (
+              term.containerRef as unknown as {
+                current: HTMLDivElement | null;
+              }
+            ).current = div;
+          }
+          return term;
+        },
+        { initialProps: { id: "s-old" } },
+      );
+      await flushAsync();
+      const oldWs = sockets[0]!;
+      expect(oldWs.url).toContain("/sessions/s-old/ws");
+      expect(oldWs.onclose).not.toBeNull();
+
+      // Switch sessions. Cleanup should detach handlers before close().
+      rerender({ id: "s-new" });
+      await flushAsync();
+
+      // All four lifecycle handlers must be cleared on the orphaned socket.
+      expect(oldWs.onopen).toBeNull();
+      expect(oldWs.onmessage).toBeNull();
+      expect(oldWs.onclose).toBeNull();
+      expect(oldWs.onerror).toBeNull();
+
+      // Even if the browser had a queued close event for the old socket,
+      // with onclose nulled it cannot schedule a setTimeout retry. Advance
+      // past every retry delay and confirm no third (ghost) socket was
+      // dialed for the OLD sessionId.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(12_000);
+      });
+      await flushAsync();
+      const ghostForOldSession = sockets
+        .slice(1)
+        .find((s) => s.url.includes("/sessions/s-old/ws"));
+      expect(ghostForOldSession).toBeUndefined();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("server close code 1011 falls through to the standard retry path", async () => {
+    // Regression for #1455: the server now sends 1011 <reason> close
+    // frames on openpty/spawn/clone-reader/take-writer failures instead
+    // of opaque 1006. The client must treat 1011 as a regular retryable
+    // failure (not the 4001 short-circuit).
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { result } = renderHook(() => {
+        const term = useTerminal("s-1011", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.CLOSED;
+        ws.onclose?.({
+          code: 1011,
+          reason: "openpty_failed",
+          wasClean: false,
+        } as CloseEvent);
+      });
+      await flushAsync();
+      expect(result.current.state.reconnecting).toBe(true);
+      expect(result.current.state.retryCount).toBe(1);
+      expect(result.current.state.retryCount).toBeLessThan(
+        result.current.maxRetries,
+      );
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("server close code 1013 (tmux_not_ready) falls through to the standard retry path", async () => {
+    // Regression for #1455: server's pane-readiness poll closes with
+    // 1013 tmux_not_ready when the bounded wait elapses. Client must
+    // retry on the fast-start ladder, NOT short-circuit to exhausted.
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { result } = renderHook(() => {
+        const term = useTerminal("s-1013", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.CLOSED;
+        ws.onclose?.({
+          code: 1013,
+          reason: "tmux_not_ready",
+          wasClean: false,
+        } as CloseEvent);
+      });
+      await flushAsync();
+      expect(result.current.state.reconnecting).toBe(true);
+      expect(result.current.state.retryCount).toBe(1);
+      // The next retry must fire on the fast-start ladder, not on the
+      // old 1s+ exponential delay.
+      const before = sockets.length;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(250);
+      });
+      await flushAsync();
+      expect(sockets.length).toBeGreaterThan(before);
+    } finally {
+      div.remove();
+    }
+  });
+
   it("Ctrl+wheel zooms the font size and persists it after the debounce", async () => {
     const div = document.createElement("div");
     document.body.appendChild(div);
