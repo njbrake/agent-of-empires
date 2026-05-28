@@ -239,6 +239,20 @@ A sort toggle next to the filter button in the sidebar header switches to **Rece
 
 The toggle's state is per-browser (localStorage), not synced across devices and not tied to your profile. Toggling back to manual restores the stored manual order and re-enables drag. The multi-repo group stays pinned at the bottom in both modes.
 
+### Triage: pin, archive, snooze
+
+The sidebar exposes three triage primitives via the right-click (long-press on touch) context menu on any session row:
+
+- **Pin** floats the workspace to the top of the sidebar in every sort mode (manual and Recent activity). Pin is web-only and intentionally distinct from the TUI's favorite mark, which is a within-tier signal for the Attention sort. The web pin renders as a pushpin glyph next to the row title; the TUI favorite keeps its `*` star marker.
+- **Archive** kills the session's tmux pane (or shuts down the cockpit worker for ACP-cockpit sessions) and sinks the row into the collapsible "Snoozed & archived" footer of its repo group. Sending a message to the row from the dashboard wakes it back into the live list automatically. Daemon restarts and the cockpit worker reconciler both skip archived sessions, so a row stays parked until you explicitly unarchive it.
+- **Snooze** sinks the row into the same footer for a chosen duration. The menu offers the same eight presets as the TUI snooze dialog: 1h, 2h, 3h, 4h, 5h, 6h, 1d, 1w. The row wakes automatically when the timer expires; sending a message wakes it early.
+
+Snooze and archive are mutually exclusive with pin: pinning a sunk row surfaces it, and archiving or snoozing a pinned row removes the pin. The three primitives can be mixed freely across concurrent surfaces (TUI, CLI, web), and the data layer enforces the mutual-exclusion rules in one place so peer writes cannot leave a row in a contradictory state.
+
+The "Snoozed & archived" footer is collapsed by default per repo group; clicking the header expands the list and remembers the choice per group in localStorage. Drag-to-reorder is disabled on pinned and sunk rows since their placement is computed.
+
+In read-only mode (`aoe serve --read-only`) the three menu entries are hidden, matching the existing read-only gate on Delete.
+
 ## Architecture
 
 The server embeds an axum web server that serves a React frontend and provides:
