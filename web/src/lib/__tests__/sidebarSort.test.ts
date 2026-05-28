@@ -8,6 +8,8 @@ import {
   loadSidebarSortMode,
   repoGroupLastActivityMs,
   saveSidebarSortMode,
+  triageMenuShape,
+  triageStateOf,
   workspaceIsPinned,
   workspaceIsSunk,
   workspaceLastActivityMs,
@@ -291,6 +293,93 @@ describe("compareWorkspacesByLastActivityDesc triage tier", () => {
     ]);
     const list = [livesB, livesA].sort(compareWorkspacesByLastActivityDesc);
     expect(list.map((w) => w.id)).toEqual(["live-a", "live-b"]);
+  });
+});
+
+describe("triageStateOf", () => {
+  it("returns 'live' when no flag is set", () => {
+    expect(
+      triageStateOf({ isPinned: false, isArchived: false, isSnoozed: false }),
+    ).toBe("live");
+  });
+
+  it("returns 'pinned' when isPinned is set", () => {
+    expect(
+      triageStateOf({ isPinned: true, isArchived: false, isSnoozed: false }),
+    ).toBe("pinned");
+  });
+
+  it("returns 'archived' when only archived is set", () => {
+    expect(
+      triageStateOf({ isPinned: false, isArchived: true, isSnoozed: false }),
+    ).toBe("archived");
+  });
+
+  it("returns 'snoozed' when only snoozed is set", () => {
+    expect(
+      triageStateOf({ isPinned: false, isArchived: false, isSnoozed: true }),
+    ).toBe("snoozed");
+  });
+
+  it("prefers pinned over archived and snoozed (defensive priority)", () => {
+    // The server's XOR rules make pinned + archived impossible at the
+    // session level, but a multi-session workspace can still surface
+    // both via the any-pinned / any-archived aggregators. The state
+    // function picks pinned so the menu does not show contradictory
+    // toggles.
+    expect(
+      triageStateOf({ isPinned: true, isArchived: true, isSnoozed: false }),
+    ).toBe("pinned");
+    expect(
+      triageStateOf({ isPinned: true, isArchived: false, isSnoozed: true }),
+    ).toBe("pinned");
+  });
+});
+
+describe("triageMenuShape", () => {
+  it("a live row offers Pin / Archive / Snooze and no 'Un…' toggles", () => {
+    const shape = triageMenuShape("live");
+    expect(shape.showPin).toBe(true);
+    expect(shape.showArchive).toBe(true);
+    expect(shape.showSnooze).toBe(true);
+    expect(shape.showUnpin).toBe(false);
+    expect(shape.showUnarchive).toBe(false);
+    expect(shape.showUnsnooze).toBe(false);
+  });
+
+  it("a pinned row only offers Unpin", () => {
+    // Regression: a pinned row used to show Archive and Snooze
+    // alongside Unpin, letting the user trigger contradictory
+    // transitions from the menu. See #1581.
+    const shape = triageMenuShape("pinned");
+    expect(shape.showUnpin).toBe(true);
+    expect(shape.showPin).toBe(false);
+    expect(shape.showArchive).toBe(false);
+    expect(shape.showUnarchive).toBe(false);
+    expect(shape.showSnooze).toBe(false);
+    expect(shape.showUnsnooze).toBe(false);
+  });
+
+  it("an archived row only offers Unarchive", () => {
+    // Regression: an archived row used to show Pin and Snooze in
+    // the same menu. See #1581.
+    const shape = triageMenuShape("archived");
+    expect(shape.showUnarchive).toBe(true);
+    expect(shape.showPin).toBe(false);
+    expect(shape.showUnpin).toBe(false);
+    expect(shape.showArchive).toBe(false);
+    expect(shape.showSnooze).toBe(false);
+    expect(shape.showUnsnooze).toBe(false);
+  });
+
+  it("a snoozed row only offers Unsnooze", () => {
+    const shape = triageMenuShape("snoozed");
+    expect(shape.showUnsnooze).toBe(true);
+    expect(shape.showPin).toBe(false);
+    expect(shape.showUnpin).toBe(false);
+    expect(shape.showArchive).toBe(false);
+    expect(shape.showUnarchive).toBe(false);
+    expect(shape.showSnooze).toBe(false);
   });
 });
 

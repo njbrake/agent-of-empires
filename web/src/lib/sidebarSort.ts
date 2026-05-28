@@ -85,6 +85,83 @@ export function workspaceTriageTier(ws: Workspace): 0 | 1 | 2 {
   return 1;
 }
 
+/** Triage state of a single session row, used by the sidebar context
+ *  menu to decide which actions to show. The state machine is
+ *  mutually exclusive: only one of pinned/archived/snoozed can be the
+ *  active state at a time (the server's XOR rules in
+ *  `Instance::pin/archive/snooze` enforce this), so the menu only
+ *  offers the corresponding "Un…" toggle plus Rename / Notifications
+ *  / Delete. Live rows get the full Pin / Archive / Snooze… set.
+ *  See #1581. */
+export type TriageState = "live" | "pinned" | "archived" | "snoozed";
+
+/** Action visibility from a triage state. The state machine assumes
+ *  the server has already enforced mutual exclusion, so a row that is
+ *  archived simply cannot also be pinned: the menu would show two
+ *  contradictory toggles. Priority for the (impossible-but-defensive)
+ *  case where a workspace aggregator surfaces more than one tier:
+ *  pinned > archived > snoozed > live. */
+export interface TriageMenuShape {
+  showPin: boolean;
+  showUnpin: boolean;
+  showArchive: boolean;
+  showUnarchive: boolean;
+  showSnooze: boolean;
+  showUnsnooze: boolean;
+}
+
+export function triageStateOf(input: {
+  isPinned: boolean;
+  isArchived: boolean;
+  isSnoozed: boolean;
+}): TriageState {
+  if (input.isPinned) return "pinned";
+  if (input.isArchived) return "archived";
+  if (input.isSnoozed) return "snoozed";
+  return "live";
+}
+
+export function triageMenuShape(state: TriageState): TriageMenuShape {
+  switch (state) {
+    case "pinned":
+      return {
+        showPin: false,
+        showUnpin: true,
+        showArchive: false,
+        showUnarchive: false,
+        showSnooze: false,
+        showUnsnooze: false,
+      };
+    case "archived":
+      return {
+        showPin: false,
+        showUnpin: false,
+        showArchive: false,
+        showUnarchive: true,
+        showSnooze: false,
+        showUnsnooze: false,
+      };
+    case "snoozed":
+      return {
+        showPin: false,
+        showUnpin: false,
+        showArchive: false,
+        showUnarchive: false,
+        showSnooze: false,
+        showUnsnooze: true,
+      };
+    case "live":
+      return {
+        showPin: true,
+        showUnpin: false,
+        showArchive: true,
+        showUnarchive: false,
+        showSnooze: true,
+        showUnsnooze: false,
+      };
+  }
+}
+
 /** Stable, deterministic comparator. Triage tier wins first (pinned at
  *  the top, sunk at the bottom, regardless of sort mode); within tier
  *  the comparator falls back to last-activity descending, with id

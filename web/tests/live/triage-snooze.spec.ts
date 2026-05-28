@@ -87,6 +87,21 @@ base.describe("sidebar snooze via context menu (#1581)", () => {
       await expect(snoozedRow).toContainText(title);
       await expect(snoozedRow.locator("[aria-label='Snoozed']")).toBeVisible();
 
+      // Regression: a snoozed row's menu only offers Unsnooze, not
+      // the contradictory Pin or Archive toggles. See #1581.
+      await snoozedRow.click({ button: "right" });
+      await expect(
+        page.locator("[data-testid='sidebar-context-menu-unsnooze']"),
+      ).toBeVisible();
+      await expect(
+        page.locator("[data-testid='sidebar-context-menu-pin']"),
+      ).toHaveCount(0);
+      await expect(
+        page.locator("[data-testid='sidebar-context-menu-archive']"),
+      ).toHaveCount(0);
+      // Close the menu before clicking Unsnooze in the next step.
+      await page.mouse.click(5, 5);
+
       // ---- Unsnooze ----
       const unsnoozePatch = page.waitForResponse(
         (res) =>

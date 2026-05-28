@@ -79,6 +79,19 @@ base.describe("sidebar archive via context menu (#1581)", () => {
         archivedRowInFooter.locator("[aria-label='Archived']"),
       ).toBeVisible();
 
+      // Regression: an archived row's menu only offers Unarchive, not
+      // the contradictory Pin or Snooze toggles. See #1581.
+      await archivedRowInFooter.click({ button: "right" });
+      await expect(
+        page.locator("[data-testid='sidebar-context-menu-archive']"),
+      ).toContainText("Unarchive");
+      await expect(
+        page.locator("[data-testid='sidebar-context-menu-pin']"),
+      ).toHaveCount(0);
+      await expect(
+        page.locator("[data-testid='sidebar-context-menu-snooze']"),
+      ).toHaveCount(0);
+
       // Reload: archive state survives the persistence layer; the
       // footer is still default-collapsed if the per-group localStorage
       // entry was not set yet, but the row's archived_at remains.

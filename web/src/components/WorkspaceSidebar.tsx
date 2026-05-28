@@ -57,6 +57,8 @@ import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
 import { reportError } from "../lib/toastBus";
 import {
+  triageMenuShape,
+  triageStateOf,
   workspaceIsPinned,
   workspaceIsSunk,
   type SidebarSortMode,
@@ -925,41 +927,85 @@ const SessionRow = memo(function SessionRow({
               <div className="px-3 py-1 text-[11px] font-mono uppercase tracking-widest text-text-muted">
                 Triage
               </div>
-              <button
-                onClick={() => void togglePin()}
-                data-testid="sidebar-context-menu-pin"
-                className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
-              >
-                <Pin className="h-3.5 w-3.5 shrink-0 -rotate-45" />
-                {effectivePinned ? "Unpin" : "Pin"}
-              </button>
-              <button
-                onClick={() => void toggleArchive()}
-                data-testid="sidebar-context-menu-archive"
-                className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
-              >
-                <Archive className="h-3.5 w-3.5 shrink-0" />
-                {effectiveArchived ? "Unarchive" : "Archive"}
-              </button>
-              {isSnoozed ? (
-                <button
-                  onClick={() => void applySnooze(null)}
-                  data-testid="sidebar-context-menu-unsnooze"
-                  className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
-                >
-                  <Moon className="h-3.5 w-3.5 shrink-0" />
-                  Unsnooze
-                </button>
-              ) : (
-                <button
-                  onClick={openSnoozeModal}
-                  data-testid="sidebar-context-menu-snooze"
-                  className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
-                >
-                  <Moon className="h-3.5 w-3.5 shrink-0" />
-                  Snooze…
-                </button>
-              )}
+              {(() => {
+                // Menu actions are gated by the row's current triage
+                // state so contradictory transitions never appear in
+                // the UI: an archived row only offers Unarchive, a
+                // pinned row only offers Unpin, etc. The shape helper
+                // lives in `lib/sidebarSort.ts` so it can be unit
+                // tested. See #1581.
+                const shape = triageMenuShape(
+                  triageStateOf({
+                    isPinned: effectivePinned,
+                    isArchived: effectiveArchived,
+                    isSnoozed,
+                  }),
+                );
+                return (
+                  <>
+                    {shape.showPin && (
+                      <button
+                        onClick={() => void togglePin()}
+                        data-testid="sidebar-context-menu-pin"
+                        className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+                      >
+                        <Pin className="h-3.5 w-3.5 shrink-0 -rotate-45" />
+                        Pin
+                      </button>
+                    )}
+                    {shape.showUnpin && (
+                      <button
+                        onClick={() => void togglePin()}
+                        data-testid="sidebar-context-menu-pin"
+                        className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+                      >
+                        <Pin className="h-3.5 w-3.5 shrink-0 -rotate-45" />
+                        Unpin
+                      </button>
+                    )}
+                    {shape.showArchive && (
+                      <button
+                        onClick={() => void toggleArchive()}
+                        data-testid="sidebar-context-menu-archive"
+                        className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+                      >
+                        <Archive className="h-3.5 w-3.5 shrink-0" />
+                        Archive
+                      </button>
+                    )}
+                    {shape.showUnarchive && (
+                      <button
+                        onClick={() => void toggleArchive()}
+                        data-testid="sidebar-context-menu-archive"
+                        className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+                      >
+                        <Archive className="h-3.5 w-3.5 shrink-0" />
+                        Unarchive
+                      </button>
+                    )}
+                    {shape.showSnooze && (
+                      <button
+                        onClick={openSnoozeModal}
+                        data-testid="sidebar-context-menu-snooze"
+                        className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+                      >
+                        <Moon className="h-3.5 w-3.5 shrink-0" />
+                        Snooze…
+                      </button>
+                    )}
+                    {shape.showUnsnooze && (
+                      <button
+                        onClick={() => void applySnooze(null)}
+                        data-testid="sidebar-context-menu-unsnooze"
+                        className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
+                      >
+                        <Moon className="h-3.5 w-3.5 shrink-0" />
+                        Unsnooze
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
               <div className="border-t border-surface-700/20 my-1" />
               <button
                 onClick={handleDelete}
