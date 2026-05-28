@@ -72,6 +72,45 @@ fn test_left_click_on_empty_sidebar_is_inert_outside_live_mode() {
 
 #[test]
 #[serial]
+fn test_ctrl_p_browse_dir_picker_renders_as_full_overlay() {
+    // Regression: the dir picker's render call used to receive a
+    // local `area` shadowed by the per-field layout chunks, so the
+    // picker ended up clamped inside the Group row's 1-line strip
+    // and was unusable. Verify the picker renders at a meaningful
+    // size (more than a single line and wide enough for its filter
+    // input + at least one directory entry).
+    require_tmux!();
+
+    let mut h = TuiTestHarness::new("ctrl_p_picker");
+    h.spawn_tui();
+
+    h.wait_for(" aoe ");
+    h.send_keys("Enter"); // dismiss welcome
+    h.wait_for("No sessions yet");
+    h.send_keys("n");
+    h.wait_for(" New Session ");
+    // Path is the default focused field; Ctrl+P opens the dir picker.
+    h.send_keys("C-p");
+    h.wait_for("Browse:");
+    let screen = h.capture_screen();
+    assert!(
+        screen.contains("Filter:"),
+        "dir picker should render its Filter input\nscreen:\n{screen}"
+    );
+    assert!(
+        screen.contains("../"),
+        "dir picker should list at least the parent-dir entry\nscreen:\n{screen}"
+    );
+    // The picker has its own hint line; if it rendered crammed into
+    // the underlying form's hint chunk this would be missing.
+    assert!(
+        screen.contains("Enter open/select"),
+        "dir picker should render its full hint line\nscreen:\n{screen}"
+    );
+}
+
+#[test]
+#[serial]
 fn test_right_click_on_empty_sidebar_opens_context_menu() {
     // The right-click menu on the empty area lists the three actions
     // that used to be keyboard-only entry points: New Session, Change

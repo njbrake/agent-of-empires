@@ -54,6 +54,14 @@ impl NewSessionDialog {
         let has_sandbox = self.docker_available && !is_host_only;
         let has_yolo = !self.selected_tool_always_yolo();
         let dialog_width = 80;
+        // Capture the full overlay area up front so the centered-pop
+        // pickers at the bottom of this function don't accidentally
+        // use a per-field `area` that the loop below shadows on every
+        // row. Without this the dir / group / branch / projects
+        // pickers anchor against whichever Layout chunk the local
+        // `area` last pointed at (typically the Group row) and render
+        // as a tiny strip inside the underlying dialog.
+        let full_area = area;
         // When the selected profile has a description, the profile row needs
         // an extra line to render it beneath the name. We compute this once
         // here so the layout constraint and the renderer agree on height.
@@ -495,23 +503,23 @@ impl NewSessionDialog {
         }
 
         if self.show_help {
-            self.render_help_overlay(frame, area, theme);
+            self.render_help_overlay(frame, full_area, theme);
         }
 
         if self.group_picker.is_active() {
-            self.group_picker.render(frame, area, theme);
+            self.group_picker.render(frame, full_area, theme);
         }
 
         if self.branch_picker.is_active() {
-            self.branch_picker.render(frame, area, theme);
+            self.branch_picker.render(frame, full_area, theme);
         }
 
         if self.projects_picker.is_active() {
-            self.projects_picker.render(frame, area, theme);
+            self.projects_picker.render(frame, full_area, theme);
         }
 
         if self.dir_picker.is_active() {
-            self.dir_picker.render(frame, area, theme);
+            self.dir_picker.render(frame, full_area, theme);
         }
     }
 

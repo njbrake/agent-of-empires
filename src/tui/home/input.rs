@@ -641,15 +641,12 @@ impl HomeView {
             // open so the underlying list / preview don't react.
             return true;
         }
-        if let Some(view) = &mut self.settings_view {
-            // Settings is a full-screen takeover: every click inside
-            // the area is for it, even when the click landed on the
-            // background between widgets. `handle_click` mutates
-            // focus / scope / selection on hits and returns None on
-            // misses, but we still swallow the click either way.
-            let _ = view.handle_click(col, row);
-            return true;
-        }
+        // Confirm dialog floats over settings (e.g., the unsaved-changes
+        // discard prompt), so it has to win over the settings-view
+        // takeover for click routing the same way the keyboard path
+        // checks `settings_close_confirm` ahead of `settings_view`.
+        // Otherwise a click on Yes / No goes into settings and never
+        // reaches the modal.
         if let Some(dialog) = &self.confirm_dialog {
             if let Some(result) = dialog.handle_click(col, row) {
                 let action = dialog.action().to_string();
@@ -659,14 +656,37 @@ impl HomeView {
                         self.confirm_dialog = None;
                         self.pending_stop_session = None;
                         self.pending_force_remove_session = None;
+                        // The settings close path mirrors the keyboard
+                        // route: Cancel here means "don't discard," so
+                        // settings stays open and `settings_close_confirm`
+                        // resets to idle.
+                        self.settings_close_confirm = false;
                     }
                     DialogResult::Submit(()) => {
                         self.confirm_dialog = None;
+                        if self.settings_close_confirm {
+                            // Discard branch: force-close settings (the
+                            // keyboard path runs the same sequence).
+                            if let Some(ref mut settings) = self.settings_view {
+                                settings.force_close();
+                            }
+                            self.settings_view = None;
+                            self.settings_close_confirm = false;
+                        }
                         self.pending_dialog_click_action = self.dispatch_confirm_submit(&action);
                     }
                 }
             }
             // Always swallow clicks while the confirm dialog is open.
+            return true;
+        }
+        if let Some(view) = &mut self.settings_view {
+            // Settings is a full-screen takeover: every click inside
+            // the area is for it, even when the click landed on the
+            // background between widgets. `handle_click` mutates
+            // focus / scope / selection on hits and returns None on
+            // misses, but we still swallow the click either way.
+            let _ = view.handle_click(col, row);
             return true;
         }
         if let Some(dialog) = &self.info_dialog {
