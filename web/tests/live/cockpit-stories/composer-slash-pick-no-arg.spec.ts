@@ -199,7 +199,14 @@ base(
 
       const composer = page.getByRole("textbox", { name: /Send a message/i });
       await composer.click();
-      await composer.pressSequentially("/r");
+      // Type `/rev` rather than `/r` so the fuzzy filter narrows to
+      // `/review` alone. The cockpit composer always seeds the claude
+      // agent profile's `clearAliases` (`/clear`) into the popover
+      // even when the agent doesn't advertise it (see
+      // Composer.tsx:272-284), and a single `/r` matches `/clear` too;
+      // `/clear` ranks ahead of `/review` and Enter would pick the
+      // wrong command.
+      await composer.pressSequentially("/rev");
 
       const reviewItem = page
         .getByRole("option")
