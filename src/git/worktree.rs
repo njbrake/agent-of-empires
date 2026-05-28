@@ -5,10 +5,31 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+use regex::Regex;
 
 use super::error::{GitError, Result};
 use super::open_repo_at;
 use super::template::{resolve_template, TemplateVars};
+
+/// Strip embedded credentials from URL-style substrings before stderr
+/// gets logged or surfaced to the user. Git fetch errors typically echo
+/// the remote URL, so a misconfigured `https://user:token@host/repo`
+/// would otherwise leak the token into `debug.log` and into the wizard
+/// toast.
+///
+/// Matches `<scheme>://<userinfo>@<host>` patterns and replaces the
+/// userinfo (everything between `://` and `@`) with `<redacted>`.
+/// Schemes other than the common `http(s)`/`ssh`/`git+ssh` still match
+/// because git accepts arbitrary URL schemes.
+fn sanitize_remote_credentials(s: &str) -> String {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"([a-zA-Z][a-zA-Z0-9+\-.]*://)[^/\s@]+@").expect("static regex always compiles")
+    });
+    re.replace_all(s, "${1}<redacted>@").into_owned()
+}
 
 /// Remote name used as a fallback when no candidate remote can be picked
 /// from the local refs. Real selection happens in
@@ -229,12 +250,12 @@ impl GitWorktree {
                         if let Some(mut stderr) = child.stderr.take() {
                             let _ = std::io::Read::read_to_string(&mut stderr, &mut msg);
                         }
-                        let trimmed = msg.trim().to_string();
-                        tracing::warn!(target: "git.worktree", "git fetch {remote}/{branch} failed: {trimmed}");
-                        let detail = if trimmed.is_empty() {
+                        let sanitized = sanitize_remote_credentials(msg.trim());
+                        tracing::warn!(target: "git.worktree", "git fetch {remote}/{branch} failed: {sanitized}");
+                        let detail = if sanitized.is_empty() {
                             format!("git fetch exited with {status}")
                         } else {
-                            trimmed
+                            sanitized
                         };
                         return FetchOutcome::Failed(detail);
                     }
@@ -2551,6 +2572,43 @@ mod tests {
     }
 
     // --- fetch_branch tests ---
+
+    #[test]
+    fn test_sanitize_remote_credentials_redacts_https_userinfo() {
+        let s = "fatal: unable to access 'https://alice:supersecret@github.com/foo/bar.git/': 404";
+        let out = sanitize_remote_credentials(s);
+        assert!(!out.contains("supersecret"), "token leaked: {out}");
+        assert!(!out.contains("alice:"), "username leaked: {out}");
+        assert!(
+            out.contains("https://<redacted>@github.com/foo/bar.git/"),
+            "expected redacted URL, got: {out}"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_remote_credentials_redacts_ssh_userinfo() {
+        let s = "Could not read from remote ssh://git:tokenval@example.com:22/foo";
+        let out = sanitize_remote_credentials(s);
+        assert!(!out.contains("tokenval"), "token leaked: {out}");
+        assert!(out.contains("ssh://<redacted>@example.com:22/foo"));
+    }
+
+    #[test]
+    fn test_sanitize_remote_credentials_passes_through_when_no_userinfo() {
+        let s = "fatal: 'origin' does not appear to be a git repository";
+        assert_eq!(sanitize_remote_credentials(s), s);
+        let s2 = "fatal: unable to access 'https://github.com/foo/bar.git/'";
+        assert_eq!(sanitize_remote_credentials(s2), s2);
+    }
+
+    #[test]
+    fn test_sanitize_remote_credentials_does_not_touch_scp_style() {
+        // `git@host:path` is the SCP-style ref, not a URL with userinfo.
+        // Without a `scheme://` prefix the regex does not match, which
+        // is correct: there is no embedded password to redact.
+        let s = "fatal: Could not read from remote: git@github.com:foo/bar.git";
+        assert_eq!(sanitize_remote_credentials(s), s);
+    }
 
     #[test]
     fn test_fetch_branch_returns_failed_when_no_remote() {
