@@ -1006,6 +1006,31 @@
       ]
     },
     {
+      "id": "cockpit.startup-error-banner",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": [
+        "src/components/cockpit/__tests__/StartupErrorBanner.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.startup-error-banner-live",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-worker-log.spec.ts",
+        "tests/live/cockpit-stories/startup-error-banner-native-binary.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "src/server/api/cockpit.rs",
+        "src/cockpit/acp_client.rs"
+      ]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
