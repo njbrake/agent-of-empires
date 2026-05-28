@@ -426,16 +426,29 @@ async fn handle_terminal_ws(
     // would let the first attach exit with PTY EOF, the send task would
     // close 4001 (pty_dead), and the client would burn its retry budget
     // on a session that was about to become healthy. See #1455.
-    if !wait_for_tmux_ready(&tmux_name).await {
-        warn!(
-            target: "terminal.ws",
-            client = %client_id,
-            tmux = %tmux_name,
-            timeout_ms = TMUX_READY_TIMEOUT.as_millis() as u64,
-            "tmux not ready within bounded wait, closing 1013"
-        );
-        close_early(&mut socket, CLOSE_CODE_TRY_AGAIN_LATER, "tmux_not_ready").await;
-        return;
+    match wait_for_tmux_ready(&tmux_name).await {
+        PaneReadiness::Ready => {}
+        PaneReadiness::Dead => {
+            warn!(
+                target: "terminal.ws",
+                client = %client_id,
+                tmux = %tmux_name,
+                "all panes reported dead during readiness wait, closing 4001"
+            );
+            close_early(&mut socket, CLOSE_CODE_PTY_DEAD, "pty_dead").await;
+            return;
+        }
+        PaneReadiness::NotReady => {
+            warn!(
+                target: "terminal.ws",
+                client = %client_id,
+                tmux = %tmux_name,
+                timeout_ms = TMUX_READY_TIMEOUT.as_millis() as u64,
+                "tmux not ready within bounded wait, closing 1013"
+            );
+            close_early(&mut socket, CLOSE_CODE_TRY_AGAIN_LATER, "tmux_not_ready").await;
+            return;
+        }
     }
 
     // Spawn tmux attach inside a PTY
@@ -1272,19 +1285,20 @@ fn parse_pane_dead_output(output: &str) -> PaneReadiness {
 
 /// Poll `tmux has-session` + `tmux list-panes` at TMUX_READY_POLL until
 /// the session has at least one alive pane, or until TMUX_READY_TIMEOUT
-/// expires. Returns true if a live pane was observed. Returns false on
-/// timeout. Treats "every pane dead" as a hard failure (returns false
-/// immediately rather than polling further).
-async fn wait_for_tmux_ready(tmux_name: &str) -> bool {
+/// expires. Returns the final outcome so the caller can distinguish a
+/// transient warm-up (`NotReady` -> retryable 1013) from a permanently
+/// dead pane (`Dead` -> 4001 short-circuit). Bails out early on `Dead`
+/// rather than polling further because no amount of waiting will make
+/// an exited pane reattachable.
+async fn wait_for_tmux_ready(tmux_name: &str) -> PaneReadiness {
     let deadline = Instant::now() + TMUX_READY_TIMEOUT;
     loop {
-        let probe = probe_tmux_readiness(tmux_name).await;
-        match probe {
-            PaneReadiness::Ready => return true,
-            PaneReadiness::Dead => return false,
+        match probe_tmux_readiness(tmux_name).await {
+            PaneReadiness::Ready => return PaneReadiness::Ready,
+            PaneReadiness::Dead => return PaneReadiness::Dead,
             PaneReadiness::NotReady => {
                 if Instant::now() >= deadline {
-                    return false;
+                    return PaneReadiness::NotReady;
                 }
                 tokio::time::sleep(TMUX_READY_POLL).await;
             }
