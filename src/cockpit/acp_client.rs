@@ -3162,10 +3162,17 @@ fn handle_delete_session_cmd(
                     if err.code == ErrorCode::MethodNotFound {
                         DeleteSessionOutcome::UnsupportedMethod
                     } else {
+                        // Adapter error messages reach debug.log
+                        // verbatim. Run them through the existing
+                        // stderr secret scrubber so a leaked
+                        // `sk-...` / `Bearer ...` / GitHub PAT in
+                        // the adapter's own error string doesn't
+                        // land in operator logs, then cap length.
+                        let scrubbed = scrub_stderr_secrets(&err.message);
                         DeleteSessionOutcome::Failed(format!(
                             "acp error {}: {}",
                             i32::from(err.code),
-                            truncate_for_log(&err.message, ACP_DELETE_ERROR_MSG_MAX)
+                            truncate_for_log(&scrubbed, ACP_DELETE_ERROR_MSG_MAX)
                         ))
                     }
                 }
