@@ -24,7 +24,7 @@ const LINKS: LinkRow[] = [
   },
   {
     label: "Twitter",
-    href: "https://twitter.com/agentofempires",
+    href: "https://x.com/agentofempires",
     display: "@agentofempires",
   },
 ];
