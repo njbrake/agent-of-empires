@@ -65,6 +65,7 @@ import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
 
 const SIDEBAR_WIDTH_KEY = "aoe-sidebar-width";
+const SUNK_EXPANDED_KEY = "aoe-sidebar-sunk-expanded";
 const DEFAULT_WIDTH = 280;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 480;
@@ -169,6 +170,23 @@ function loadSavedWidth(): number {
     if (w >= MIN_WIDTH && w <= MAX_WIDTH) return w;
   }
   return DEFAULT_WIDTH;
+}
+
+/** Hydrate the per-group expanded state for the "Snoozed & archived"
+ *  footer from localStorage. Defaults to all-collapsed (TUI parity
+ *  with the `toggle_archived_section` keybind starting collapsed). */
+function loadSunkExpanded(): Record<string, boolean> {
+  const raw = safeGetItem(SUNK_EXPANDED_KEY);
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, boolean>;
+    }
+  } catch {
+    // Fall through to default.
+  }
+  return {};
 }
 
 /** One-line sidebar affordance showing plan progress for cockpit
@@ -1256,6 +1274,15 @@ export function WorkspaceSidebar({
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
+  const [sunkExpanded, setSunkExpanded] =
+    useState<Record<string, boolean>>(loadSunkExpanded);
+  const toggleSunkExpanded = useCallback((groupId: string) => {
+    setSunkExpanded((prev) => {
+      const next = { ...prev, [groupId]: !prev[groupId] };
+      safeSetItem(SUNK_EXPANDED_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
   const [optimisticActive, setOptimisticActive] = useState<{
     id: string;
     fromActiveId: string | null;
@@ -1524,42 +1551,106 @@ export function WorkspaceSidebar({
                     }
                     offline={offline}
                   />
-                  {showExpanded && (
-                    <SortableContext
-                      items={group.workspaces.map((ws) => ws.id)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      {group.workspaces.map((ws) => (
-                        <SortableSessionRow
-                          key={ws.id}
-                          workspace={ws}
-                          isActive={ws.id === displayedActiveId}
-                          onClick={() => {
-                            setOptimisticActive({ id: ws.id, fromActiveId: activeId });
-                            onSelect(ws.id);
-                          }}
-                          onDelete={onDeleteSession}
-                          readOnly={readOnly}
-                          // Drag is disabled when the tier comparator
-                          // already controls placement: lastActivity
-                          // mode has no manual concept, pinned rows
-                          // always float to the top of their group,
-                          // and sunk (archived + snoozed) rows are
-                          // ordered by tier-2 placement. Allowing a
-                          // drag in any of those cases would let the
-                          // user rearrange the persisted
-                          // workspace_ordering against the visual
-                          // tier and produce a no-op release, see
-                          // #1581.
-                          dragDisabled={
-                            sortMode === "lastActivity" ||
-                            workspaceIsPinned(ws) ||
-                            workspaceIsSunk(ws)
-                          }
-                        />
-                      ))}
-                    </SortableContext>
-                  )}
+                  {showExpanded && (() => {
+                    // Partition into a live tier (rendered inline with
+                    // the existing SortableContext drag-reorder) and a
+                    // sunk tier (archived or actively snoozed across
+                    // every session in the workspace). The sunk tier
+                    // lives in a collapsible footer per repo group,
+                    // default-collapsed, so the active list stays
+                    // focused. See #1581.
+                    const liveWorkspaces = group.workspaces.filter(
+                      (ws) => !workspaceIsSunk(ws),
+                    );
+                    const sunkWorkspaces = group.workspaces.filter(
+                      (ws) => workspaceIsSunk(ws),
+                    );
+                    const isSunkOpen = !!sunkExpanded[group.id];
+                    return (
+                      <>
+                        <SortableContext
+                          items={liveWorkspaces.map((ws) => ws.id)}
+                          strategy={verticalListSortingStrategy}
+                        >
+                          {liveWorkspaces.map((ws) => (
+                            <SortableSessionRow
+                              key={ws.id}
+                              workspace={ws}
+                              isActive={ws.id === displayedActiveId}
+                              onClick={() => {
+                                setOptimisticActive({
+                                  id: ws.id,
+                                  fromActiveId: activeId,
+                                });
+                                onSelect(ws.id);
+                              }}
+                              onDelete={onDeleteSession}
+                              readOnly={readOnly}
+                              // Drag is disabled when the tier comparator
+                              // already controls placement: lastActivity
+                              // mode has no manual concept, pinned rows
+                              // always float to the top of their group.
+                              // See #1581.
+                              dragDisabled={
+                                sortMode === "lastActivity" ||
+                                workspaceIsPinned(ws)
+                              }
+                            />
+                          ))}
+                        </SortableContext>
+                        {sunkWorkspaces.length > 0 && (
+                          <div data-testid="sidebar-sunk-section" data-group-id={group.id}>
+                            <button
+                              onClick={() => toggleSunkExpanded(group.id)}
+                              data-testid="sidebar-sunk-toggle"
+                              aria-expanded={isSunkOpen}
+                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-mono uppercase tracking-widest text-text-muted hover:text-text-secondary hover:bg-surface-800/40 cursor-pointer transition-colors"
+                            >
+                              <svg
+                                width="10"
+                                height="10"
+                                viewBox="0 0 10 10"
+                                fill="currentColor"
+                                className={`shrink-0 transition-transform duration-75 ${
+                                  isSunkOpen ? "" : "-rotate-90"
+                                }`}
+                              >
+                                <path
+                                  d="M2 3 L5 6.5 L8 3"
+                                  fill="none"
+                                  stroke="currentColor"
+                                  strokeWidth="1.5"
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                />
+                              </svg>
+                              <span>
+                                Snoozed &amp; archived ({sunkWorkspaces.length})
+                              </span>
+                            </button>
+                            {isSunkOpen &&
+                              sunkWorkspaces.map((ws) => (
+                                <SessionRow
+                                  key={ws.id}
+                                  workspace={ws}
+                                  isActive={ws.id === displayedActiveId}
+                                  onClick={() => {
+                                    setOptimisticActive({
+                                      id: ws.id,
+                                      fromActiveId: activeId,
+                                    });
+                                    onSelect(ws.id);
+                                  }}
+                                  onDelete={onDeleteSession}
+                                  readOnly={readOnly}
+                                  indented
+                                />
+                              ))}
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               );
             })}
