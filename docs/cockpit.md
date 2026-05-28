@@ -33,7 +33,7 @@ The wizard greys out the cockpit option for tools not in this set.
 
 | aoe tool   | Substrate B (cockpit)                                      | Auth                                   |
 |------------|------------------------------------------------------------|----------------------------------------|
-| `claude`   | `claude-agent-acp` (Zed adapter for the Claude SDK, requires >=0.37.0) | `claude /login` writes `~/.claude/credentials`; or `ANTHROPIC_API_KEY` |
+| `claude`   | `claude-agent-acp` (Zed adapter for the Claude SDK, requires >=0.38.0) | `claude /login` writes `~/.claude/credentials`; or `ANTHROPIC_API_KEY` |
 | `opencode` | `opencode acp` (native, SST)                               | `OPENCODE_API_KEY` env var; or provider-specific env (set up via `opencode auth`) |
 | `gemini`   | `gemini --acp` (native, Google)                            | `GEMINI_API_KEY` env var, OAuth via `gemini auth`, or Vertex `GOOGLE_API_KEY` |
 | `codex`    | `codex-acp` (Zed adapter, npm `@zed-industries/codex-acp`) | `OPENAI_API_KEY` env var, or ChatGPT login (local-only) |
@@ -531,7 +531,8 @@ Cockpit sessions render two extra selectors in the composer footer
 beside the mode pill when the ACP adapter advertises them: a model
 dropdown and a reasoning-effort selector. Both come from one wire
 mechanism, ACP `SessionUpdate::ConfigOptionUpdate`, stabilised
-upstream in `claude-agent-acp` v0.37.0. The adapter emits the full
+upstream in `claude-agent-acp` v0.37.0 (Opus 4.8 added in v0.38.0).
+The adapter emits the full
 snapshot of every selector (mode, model, reasoning effort, future
 categories) whenever any one of them changes; the cockpit replaces
 its cached list in full.
@@ -539,7 +540,7 @@ its cached list in full.
 ### When the pickers appear
 
 The pickers only render if the adapter publishes the matching
-category. `claude-agent-acp` v0.37.0+ advertises a model selector
+category. `claude-agent-acp` v0.38.0+ advertises a model selector
 for every session, and adds a reasoning-effort selector when the
 current model reports `supportsEffort=true`. Older adapters that
 emit no `config_option_update` show neither picker; this is by
