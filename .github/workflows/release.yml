@@ -4,18 +4,6 @@ on:
   push:
     tags:
       - 'v*'
-  # >>> TEMPORARY: REMOVE BEFORE MERGING ISSUE #1578 <<<
-  # Lets the build matrix run against this PR so the new manylinux container
-  # build path and the objdump glibc-floor guard can be verified end-to-end
-  # before publishing. Narrowed to PRs touching the release workflow itself
-  # so we don't run it on every unrelated PR if this trigger accidentally
-  # lands. The validate / release / publish-clawhub jobs are skipped on
-  # pull_request events; only the build job runs.
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/release.yml'
-  # >>> END TEMPORARY <<<
   workflow_dispatch:
     inputs:
       tag:
@@ -45,11 +33,6 @@ jobs:
           persist-credentials: false
 
       - name: Validate version matches tag
-        # TEMPORARY (#1578): on pull_request events there is no tag to
-        # compare against, so we skip this step and let the job complete
-        # green so `build` can proceed. Remove this `if:` when the
-        # pull_request trigger above is removed.
-        if: github.event_name != 'pull_request'
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             TAG="${{ github.event.inputs.tag }}"
@@ -201,9 +184,6 @@ jobs:
   release:
     name: Create Release
     needs: build
-    # TEMPORARY (#1578): don't try to cut a GitHub Release on PR events.
-    # Remove this `if:` when the pull_request trigger above is removed.
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
