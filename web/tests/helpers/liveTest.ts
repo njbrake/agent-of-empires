@@ -76,7 +76,13 @@ export async function seedAuth(
     const secret = handle.deviceBindingSecret;
     await page.addInitScript((s) => {
       try {
-        window.localStorage.setItem("aoe-device-binding-secret", s);
+        // Storage key must match `STORAGE_KEY` in web/src/lib/deviceBinding.ts.
+        // The SPA reads this on the first authenticated fetch via
+        // `getOrCreateDeviceBindingSecret()`; if it does not find a
+        // matching base64url-32-byte value it generates a fresh one,
+        // which would not match the binding the harness used at
+        // `POST /api/login`, and subsequent requests would 401.
+        window.localStorage.setItem("aoe_device_binding_secret_v1", s);
       } catch {
         // localStorage may be unavailable depending on origin state.
       }
