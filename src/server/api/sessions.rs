@@ -1046,8 +1046,10 @@ pub async fn update_session_archive(
     // Snapshot what we need for side effects (kill pane / cockpit
     // shutdown) before we drop the write lock. Clone the instance once
     // so we can call its `kill()` method outside the lock without
-    // re-borrowing.
-    let (was_cockpit_mode, inst_clone) = {
+    // re-borrowing. The outer tuple also carries `kill_pane` so the
+    // tmux branch below can gate the pane teardown without re-reading
+    // the body; cockpit shutdown is unconditional on archive=true.
+    let (was_cockpit_mode, inst_clone, kill_pane) = {
         let mut instances = state.instances.write().await;
         let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
             return (
@@ -1110,32 +1112,37 @@ pub async fn update_session_archive(
 
         // Stash the cockpit flag + clone + response and break out to do
         // the side effects below. Return early on the non-archive path
-        // because we have no work left to do.
+        // because we have no work left to do; the kill_pane=false case
+        // is NOT a short-circuit because cockpit shutdown still has to
+        // run for cockpit-mode sessions (kill_pane is a tmux-only
+        // switch, per the request-body documentation).
         if !body.archived {
             return (StatusCode::OK, Json(serde_json::json!(response))).into_response();
         }
-        if !body.kill_pane {
-            return (StatusCode::OK, Json(serde_json::json!(response))).into_response();
-        }
-        (cockpit, inst_snap)
+        (cockpit, inst_snap, body.kill_pane)
     };
 
     // Best-effort tmux pane teardown for tmux-backed sessions. Mirrors
     // `toggle_archive_at_cursor` in src/tui/home/operations.rs: if the
     // kill fails (pane already dead, tmux gone), log and continue
-    // because the on-disk archived flag is the source of truth.
+    // because the on-disk archived flag is the source of truth. The
+    // kill_pane=false body opt-out applies only here, so a caller can
+    // archive a tmux session without killing its pane while still
+    // unconditionally stopping a cockpit worker on the other branch.
     if !was_cockpit_mode {
-        let inst_for_kill = inst_clone.clone();
-        match tokio::task::spawn_blocking(move || inst_for_kill.kill()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::warn!(
-                target: "http.api.sessions",
-                "Archive: tmux kill failed: {e}"
-            ),
-            Err(e) => tracing::warn!(
-                target: "http.api.sessions",
-                "Archive: tmux kill join failed: {e}"
-            ),
+        if kill_pane {
+            let inst_for_kill = inst_clone.clone();
+            match tokio::task::spawn_blocking(move || inst_for_kill.kill()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(
+                    target: "http.api.sessions",
+                    "Archive: tmux kill failed: {e}"
+                ),
+                Err(e) => tracing::warn!(
+                    target: "http.api.sessions",
+                    "Archive: tmux kill join failed: {e}"
+                ),
+            }
         }
     } else {
         // Cockpit sessions: shut down the worker so the supervisor's
