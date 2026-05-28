@@ -310,6 +310,46 @@ fn post_token_auth_action(
     }
 }
 
+/// Decision for the entry of `run_passphrase_wall`: a request landed on
+/// the wall because the daemon is running in `--auth=passphrase` mode
+/// (token gate disabled, passphrase login active). The wall normally
+/// requires a session cookie + device binding for `/api/*` and `/ws`,
+/// redirects to `/login` otherwise, and step-up-elevates writes to
+/// persistent-config surfaces. Two conditions bypass that entire
+/// gauntlet: a login-bootstrap path (so the SPA can load assets and
+/// post to `/api/login`) and a loopback caller (so the local TUI can
+/// attach without a passphrase exchange).
+#[derive(Debug, PartialEq, Eq)]
+enum PassphraseWallEntryAction {
+    /// Path is in the login-bootstrap allow-list. Skip the wall so
+    /// `/login`, `/api/login`, static assets, etc. stay reachable
+    /// even without a session.
+    BypassExempt,
+    /// Caller is on loopback. fs-perm boundary on
+    /// `~/.agent-of-empires/serve.*` already protects same-host
+    /// access, so layering the passphrase factor on top adds friction
+    /// without strengthening the trust boundary. Mirrors the token-
+    /// auth path's `is_local_trusted` carve-out from #1168 so the
+    /// local TUI works against an `--auth=passphrase` daemon. See
+    /// #1525.
+    BypassLoopback,
+    /// Run the full session + device-binding + elevation flow.
+    Continue,
+}
+
+/// Resolve the entry decision for `run_passphrase_wall`. Extracted so
+/// the bypass policy is table-testable without standing up the full
+/// axum middleware. See #1525.
+fn passphrase_wall_entry_action(path: &str, client_ip: IpAddr) -> PassphraseWallEntryAction {
+    if is_login_session_exempt(path) {
+        return PassphraseWallEntryAction::BypassExempt;
+    }
+    if is_local_trusted(client_ip) {
+        return PassphraseWallEntryAction::BypassLoopback;
+    }
+    PassphraseWallEntryAction::Continue
+}
+
 /// Whether a request path + method needs an elevated login session
 /// (step-up auth, 15-minute passphrase confirmation window).
 ///
@@ -447,6 +487,16 @@ pub struct AuthenticatedSession(pub String);
 /// inside the token-auth path, but skips every token-cookie
 /// operation since there is no token to refresh.
 ///
+/// Loopback callers bypass the wall entirely (see
+/// [`passphrase_wall_entry_action`] / [`is_local_trusted`]). This
+/// mirrors the token-auth path's #1168 carve-out so the local TUI can
+/// attach to a same-host `--auth=passphrase` daemon without going
+/// through a passphrase exchange. The fs-perm boundary on
+/// `~/.agent-of-empires/serve.*` already protects same-host access,
+/// and remote callers proxied through a tunnel come in with the real
+/// remote IP via `resolve_client_ip`, so they still hit the wall as
+/// expected. See #1525.
+///
 /// Rate-limit lockout is intentionally not consulted here: the only
 /// authentication attempt that can fail in this path is the passphrase
 /// POST itself, and `/api/login` enforces `check_locked` /
@@ -463,8 +513,18 @@ async fn run_passphrase_wall(
     let path = request.uri().path().to_string();
     let method = request.method().clone();
 
-    if is_login_session_exempt(&path) {
-        return next.run(request).await;
+    match passphrase_wall_entry_action(&path, client_ip) {
+        PassphraseWallEntryAction::BypassExempt => return next.run(request).await,
+        PassphraseWallEntryAction::BypassLoopback => {
+            tracing::info!(
+                target: "auth.passphrase",
+                ip = %client_ip,
+                path = %path,
+                "loopback bypass: skipping passphrase factor in passphrase-only mode"
+            );
+            return next.run(request).await;
+        }
+        PassphraseWallEntryAction::Continue => {}
     }
 
     let session_id = super::login::extract_login_session(&request);
@@ -1024,6 +1084,63 @@ mod tests {
         assert_eq!(
             post_token_auth_action(true, false, remote),
             PostTokenAuthAction::RequireLogin
+        );
+    }
+
+    // Per-row coverage of the passphrase-wall entry policy added in
+    // #1525: a loopback caller should bypass the wall outright so the
+    // local TUI can attach to an `--auth=passphrase` daemon without a
+    // session, while remote callers continue to fall through to the
+    // session check. The login-bootstrap allow-list still wins over
+    // both regardless of IP so the SPA can fetch assets and POST to
+    // `/api/login` even when the network would otherwise be remote.
+    #[test]
+    fn passphrase_wall_entry_action_matrix() {
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let loopback_v6: IpAddr = "::1".parse().unwrap();
+        let remote: IpAddr = "100.64.0.5".parse().unwrap();
+
+        // Non-exempt path + loopback (IPv4 and IPv6): bypass the
+        // wall entirely. This is the #1525 fix: same-host TUI attach
+        // must not require a passphrase exchange.
+        assert_eq!(
+            passphrase_wall_entry_action("/api/sessions", loopback),
+            PassphraseWallEntryAction::BypassLoopback
+        );
+        assert_eq!(
+            passphrase_wall_entry_action("/sessions/abc/cockpit/ws", loopback),
+            PassphraseWallEntryAction::BypassLoopback
+        );
+        assert_eq!(
+            passphrase_wall_entry_action("/api/settings", loopback_v6),
+            PassphraseWallEntryAction::BypassLoopback
+        );
+
+        // Non-exempt path + remote: run the full session check. This
+        // is the case the passphrase wall was built for; the bypass
+        // must not leak through here.
+        assert_eq!(
+            passphrase_wall_entry_action("/api/sessions", remote),
+            PassphraseWallEntryAction::Continue
+        );
+        assert_eq!(
+            passphrase_wall_entry_action("/sessions/abc/cockpit/ws", remote),
+            PassphraseWallEntryAction::Continue
+        );
+
+        // Login-bootstrap allow-list wins regardless of IP, so the
+        // SPA can pull assets and POST to `/api/login` from any peer.
+        assert_eq!(
+            passphrase_wall_entry_action("/login", remote),
+            PassphraseWallEntryAction::BypassExempt
+        );
+        assert_eq!(
+            passphrase_wall_entry_action("/api/login", remote),
+            PassphraseWallEntryAction::BypassExempt
+        );
+        assert_eq!(
+            passphrase_wall_entry_action("/assets/index.css", loopback),
+            PassphraseWallEntryAction::BypassExempt
         );
     }
 
