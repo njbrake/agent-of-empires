@@ -769,10 +769,55 @@ The rate-limit banner offers a primary "Continue in another agent" CTA. Clicking
 
 After the switch, the modal fetches the context primer and pre-fills the composer with a framed recap of the prior conversation. If the user's last prompt is what triggered the rate-limit (it was published to the event log before the adapter rejected it), the primer endpoint surfaces it separately as `unprocessed_prompt`; the modal drops it into the composer as the user's pending request so they don't have to retype it. The composer is NOT auto-sent; review and submit manually.
 
+### Native binary launch failure
+
+When the cockpit banner shows an error of the form
+
+```
+Claude Code native binary at /usr/lib/node_modules/.../claude exists but failed to launch.
+```
+
+the adapter found its bundled Claude Code native sub-binary on disk
+but `execve` was rejected by the kernel. Reinstalling
+`claude-agent-acp` does not help; the binary is already there.
+
+The common causes:
+
+1. **Architecture mismatch.** The binary's filename ends in a target
+   triple (`...-linux-arm64/claude`, `...-linux-x64/claude`, etc.).
+   If the host or sandbox container reports a different arch via
+   `uname -m`, the loader refuses the binary. Most often surfaces
+   inside a sandboxed cockpit session where the container image's
+   default arch differs from the host (e.g. an `arm64` host pulling
+   an `amd64` image without `--platform`).
+2. **Missing dynamic loader or old glibc.** Slim base images
+   sometimes ship without `/lib64/ld-linux-x86-64.so.2` or with a
+   glibc too old for the binary. `ldd <binary>` from inside the
+   container reports the gap.
+3. **Bind-mounted `node_modules` across arch.** If the host's npm
+   prefix is bind-mounted into the container (so the container reuses
+   the host install), an `arm64` host binary cannot launch in an
+   `amd64` container and vice versa.
+
+Use **Open agent log** on the red startup banner to see the verbatim
+adapter error from the dashboard, or run `aoe cockpit logs --session
+<id>` from a host terminal. To inspect the binary itself:
+
+```sh
+docker exec <container> file /usr/lib/node_modules/@agentclientprotocol/claude-agent-acp/node_modules/@anthropic-ai/claude-agent-sdk-*/claude
+docker exec <container> uname -m
+```
+
+If the file's arch line does not match `uname -m`, the fix is either
+re-pull the image with `--platform linux/<host-arch>` or install
+`claude-agent-acp` inside the container (rather than bind-mounting
+from the host).
+
 ### Cockpit feels "stuck" with no events
 
-- Check `aoe cockpit logs --follow` (when the worker supervisor lands)
-  to see worker stderr.
+- Check `aoe cockpit logs --session <id>` for the runner stderr drain;
+  the dashboard exposes the same content via the **Open agent log**
+  affordance on the red startup-error banner.
 - Check the dashboard's connection chrome at the top of the cockpit
   view; it shows reconnect status if the WebSocket is degraded.
 - The supervisor watchdog respawns the agent up to 3 times in 60s
