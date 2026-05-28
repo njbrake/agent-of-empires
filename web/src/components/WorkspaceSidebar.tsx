@@ -528,7 +528,10 @@ const SessionRow = memo(function SessionRow({
   const [optimisticArchived, setOptimisticArchived] = useState<boolean | null>(
     null,
   );
-  const [snoozeMenuOpen, setSnoozeMenuOpen] = useState(false);
+  // Snooze duration picker. Lives in its own portal-rendered modal,
+  // independent of the context menu's lifecycle so the parent-menu
+  // dismissal listener cannot close the picker out from under us.
+  const [snoozeModalOpen, setSnoozeModalOpen] = useState(false);
   useEffect(() => {
     if (optimisticPinned !== null && optimisticPinned === isPinned) {
       setOptimisticPinned(null);
@@ -542,7 +545,6 @@ const SessionRow = memo(function SessionRow({
 
   const togglePin = async () => {
     setContextMenu(null);
-    setSnoozeMenuOpen(false);
     if (!sessionId) return;
     const next = !isPinned;
     setOptimisticPinned(next);
@@ -555,7 +557,6 @@ const SessionRow = memo(function SessionRow({
 
   const toggleArchive = async () => {
     setContextMenu(null);
-    setSnoozeMenuOpen(false);
     if (!sessionId) return;
     const next = !isArchived;
     setOptimisticArchived(next);
@@ -570,7 +571,7 @@ const SessionRow = memo(function SessionRow({
 
   const applySnooze = async (minutes: number | null) => {
     setContextMenu(null);
-    setSnoozeMenuOpen(false);
+    setSnoozeModalOpen(false);
     if (!sessionId) return;
     const result = await setSessionSnooze(sessionId, minutes);
     if (!result) {
@@ -578,6 +579,14 @@ const SessionRow = memo(function SessionRow({
         minutes == null ? "Failed to unsnooze session" : "Failed to snooze session",
       );
     }
+  };
+
+  // Close the context menu first, then open the modal in the next
+  // tick so the menu's document-click dismiss listener does not race
+  // with the modal's mount.
+  const openSnoozeModal = () => {
+    setContextMenu(null);
+    setSnoozeModalOpen(true);
   };
 
   // Effective state for rendering: optimistic overrides win until the
@@ -605,13 +614,7 @@ const SessionRow = memo(function SessionRow({
   }, [renaming]);
 
   useEffect(() => {
-    // Reset the snooze-preset sub-list whenever the menu closes; otherwise
-    // re-opening would jump straight back into the preset list, surprising
-    // the user.
-    if (!contextMenu) {
-      setSnoozeMenuOpen(false);
-      return;
-    }
+    if (!contextMenu) return;
     const close = () => setContextMenu(null);
     const onDocClick = (e: MouseEvent) => {
       // Clicks inside the menu should be handled by item onClick
@@ -953,28 +956,9 @@ const SessionRow = memo(function SessionRow({
                   <Moon className="h-3.5 w-3.5 shrink-0" />
                   Unsnooze
                 </button>
-              ) : snoozeMenuOpen ? (
-                <>
-                  <div
-                    className="pl-6 pr-3 py-1 text-[11px] font-mono uppercase tracking-widest text-text-muted"
-                    data-testid="sidebar-context-menu-snooze-presets"
-                  >
-                    Snooze for
-                  </div>
-                  {SNOOZE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.minutes}
-                      onClick={() => void applySnooze(preset.minutes)}
-                      data-testid={`sidebar-context-menu-snooze-${preset.minutes}`}
-                      className="w-full text-left pl-9 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
-                    >
-                      {preset.label}
-                    </button>
-                  ))}
-                </>
               ) : (
                 <button
-                  onClick={() => setSnoozeMenuOpen(true)}
+                  onClick={openSnoozeModal}
                   data-testid="sidebar-context-menu-snooze"
                   className="w-full text-left pl-6 pr-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors flex items-center gap-2"
                 >
@@ -995,9 +979,88 @@ const SessionRow = memo(function SessionRow({
         </div>,
         document.body,
       )}
+      {snoozeModalOpen &&
+        createPortal(
+          <SnoozeModal
+            title={label}
+            onCancel={() => setSnoozeModalOpen(false)}
+            onPick={(minutes) => void applySnooze(minutes)}
+          />,
+          document.body,
+        )}
     </>
   );
 });
+
+/** Centered modal duration picker rendered as a separate portal so it
+ *  is independent of the row's context menu. Lists the eight TUI
+ *  presets (matching `src/tui/dialogs/snooze_duration.rs`) plus a
+ *  Cancel; backdrop click and Escape both dismiss. See #1581. */
+function SnoozeModal({
+  title,
+  onCancel,
+  onPick,
+}: {
+  title: string;
+  onCancel: () => void;
+  onPick: (minutes: number) => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel]);
+  return (
+    <div
+      data-testid="snooze-modal-backdrop"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Snooze session"
+    >
+      <div
+        data-testid="snooze-modal"
+        className="w-full max-w-sm rounded-lg border border-surface-700 bg-surface-800 shadow-xl"
+      >
+        <div className="px-4 py-3 border-b border-surface-700/40">
+          <div className="text-sm font-mono text-text-primary truncate" title={title}>
+            Snooze
+            <span className="text-text-muted"> · {title}</span>
+          </div>
+          <div className="mt-1 text-[11px] text-text-dim">
+            How long should this session sit out?
+          </div>
+        </div>
+        <div className="flex flex-col py-2">
+          {SNOOZE_PRESETS.map((preset) => (
+            <button
+              key={preset.minutes}
+              onClick={() => onPick(preset.minutes)}
+              data-testid={`snooze-modal-preset-${preset.minutes}`}
+              className="w-full text-left px-4 py-2 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+        <div className="px-4 py-3 border-t border-surface-700/40 flex justify-end">
+          <button
+            onClick={onCancel}
+            data-testid="snooze-modal-cancel"
+            className="text-sm text-text-dim hover:text-text-primary cursor-pointer transition-colors"
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const RepoGroupHeader = memo(function RepoGroupHeader({
   group,

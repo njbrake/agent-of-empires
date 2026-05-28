@@ -1,11 +1,12 @@
 // Live coverage for the sidebar snooze flow (#1581):
-//   - Right-click a session row → context menu → Snooze….
-//   - Eight flat presets render (60 / 120 / 180 / 240 / 300 / 360 / 1440 /
-//     10080 minutes) matching `src/tui/dialogs/snooze_duration.rs`.
+//   - Right-click a session row → context menu → "Snooze…".
+//   - A modal opens with the eight TUI presets (60 / 120 / 180 / 240 /
+//     300 / 360 / 1440 / 10080 minutes) matching
+//     `src/tui/dialogs/snooze_duration.rs`.
 //   - Picking "1 hour" PATCHes /api/sessions/{id}/snooze with { minutes: 60 },
 //     sets `snoozed_until` on the server, and sinks the row into the
 //     collapsible footer.
-//   - Unsnooze via the menu round-trips back to live.
+//   - Unsnooze via the context menu round-trips back to live.
 
 import { test as base, expect } from "@playwright/test";
 import {
@@ -34,16 +35,19 @@ base.describe("sidebar snooze via context menu (#1581)", () => {
       const row = page.locator("[data-testid='sidebar-session-row']");
       await expect(row).toContainText(title, { timeout: 10_000 });
 
-      // ---- Open snooze submenu, confirm 8 presets ----
+      // ---- Open context menu → Snooze… → modal with 8 presets ----
       await row.click({ button: "right" });
       await page
         .locator("[data-testid='sidebar-context-menu-snooze']")
         .click();
 
+      const modal = page.locator("[data-testid='snooze-modal']");
+      await expect(modal).toBeVisible();
+
       const presets = [60, 120, 180, 240, 300, 360, 1440, 10080];
       for (const m of presets) {
         await expect(
-          page.locator(`[data-testid='sidebar-context-menu-snooze-${m}']`),
+          modal.locator(`[data-testid='snooze-modal-preset-${m}']`),
         ).toBeVisible();
       }
 
@@ -54,9 +58,7 @@ base.describe("sidebar snooze via context menu (#1581)", () => {
           res.request().method() === "PATCH",
       );
       const issuedAt = Date.now();
-      await page
-        .locator("[data-testid='sidebar-context-menu-snooze-60']")
-        .click();
+      await modal.locator("[data-testid='snooze-modal-preset-60']").click();
       const response = await snoozePatch;
       expect(response.ok()).toBe(true);
       expect(response.request().postDataJSON()).toEqual({ minutes: 60 });

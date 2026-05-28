@@ -97,18 +97,25 @@ base.describe("sidebar archive via context menu (#1581)", () => {
       const reloadedFooter = page.locator(
         "[data-testid='sidebar-sunk-section']",
       );
-      // The footer may already be expanded if localStorage saved the
-      // toggle from the earlier expand; only click the toggle when the
-      // archived row isn't yet visible.
+      await expect(reloadedFooter).toBeVisible({ timeout: 10_000 });
+
+      // Use the toggle's `aria-expanded` attribute as the source of
+      // truth for the footer state; the previous `count() === 0`
+      // pre-check raced against hydration and could flip the toggle
+      // CLOSED when localStorage had already auto-expanded it.
+      const reloadedToggle = reloadedFooter.locator(
+        "[data-testid='sidebar-sunk-toggle']",
+      );
+      const expanded = await reloadedToggle.getAttribute("aria-expanded");
+      if (expanded !== "true") {
+        await reloadedToggle.click();
+      }
       const reloadedArchivedRow = reloadedFooter.locator(
         "[data-testid='sidebar-session-row']",
       );
-      if ((await reloadedArchivedRow.count()) === 0) {
-        await reloadedFooter
-          .locator("[data-testid='sidebar-sunk-toggle']")
-          .click();
-      }
-      await expect(reloadedArchivedRow).toContainText(title);
+      await expect(reloadedArchivedRow).toContainText(title, {
+        timeout: 10_000,
+      });
 
       const unarchivePatch = page.waitForResponse(
         (res) =>
