@@ -296,6 +296,17 @@
       ]
     },
     {
+      "id": "wizard.multi-repo-stale-base",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/multi-repo-stale-base.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx"
+      ]
+    },
+    {
       "id": "wizard.profile-description",
       "kind": "mocked-playwright",
       "risk": "medium",
@@ -444,36 +455,50 @@
       "id": "sidebar.sort-pure",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/__tests__/sidebarSort.test.ts"],
+      "specs": [
+        "src/lib/__tests__/sidebarSort.test.ts"
+      ],
       "components": []
     },
     {
       "id": "sidebar.sort-hook",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/hooks/useSidebarSortMode.test.ts"],
+      "specs": [
+        "src/hooks/useSidebarSortMode.test.ts"
+      ],
       "components": []
     },
     {
       "id": "sidebar.repo-groups-hook",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/hooks/useRepoGroups.test.ts"],
+      "specs": [
+        "src/hooks/useRepoGroups.test.ts"
+      ],
       "components": []
     },
     {
       "id": "sidebar.sort-toggle-ui",
       "kind": "mocked-playwright",
       "risk": "high",
-      "specs": ["tests/sidebar-sort-mode.spec.ts"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "specs": [
+        "tests/sidebar-sort-mode.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
     },
     {
       "id": "sidebar.sort-live",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/sidebar-sort-mode.spec.ts"],
-      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+      "specs": [
+        "tests/live/sidebar-sort-mode.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
     },
     {
       "id": "session.lifecycle",
