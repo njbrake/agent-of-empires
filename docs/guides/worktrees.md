@@ -44,17 +44,19 @@ aoe remove <session> --delete-worktree
 ```
 
 `--base-branch` only matters with `--new-branch` / `-b`. The base is
-resolved against the remote first (`origin/<base>`), then against a
-local branch with that name, so passing a teammate's not-yet-fetched
-branch works without a manual `git fetch`. When omitted, the new
-branch is based on the repository's default branch (`main`/`master`).
+resolved against the remote first, then against a local branch with
+that name, so passing a teammate's not-yet-fetched branch works
+without a manual `git fetch`. When omitted, the new branch is based
+on the repository's default branch (`main`/`master`).
 
-Default-branch detection scores every configured remote (not just
-`origin`). In a fork plus `upstream` layout, aoe picks the freshest
-`main`/`master` it can find that HEAD descends from. So if `upstream/main`
-is ahead of `origin/main` and your local `main`, `aoe add` fetches and
-branches off `upstream/main` rather than the stale fork tip. See issue
-\#1029 for the rationale.
+Remote selection scores every configured remote (not just `origin`),
+for both the autodetected default branch (issue \#1029) and an
+explicit `--base-branch` (issue \#1511). In a fork plus `upstream`
+layout where `upstream/main` is ahead of `origin/main`, aoe fetches
+and branches off `upstream/main` even when you typed `main` into the
+wizard's base-branch field. Ties break in favor of `origin` so the
+historical single-remote behavior still applies when there is no
+freshness signal.
 
 ## TUI Keyboard Shortcuts
 
@@ -116,17 +118,31 @@ path_template = "/absolute/path/to/worktrees/{repo-name}/{branch}"
 path_template = "../wt/{branch}-{session-id}"
 ```
 
-## Post-Checkout Hooks
+## Worktree Warnings
 
-Some repos install pre-commit hooks at the `post-checkout` stage (`uv-sync`, `npm install`, LFS smudge, etc.) that fire when `git worktree add` checks out the new branch. If such a hook fails, the worktree directory and its `.git` pointer have already been created, and the worktree is usable. AOE no longer aborts session creation in that case: the hook output is captured and surfaced as a warning.
+Two classes of non-fatal failures surface through the same warning channel during session create. AOE does not abort the session; instead it captures the failure and surfaces it so you know what to investigate.
 
-| Surface | Where the warning appears |
+| Surface | Where warnings appear |
 |---|---|
 | CLI (`aoe add`) | `⚠ <message>` line on stderr after `✓ Worktree created successfully` |
 | TUI | `Worktree warnings` info dialog opens after the session is added |
 | Web | Toast per warning, plus `warnings: string[]` on the `POST /api/sessions` response body |
 
+### Post-checkout hooks
+
+Some repos install pre-commit hooks at the `post-checkout` stage (`uv-sync`, `npm install`, LFS smudge, etc.) that fire when `git worktree add` checks out the new branch. If such a hook fails, the worktree directory and its `.git` pointer have already been created, and the worktree is usable.
+
 Common cause: the hook calls a tool (uv, npm, pip) that needs network access or credentials the new worktree does not yet have. Re-run the hook manually inside the worktree once the environment is set up, or disable it for AOE-created worktrees by configuring `core.hooksPath` per checkout.
+
+### Fetch failures
+
+Before checking out the new branch, AOE runs `git fetch <remote> <branch>` so the worktree starts from the latest remote state. Network errors, missing remotes, SSH key issues, and 10s timeouts no longer pass silently; they surface as warnings shaped like:
+
+```
+git fetch <remote> <branch> failed for <repo>: <stderr>
+```
+
+The session is still created when the fetch fails. The worktree branches off whatever local ref already exists, which may be stale. Multi-repo sessions emit one warning per repo whose fetch failed, so a single bad remote in a workspace of five repos shows up as one toast rather than aborting the whole workspace. See issue \#1511 for the rationale.
 
 ## Performance & Debug Logging
 
