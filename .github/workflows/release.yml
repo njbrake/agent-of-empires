@@ -23,6 +23,10 @@ jobs:
   validate:
     name: Validate Version
     runs-on: ubuntu-latest
+    # Required-reviewer gate. Pauses every release (tag push or manual
+    # dispatch) until njbrake approves in the Actions UI. The whole pipeline
+    # waits here, so no build compute or release publish runs without sign-off.
+    environment: release
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:

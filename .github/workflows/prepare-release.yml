@@ -12,6 +12,11 @@ jobs:
   prepare:
     name: Bump Version & Tag
     runs-on: ubuntu-latest
+    # Required-reviewer gate. The `release` environment has njbrake as the
+    # only reviewer, so any workflow_dispatch trigger pauses until he clicks
+    # approve in the Actions UI. Prevents non-maintainer collaborators from
+    # firing the version bump + tag push via the Actions UI.
+    environment: release
     permissions:
       contents: write
     # Hoist the version input out of every run: step's shell, so it lands in
