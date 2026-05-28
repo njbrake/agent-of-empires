@@ -1038,8 +1038,8 @@ impl HomeView {
 
         // Right-click context menu. Routed before every other dialog so
         // keys go to the popup that the user just opened on top of the
-        // sidebar. Submit dispatches to the same helpers the `r` / `d`
-        // key bindings use; Cancel just dismisses.
+        // sidebar. Submit dispatches through the shared helper so the
+        // keyboard and the mouse-click path stay byte-for-byte aligned.
         if let Some(menu) = &mut self.context_menu {
             match menu.handle_key(key) {
                 DialogResult::Continue => {}
@@ -1048,10 +1048,7 @@ impl HomeView {
                 }
                 DialogResult::Submit(action) => {
                     self.context_menu = None;
-                    match action {
-                        ContextMenuAction::Rename => self.open_rename_for_selected(),
-                        ContextMenuAction::Delete => self.open_delete_for_selected(),
-                    }
+                    self.dispatch_context_menu_action(action);
                 }
             }
             return None;
@@ -3047,30 +3044,46 @@ impl HomeView {
     /// renderer clamps the menu into the visible area so a near-edge
     /// click never produces an off-screen popup.
     ///
-    /// Returns true when the menu opened. A right-click that doesn't
-    /// resolve to a row (header, scroll arrow, empty space below the
-    /// last row) is a no-op so the caller can choose to fall through.
+    /// Returns true when a menu opened. Routes by what the click hit:
+    /// a real row (session or group) opens the per-row Rename/Delete
+    /// menu; empty space inside the list opens the empty-sidebar menu
+    /// (New Session / Change Sort / Change Grouping). Anywhere else
+    /// (header, scroll arrow, scroll bar, outside the list panel) is
+    /// a no-op so the caller can fall through.
     pub fn handle_right_click(&mut self, col: u16, row: u16) -> bool {
         // `resolve_row_to_index` already short-circuits when any
         // non-live-send overlay (incl. the context menu itself) is open
         // and inside the diff takeover, so no extra dialog gating here.
-        let Some(idx) = self.resolve_row_to_index(col, row) else {
-            return false;
-        };
-        if self.cursor != idx {
-            self.cursor = idx;
-            self.update_selected();
-        }
-        // Mirror the row-aware menu copy from the web sidebar so a group
-        // row reads as "Rename Group / Delete Group" instead of bare
-        // "Rename / Delete".
-        let is_group = matches!(self.flat_items[idx], super::Item::Group { .. });
         let anchor = (col.saturating_add(1), row.saturating_add(1));
-        self.context_menu = Some(if is_group {
-            ContextMenuDialog::for_group(anchor)
-        } else {
-            ContextMenuDialog::for_session(anchor)
-        });
+        if let Some(idx) = self.resolve_row_to_index(col, row) {
+            if self.cursor != idx {
+                self.cursor = idx;
+                self.update_selected();
+            }
+            // Mirror the row-aware menu copy from the web sidebar so a group
+            // row reads as "Rename Group / Delete Group" instead of bare
+            // "Rename / Delete".
+            let is_group = matches!(self.flat_items[idx], super::Item::Group { .. });
+            self.context_menu = Some(if is_group {
+                ContextMenuDialog::for_group(anchor)
+            } else {
+                ContextMenuDialog::for_session(anchor)
+            });
+            return true;
+        }
+        // No row resolved. If the click landed inside the list panel
+        // anyway (empty space below the last session, or an empty
+        // list), surface the empty-sidebar menu so the mouse-only path
+        // can reach the n/o/g entry points. Gated on no other overlay
+        // being open and the diff view not taking over the panel, same
+        // shape as `handle_empty_list_click`.
+        if self.has_non_live_send_overlay() || self.diff_view.is_some() {
+            return false;
+        }
+        if !self.list_inner_area.contains(Position::from((col, row))) {
+            return false;
+        }
+        self.context_menu = Some(ContextMenuDialog::for_empty_sidebar(anchor));
         true
     }
 
@@ -3101,13 +3114,25 @@ impl HomeView {
             }
             Some(DialogResult::Submit(action)) => {
                 self.context_menu = None;
-                match action {
-                    ContextMenuAction::Rename => self.open_rename_for_selected(),
-                    ContextMenuAction::Delete => self.open_delete_for_selected(),
-                }
+                self.dispatch_context_menu_action(action);
             }
         }
         true
+    }
+
+    /// Single dispatcher for every `ContextMenuAction` so the keyboard
+    /// path (Enter / r / d / n / o / g on an open menu) and the mouse
+    /// path (click on a menu row) execute the exact same helpers. Any
+    /// new menu action needs to be wired here once, not at each call
+    /// site.
+    pub(super) fn dispatch_context_menu_action(&mut self, action: ContextMenuAction) {
+        match action {
+            ContextMenuAction::Rename => self.open_rename_for_selected(),
+            ContextMenuAction::Delete => self.open_delete_for_selected(),
+            ContextMenuAction::NewSession => self.open_new_session_dialog(),
+            ContextMenuAction::OpenSortPicker => self.show_sort_picker(),
+            ContextMenuAction::OpenGroupPicker => self.show_group_picker(),
+        }
     }
 
     /// Open the new-session dialog, with the same gating the `'n'` key
@@ -3139,10 +3164,14 @@ impl HomeView {
         ));
     }
 
-    /// Treat a left-click that landed in the sidebar area but past the
-    /// last session row as "open new session"; matches the `'n'`
-    /// keybind. Returns true when the click was consumed (dialog
-    /// opened or a gating dialog like "please wait" replaced it).
+    /// Left-click on the empty area of the sidebar (below the last
+    /// session, or in an empty list). Used as a quick "drop out of
+    /// live mode" gesture: if live-send is active, the click exits
+    /// it and reflows the preview back to its normal size; otherwise
+    /// the click is a no-op. The "open new session" entry that used
+    /// to live here now belongs to the right-click empty-sidebar
+    /// menu, so left-click on empty space stays low-stakes and the
+    /// user never accidentally summons a modal mid-typing.
     ///
     /// Gated to fire only when no overlay is already up and the diff
     /// view isn't open, so a click on an empty list while a modal is
@@ -3158,8 +3187,11 @@ impl HomeView {
             // A real row resolved here; the regular click path owns it.
             return false;
         }
-        self.open_new_session_dialog();
-        true
+        if let Some(state) = self.live_send.clone() {
+            self.exit_live_send_and_restore_sizing(&state);
+            return true;
+        }
+        false
     }
 
     /// Open the rename dialog for whatever the sidebar has selected (a

@@ -12,6 +12,12 @@ use crate::tui::styles::Theme;
 pub enum ContextMenuAction {
     Rename,
     Delete,
+    /// Open the new-session dialog (mirrors the `'n'` hotkey).
+    NewSession,
+    /// Open the sort-order picker (mirrors `'o'`).
+    OpenSortPicker,
+    /// Open the group-by mode picker (mirrors `'g'`).
+    OpenGroupPicker,
 }
 
 pub struct ContextMenuDialog {
@@ -72,6 +78,22 @@ impl ContextMenuDialog {
         )
     }
 
+    /// Menu shown when the user right-clicks the empty area of the
+    /// sidebar (below the last session row, or in an empty list).
+    /// Holds the entry points the user would otherwise have to reach
+    /// via `'n'` / `'o'` / `'g'`, so the mouse-only path matches the
+    /// keyboard.
+    pub fn for_empty_sidebar(anchor: (u16, u16)) -> Self {
+        Self::new(
+            anchor,
+            vec![
+                (ContextMenuAction::NewSession, "New Session"),
+                (ContextMenuAction::OpenSortPicker, "Change Sort"),
+                (ContextMenuAction::OpenGroupPicker, "Change Grouping"),
+            ],
+        )
+    }
+
     fn new(anchor: (u16, u16), items: Vec<(ContextMenuAction, &'static str)>) -> Self {
         Self {
             items,
@@ -83,6 +105,22 @@ impl ContextMenuDialog {
 
     pub fn selected_action(&self) -> ContextMenuAction {
         self.items[self.selected].0
+    }
+
+    /// Test-only accessor: returns the (action, label) pairs in order
+    /// so cross-module tests can assert on which menu variant opened
+    /// without spinning up a render. Not part of the runtime API.
+    #[cfg(test)]
+    pub fn items_for_test(&self) -> &[(ContextMenuAction, &'static str)] {
+        &self.items
+    }
+
+    /// Test-only accessor: returns the area the menu rendered into
+    /// last frame. Lets a cross-module test compute the row of a given
+    /// item without re-deriving the layout math.
+    #[cfg(test)]
+    pub fn last_area_for_test(&self) -> Rect {
+        self.last_area
     }
 
     /// Returns true when `(col, row)` falls outside the last rendered area.
@@ -152,12 +190,26 @@ impl ContextMenuDialog {
                 DialogResult::Continue
             }
             // Quick-pick hotkeys mirror the underlying actions' home-view
-            // bindings, so a power user never has to arrow + Enter.
-            KeyCode::Char('r') | KeyCode::Char('R') => {
-                DialogResult::Submit(ContextMenuAction::Rename)
-            }
-            KeyCode::Char('d') | KeyCode::Char('D') => {
-                DialogResult::Submit(ContextMenuAction::Delete)
+            // bindings (r/d for Rename/Delete; n/o/g for New / Sort /
+            // Grouping). The hotkey only fires when the corresponding
+            // action is actually in the current menu's item list, so the
+            // session menu's `r` doesn't accidentally fire on the
+            // empty-sidebar menu (which has different items).
+            KeyCode::Char(c) => {
+                let action = match c {
+                    'r' | 'R' => Some(ContextMenuAction::Rename),
+                    'd' | 'D' => Some(ContextMenuAction::Delete),
+                    'n' | 'N' => Some(ContextMenuAction::NewSession),
+                    'o' | 'O' => Some(ContextMenuAction::OpenSortPicker),
+                    'g' | 'G' => Some(ContextMenuAction::OpenGroupPicker),
+                    _ => None,
+                };
+                match action {
+                    Some(a) if self.items.iter().any(|(item, _)| *item == a) => {
+                        DialogResult::Submit(a)
+                    }
+                    _ => DialogResult::Continue,
+                }
             }
             _ => DialogResult::Continue,
         }

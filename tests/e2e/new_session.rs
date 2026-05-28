@@ -37,18 +37,15 @@ fn test_new_session_dialog_escape_cancels() {
 
 #[test]
 #[serial]
-fn test_left_click_on_empty_sidebar_opens_new_session_dialog() {
-    // Regression test for the mouse-support PR: a left-click on the
-    // sidebar's empty area below the last session row must open the
-    // new-session dialog (the click equivalent of pressing `n`), and
-    // a subsequent Escape must reach the dialog (not fall through to
-    // any underlying surface). The dialog-receives-keys part is the
-    // half that previously broke when live-send was active; this test
-    // covers the simpler no-live-send path that any user hitting
-    // empty-sidebar-click goes through.
+fn test_left_click_on_empty_sidebar_is_inert_outside_live_mode() {
+    // The empty-sidebar left-click intentionally does NOT open the
+    // new-session dialog; that entry point moved to the right-click
+    // empty-sidebar menu. Verifies the click is absorbed without
+    // popping a modal so a stray click while reading the sidebar
+    // doesn't summon an unexpected dialog.
     require_tmux!();
 
-    let mut h = TuiTestHarness::new("empty_click");
+    let mut h = TuiTestHarness::new("empty_lclick");
     h.spawn_tui();
 
     h.wait_for(" aoe ");
@@ -58,21 +55,92 @@ fn test_left_click_on_empty_sidebar_opens_new_session_dialog() {
     h.wait_for("No sessions yet");
 
     // Click well below the empty-state label in the sidebar column.
-    // The sidebar's empty area is wide; (col=10, row=15) lands inside
-    // `list_inner_area` but past every real row, which is exactly
-    // what `handle_empty_list_click` checks for. Coordinates are
-    // 1-indexed in SGR.
     h.send_mouse_click(0, 10, 15);
 
-    // Dialog should appear with its trademark fields.
-    h.wait_for(" New Session ");
-    h.assert_screen_contains("Title");
-    h.assert_screen_contains("Path");
+    // No dialog should have opened.
+    std::thread::sleep(Duration::from_millis(300));
+    let screen = h.capture_screen();
+    assert!(
+        !screen.contains(" New Session "),
+        "left-click on empty sidebar must not open new-session anymore\nscreen:\n{screen}"
+    );
+    assert!(
+        screen.contains("No sessions yet"),
+        "home view should still be showing the empty-state copy\nscreen:\n{screen}"
+    );
+}
 
-    // Keyboard now routes to the dialog. Escape closes it.
+#[test]
+#[serial]
+fn test_right_click_on_empty_sidebar_opens_context_menu() {
+    // The right-click menu on the empty area lists the three actions
+    // that used to be keyboard-only entry points: New Session, Change
+    // Sort, Change Grouping. Verifies the menu opens, lists the three
+    // items, and Escape dismisses without dispatching.
+    require_tmux!();
+
+    let mut h = TuiTestHarness::new("empty_rclick");
+    h.spawn_tui();
+
+    h.wait_for(" aoe ");
+    h.send_keys("Enter"); // dismiss welcome
+    h.wait_for("No sessions yet");
+
+    // SGR button code 2 = right click.
+    h.send_mouse_click(2, 10, 15);
+
+    h.wait_for("New Session");
+    h.assert_screen_contains("Change Sort");
+    h.assert_screen_contains("Change Grouping");
+
     h.send_keys("Escape");
-    h.wait_for_absent(" New Session ", Duration::from_secs(5));
+    h.wait_for_absent("Change Sort", Duration::from_secs(5));
     h.assert_screen_contains("No sessions yet");
+}
+
+#[test]
+#[serial]
+fn test_right_click_on_session_row_opens_rename_delete_menu() {
+    // Right-click on an existing session row opens the per-row
+    // Rename / Delete menu (a different menu variant than the empty
+    // area version). Verifies the menu copy and that Escape dismisses
+    // without opening either follow-up dialog. The session is created
+    // out-of-band via `aoe add` so the test doesn't have to drive the
+    // new-session dialog (which has its own coverage elsewhere).
+    require_tmux!();
+
+    let mut h = TuiTestHarness::new("session_rclick");
+    // Seed a session before launching the TUI.
+    let project = h.project_path();
+    let add = h.run_cli(&["add", project.to_str().unwrap(), "-t", "RClickRow"]);
+    assert!(
+        add.status.success(),
+        "aoe add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    h.spawn_tui();
+    h.wait_for(" aoe ");
+    h.send_keys("Enter"); // dismiss welcome
+    h.wait_for("RClickRow");
+
+    // Right-click on the first session row. The row sits inside the
+    // bordered sidebar panel: top border is row 1, the first item is
+    // row 2. Column 5 lands on the row's label area.
+    h.send_mouse_click(2, 5, 2);
+
+    h.wait_for("Rename");
+    h.assert_screen_contains("Delete");
+    // The empty-sidebar menu items must NOT appear here; verifies
+    // that the row-aware menu opened, not the empty-area variant.
+    let screen = h.capture_screen();
+    assert!(
+        !screen.contains("Change Sort"),
+        "session menu should not show Change Sort\nscreen:\n{screen}"
+    );
+
+    h.send_keys("Escape");
+    h.wait_for_absent("Rename", Duration::from_secs(5));
 }
 
 /// Submit the new session dialog, handling the "Path does not exist. Create?"
