@@ -8096,7 +8096,13 @@ mod save_field_merge {
 
     #[test]
     #[serial]
-    fn test_apply_user_action_preserves_peer_user_action_field() {
+    fn test_apply_user_action_archive_clears_peer_snooze() {
+        // The web/TUI/CLI contract treats pinned / archived / snoozed
+        // as mutually exclusive (see Instance::archive and the sidebar
+        // tier comparator in #1581). When a peer snoozes a row that
+        // the TUI then archives, archive wins because it is the
+        // indefinite sink; leaving both flags persisted would surface
+        // contradictory triage state on the next render.
         let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/race");
 
         let peer_storage = Storage::new("test").unwrap();
@@ -8109,8 +8115,6 @@ mod save_field_merge {
             })
             .unwrap();
 
-        // archive() touches archived_at + favorited_at only; the peer-set
-        // snoozed_until must NOT be clobbered by the diff-splice.
         view.apply_user_action(&id, |inst| inst.archive())
             .expect("archive must persist");
 
@@ -8118,8 +8122,40 @@ mod save_field_merge {
         let row = reloaded.iter().find(|i| i.id == id).expect("row present");
         assert!(row.archived_at.is_some(), "TUI archive landed");
         assert!(
-            row.snoozed_until.is_some(),
-            "peer-written snoozed_until must survive a TUI archive that does not touch the field"
+            row.snoozed_until.is_none(),
+            "archive() invariant must clear a concurrent peer snooze",
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_apply_user_action_preserves_peer_user_action_field() {
+        // Field-level merge regression: a TUI snooze must not clobber
+        // an unrelated peer write (group_path here). Uses snooze
+        // instead of archive so the snoozed_until field IS touched on
+        // both sides and the test isolates the peer-field-survival
+        // invariant from the archive XOR rules tested above.
+        let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/race");
+
+        let peer_storage = Storage::new("test").unwrap();
+        peer_storage
+            .update(|insts, _| {
+                if let Some(inst) = insts.iter_mut().find(|i| i.id == id) {
+                    inst.group_path = "peer/group".to_string();
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        view.apply_user_action(&id, |inst| inst.snooze(30))
+            .expect("snooze must persist");
+
+        let reloaded = Storage::new("test").unwrap().load().unwrap();
+        let row = reloaded.iter().find(|i| i.id == id).expect("row present");
+        assert!(row.snoozed_until.is_some(), "TUI snooze landed");
+        assert_eq!(
+            row.group_path, "peer/group",
+            "peer-written group_path must survive a TUI snooze that does not touch the field",
         );
     }
 
