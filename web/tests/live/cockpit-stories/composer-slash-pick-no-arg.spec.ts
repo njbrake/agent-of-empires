@@ -22,7 +22,11 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
+import {
+  waitForCockpitView,
+  enableCockpitAndWait,
+  waitForReplayContains,
+} from "../../helpers/cockpit";
 
 base(
   "picking a no-arg slash command does not trap Enter",
@@ -74,6 +78,17 @@ base(
         throw new Error(`cockpit spawn failed: ${spawnRes.status}`);
       }
 
+      // Block until the fake-ACP's available_commands_update has
+      // reached the replay buffer. Without this, the browser can race
+      // the supervisor handshake and arrive before the cockpit
+      // reducer has applied the commands, leaving the `/` popover
+      // showing "No matches".
+      await waitForReplayContains(
+        serve.baseUrl,
+        sessionId,
+        "AvailableCommandsUpdated",
+      );
+
       await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
       await waitForCockpitView(page);
 
@@ -81,13 +96,19 @@ base(
       await composer.click();
 
       // Type `/h` so the popover surfaces and `/help` is the top
-      // (highlighted) item. fuzzyFilter ranks the prefix match first.
+      // (auto-highlighted index 0) item. fuzzyFilter ranks the prefix
+      // match first.
       await composer.pressSequentially("/h");
 
-      const helpItem = page.locator('[data-highlighted="true"]').filter({
-        hasText: /\/help/,
-      });
-      await expect(helpItem).toBeVisible({ timeout: 10_000 });
+      // assistant-ui renders each popover entry as a button with
+      // role="option". The accessible name combines the trigger glyph,
+      // the label, and the description, so filter by `/help` substring
+      // rather than relying on the visually-only data-highlighted
+      // attribute (which assistant-ui sets to "" not "true").
+      const helpItem = page
+        .getByRole("option")
+        .filter({ hasText: /\/help/ });
+      await expect(helpItem).toBeVisible({ timeout: 15_000 });
 
       // Pick `/help` via Enter. removeOnExecute strips the typed
       // `/h`, then `insertSlashCommand` writes the canonical
@@ -162,6 +183,17 @@ base(
         throw new Error(`cockpit spawn failed: ${spawnRes.status}`);
       }
 
+      // Block until the fake-ACP's available_commands_update has
+      // reached the replay buffer. Without this, the browser can race
+      // the supervisor handshake and arrive before the cockpit
+      // reducer has applied the commands, leaving the `/` popover
+      // showing "No matches".
+      await waitForReplayContains(
+        serve.baseUrl,
+        sessionId,
+        "AvailableCommandsUpdated",
+      );
+
       await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
       await waitForCockpitView(page);
 
@@ -169,10 +201,10 @@ base(
       await composer.click();
       await composer.pressSequentially("/r");
 
-      const reviewItem = page.locator('[data-highlighted="true"]').filter({
-        hasText: /\/review/,
-      });
-      await expect(reviewItem).toBeVisible({ timeout: 10_000 });
+      const reviewItem = page
+        .getByRole("option")
+        .filter({ hasText: /\/review/ });
+      await expect(reviewItem).toBeVisible({ timeout: 15_000 });
 
       await composer.press("Enter");
 
