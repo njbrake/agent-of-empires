@@ -9,6 +9,7 @@ import {
   repoGroupLastActivityMs,
   resolveEffectiveSnoozedUntil,
   saveSidebarSortMode,
+  snoozeTimestampCloseEnough,
   triageMenuShape,
   triageStateOf,
   workspaceIsPinned,
@@ -279,6 +280,46 @@ describe("resolveEffectiveSnoozedUntil", () => {
     expect(
       resolveEffectiveSnoozedUntil(null, "2099-01-01T00:00:00Z"),
     ).toBeNull();
+  });
+});
+
+describe("snoozeTimestampCloseEnough", () => {
+  it("treats equal timestamps as a match", () => {
+    expect(
+      snoozeTimestampCloseEnough(
+        "2099-01-01T00:00:00Z",
+        "2099-01-01T00:00:00Z",
+      ),
+    ).toBe(true);
+  });
+
+  it("tolerates a 30-second skew", () => {
+    expect(
+      snoozeTimestampCloseEnough(
+        "2099-01-01T00:00:00Z",
+        "2099-01-01T00:00:30Z",
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a 5-minute skew (re-snooze case)", () => {
+    // Regression: re-snoozing an already-snoozed row used to drop
+    // the optimistic override because the prop and override were
+    // both non-null. The new helper compares actual timestamps so
+    // a 1h re-snooze on a row already sitting on a 1h snooze
+    // (where the server hasn't acked the new duration yet) keeps
+    // the optimistic chip visible. See #1581 CodeRabbit review.
+    expect(
+      snoozeTimestampCloseEnough(
+        "2099-01-01T00:00:00Z",
+        "2099-01-01T00:05:00Z",
+      ),
+    ).toBe(false);
+  });
+
+  it("falls back to literal equality for unparseable strings", () => {
+    expect(snoozeTimestampCloseEnough("not-a-date", "not-a-date")).toBe(true);
+    expect(snoozeTimestampCloseEnough("not-a-date", "also-bad")).toBe(false);
   });
 });
 

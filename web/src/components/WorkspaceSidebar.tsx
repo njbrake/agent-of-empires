@@ -58,6 +58,7 @@ import { useHasDraftForSessions } from "../lib/cockpitDrafts";
 import { reportError } from "../lib/toastBus";
 import {
   resolveEffectiveSnoozedUntil,
+  snoozeTimestampCloseEnough,
   triageMenuShape,
   triageStateOf,
   workspaceIsPinned,
@@ -558,10 +559,22 @@ export const SessionRow = memo(function SessionRow({
     }
   }, [isArchived, optimisticArchived]);
   useEffect(() => {
+    if (optimisticSnoozedUntil === undefined) return;
+    // Clear the override only when the server value actually matches
+    // it. A naive "both non-null" check used to fire prematurely
+    // when the user re-snoozed an already-snoozed row: the prop
+    // was still the OLD timestamp but non-null, the override was
+    // the NEW timestamp, the effect treated them as a match, and
+    // the chip snapped back to the stale time until the next
+    // poll. See #1581 CodeRabbit review.
+    if (optimisticSnoozedUntil === null && snoozedUntil == null) {
+      setOptimisticSnoozedUntil(undefined);
+      return;
+    }
     if (
-      optimisticSnoozedUntil !== undefined &&
-      ((optimisticSnoozedUntil === null && snoozedUntil == null) ||
-        (optimisticSnoozedUntil != null && snoozedUntil != null))
+      optimisticSnoozedUntil != null &&
+      snoozedUntil != null &&
+      snoozeTimestampCloseEnough(optimisticSnoozedUntil, snoozedUntil)
     ) {
       setOptimisticSnoozedUntil(undefined);
     }

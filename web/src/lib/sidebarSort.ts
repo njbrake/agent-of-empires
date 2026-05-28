@@ -85,6 +85,24 @@ export function workspaceTriageTier(ws: Workspace): 0 | 1 | 2 {
   return 1;
 }
 
+/** Whether two RFC3339 snooze timestamps are close enough to count
+ *  as the same snooze deadline, given some unavoidable skew between
+ *  the client's `Date.now()` (used to mint the optimistic preview)
+ *  and the server's `Utc::now()` (used by `Instance::snooze`). A 2
+ *  minute tolerance covers serialization rounding, daemon RTT, and
+ *  small clock drift without letting a brand-new snooze get swapped
+ *  back to a stale one. Unparseable strings fall back to literal
+ *  equality so the helper is defensive. See #1581. */
+export function snoozeTimestampCloseEnough(
+  aIso: string,
+  bIso: string,
+): boolean {
+  const a = Date.parse(aIso);
+  const b = Date.parse(bIso);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return aIso === bIso;
+  return Math.abs(a - b) <= 2 * 60_000;
+}
+
 /** Resolve the "effective" snoozed_until value the row should render
  *  with, given a server-derived prop and an optimistic local
  *  override. `undefined` on the optimistic side means "no override,
