@@ -111,8 +111,11 @@ test("theme picker repaints, persists across reload and serve restart (#1510)", 
 
   // No passphrase / elevation prompt fired (the daemon does not have a
   // passphrase configured in the `serve` fixture). The elevation prompt
-  // is a role=dialog with the "Confirm passphrase" header.
-  await expect(page.getByRole("dialog", { name: /Confirm passphrase/i })).toHaveCount(0);
+  // is a role=dialog with the "Confirm passphrase" header (no
+  // accessible name; locate by role + text).
+  await expect(
+    page.locator('[role="dialog"]').filter({ hasText: /Confirm passphrase/i }),
+  ).toHaveCount(0);
 
   // Persistence across page reload.
   await page.reload();

@@ -65,6 +65,37 @@ function authHeaders(handle: ServeHandle): Record<string, string> {
   return out;
 }
 
+/**
+ * `aoe serve` restart wipes the in-memory `LoginManager` state, so any
+ * cookie minted by the previous process becomes invalid: the device
+ * binding (32 random bytes) was stored in process memory and is gone.
+ * Re-mint a session by POSTing the same passphrase + binding the
+ * harness used during initial preauth. Mutates the handle in place so
+ * `authHeaders(handle)` returns the fresh cookie. Mirrors
+ * `loginWithPassphrase` in `web/tests/helpers/aoeServe.ts`, which is
+ * not exported.
+ */
+async function reLogin(handle: ServeHandle): Promise<void> {
+  if (!handle.passphrase || !handle.deviceBindingSecret) return;
+  const res = await fetch(`${handle.baseUrl}/api/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      passphrase: handle.passphrase,
+      device_binding_secret: handle.deviceBindingSecret,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`re-login after restart failed: ${res.status} ${await res.text()}`);
+  }
+  const setCookie = res.headers.get("set-cookie") ?? "";
+  const match = /aoe_session=([^;]+)/.exec(setCookie);
+  if (!match) {
+    throw new Error(`re-login did not set aoe_session cookie. Set-Cookie: ${setCookie}`);
+  }
+  handle.sessionCookie = { name: "aoe_session", value: match[1] };
+}
+
 async function resolveDefaultProfile(handle: ServeHandle): Promise<string> {
   const profiles: Array<{ name: string; is_default?: boolean }> = await fetch(
     `${handle.baseUrl}/api/profiles`,
@@ -140,7 +171,7 @@ test("theme picker persists across reload + restart without passphrase prompt", 
   // No elevation prompt fired anywhere. Checks both the DOM dialog
   // and the event the interceptor would have dispatched.
   await expect(
-    page.getByRole("dialog", { name: /Confirm passphrase/i }),
+    page.locator('[role="dialog"]').filter({ hasText: /Confirm passphrase/i }),
   ).toHaveCount(0);
   const fired = await page.evaluate(
     () =>
@@ -173,6 +204,7 @@ test("theme picker persists across reload + restart without passphrase prompt", 
   expect(afterReload?.theme?.name).toBe(SWITCH_TO);
 
   await servePreauthed.restart();
+  await reLogin(servePreauthed);
   const afterRestart = await fetch(profileUrl, { headers: authHeaders(servePreauthed) }).then(
     (r) => r.json(),
   );
@@ -208,8 +240,12 @@ test("sandbox image change still requires passphrase elevation", async ({
 
   // ElevationPrompt opens (from fetchInterceptor dispatching
   // ELEVATION_REQUIRED_EVENT on the 403 elevation_required payload).
+  // The dialog element has role=dialog + aria-modal=true but no
+  // accessible name (no aria-label, no aria-labelledby pointing at
+  // the "Confirm passphrase" header), so `getByRole("dialog", { name })`
+  // does not match. Locate by role then filter on visible text instead.
   await expect(
-    page.getByRole("dialog", { name: /Confirm passphrase/i }),
+    page.locator('[role="dialog"]').filter({ hasText: /Confirm passphrase/i }),
   ).toBeVisible({ timeout: 5_000 });
 
   // Server state did not move: the sandbox image stays at whatever it
