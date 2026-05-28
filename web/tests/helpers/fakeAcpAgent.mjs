@@ -332,6 +332,47 @@ async function handleRequest(msg) {
     case "session/new":
     case "session/load": {
       const sessionId = params?.sessionId ?? makeSessionId();
+      // Test hook: when FAKE_ACP_COMMANDS is set, emit an
+      // `available_commands_update` session/update notification right
+      // after the session/new response so the cockpit composer's
+      // slash-command popover is populated for stories that drive the
+      // `/` picker (e.g. composer-slash-pick-no-arg #1512).
+      const commandsJson = process.env.FAKE_ACP_COMMANDS;
+      if (commandsJson) {
+        try {
+          const parsed = JSON.parse(commandsJson);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            // ACP wire shape (per
+            // agent-client-protocol-schema 0.12 client.rs:447-508):
+            // each AvailableCommand has `name`, `description`, and an
+            // optional `input` of `{ hint: "..." }` for unstructured
+            // free-form args. accepts_input=false serializes as input
+            // omitted.
+            const availableCommands = parsed.map((c) => ({
+              name: c.name,
+              description: c.description ?? "",
+              ...(c.accepts_input ? { input: { hint: c.hint ?? "" } } : {}),
+            }));
+            // Defer emission to the next tick so the session/new
+            // response lands first; the cockpit acp_client wires the
+            // session id from the response before it can route follow-up
+            // session/update notifications.
+            setImmediate(() => {
+              sendNotification("session/update", {
+                sessionId,
+                update: {
+                  sessionUpdate: "available_commands_update",
+                  availableCommands,
+                },
+              });
+            });
+          }
+        } catch (err) {
+          process.stderr.write(
+            `[fakeAcpAgent] bad FAKE_ACP_COMMANDS: ${err}\n`,
+          );
+        }
+      }
       // Mirror claude-agent-acp v0.37.0: the initial set of
       // per-session selectors (model + effort + mode) ships in the
       // session/new and session/load *response*, not as a subsequent

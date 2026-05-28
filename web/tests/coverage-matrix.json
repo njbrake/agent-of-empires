@@ -1585,6 +1585,18 @@
       ]
     },
     {
+      "id": "cockpit.story.composer-slash-pick-no-arg",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-slash-pick-no-arg.spec.ts",
+        "src/components/cockpit/Composer.slashCommand.test.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
       "id": "cockpit.story.queue-fold-unfold",
       "kind": "live-playwright",
       "risk": "low",
