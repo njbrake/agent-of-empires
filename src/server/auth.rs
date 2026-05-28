@@ -325,6 +325,18 @@ fn post_token_auth_action(
 /// even though the spawn itself is not, because the spawn runs with
 /// the legitimate owner's elevation, not the attacker's.
 ///
+/// `PATCH /api/profiles/{name}/settings` is intentionally exempt at
+/// this layer: the same endpoint accepts both tamper-surface keys
+/// (sandbox, worktree, dangerous session fields) and benign user-
+/// preference keys (theme, sound, updates, web notifications,
+/// logging, description, safe session fields). The handler does a
+/// body-shape elevation check via `body_requires_elevation` and
+/// returns the same `403 elevation_required` payload when a tamper-
+/// surface key is present without elevation. Elevating the whole
+/// endpoint here trained every preference save to re-prompt for the
+/// passphrase, which both broke the theme picker UX and conditioned
+/// users to dismiss the real prompts. See #1510.
+///
 /// Read-only `GET`/`HEAD` on these resources stay open; this is an
 /// allow-list, not a default-deny, so adding a benign read endpoint
 /// never accidentally hides behind a passphrase prompt. When adding
@@ -351,10 +363,17 @@ fn requires_elevation(method: &axum::http::Method, path: &str) -> bool {
     if path == "/api/profiles" && method == Method::POST {
         return true;
     }
-    if path.starts_with("/api/profiles/") {
-        // Per-profile writes: PATCH /api/profiles/{name}/settings,
-        // PATCH .../rename, DELETE /api/profiles/{name}. Read GETs
-        // were filtered out by the GET/HEAD bypass above.
+    if let Some(rest) = path.strip_prefix("/api/profiles/") {
+        // Per-profile writes. `PATCH /api/profiles/{name}/settings`
+        // is body-gated inside the handler so safe preference fields
+        // (theme, sound, etc.) do not pay a passphrase prompt; the
+        // tamper-surface fields still 403 with elevation_required.
+        // Rename + delete stay path-gated. Read GETs were filtered
+        // out by the GET/HEAD bypass above.
+        if method == Method::PATCH && (rest.ends_with("/settings") || rest.ends_with("/settings/"))
+        {
+            return false;
+        }
         return true;
     }
 
@@ -409,6 +428,19 @@ enum TokenSource {
 /// this to filter subscriptions by owner.
 #[derive(Clone, Copy, Debug)]
 pub struct AuthenticatedTokenHash(pub [u8; 32]);
+
+/// Request extension carrying the login session id used to authenticate
+/// the current request. Inserted by `auth_middleware` whenever a valid
+/// `aoe_session` cookie + device binding pair landed (both the
+/// session+binding steady-state path and the `--auth=passphrase` wall).
+/// Absent under `--auth=none` and on bootstrap token-only paths where
+/// no session cookie exists yet. Handlers that need a body-shape
+/// elevation check (e.g. `update_profile_settings`) read this extension
+/// to call `state.login_manager.is_elevated(...)` from inside the
+/// handler instead of relying on the path-shape gate in
+/// `requires_elevation`. See #1510.
+#[derive(Clone, Debug)]
+pub struct AuthenticatedSession(pub String);
 
 /// Passphrase login wall used when the token gate is disabled
 /// (`--auth=passphrase`). Mirrors the session + device-binding check
@@ -483,6 +515,11 @@ async fn run_passphrase_wall(
         )
             .into_response();
     }
+
+    let mut request = request;
+    request
+        .extensions_mut()
+        .insert(AuthenticatedSession(session_id.clone()));
 
     let mut response = next.run(request).await;
 
@@ -830,6 +867,10 @@ async fn handle_session_authenticated(
         )
             .into_response();
     }
+
+    request
+        .extensions_mut()
+        .insert(AuthenticatedSession(session_id.clone()));
 
     let mut response = next.run(request).await;
 
@@ -1280,16 +1321,23 @@ mod tests {
         assert!(requires_elevation(&Method::POST, "/api/profiles"));
         assert!(requires_elevation(
             &Method::PATCH,
-            "/api/profiles/work/settings"
-        ));
-        assert!(requires_elevation(
-            &Method::PATCH,
             "/api/profiles/work/rename"
         ));
         assert!(requires_elevation(&Method::DELETE, "/api/profiles/work"));
         // Trailing slash must not bypass the gate.
         assert!(requires_elevation(&Method::PATCH, "/api/settings/"));
-        assert!(requires_elevation(
+
+        // `PATCH /api/profiles/{name}/settings` is body-gated inside the
+        // handler (`update_profile_settings` calls `body_requires_elevation`
+        // and re-issues the 403 elevation_required payload for tamper-
+        // surface keys). The path-level gate exempts it so safe
+        // preference fields (theme, sound, etc.) do not re-prompt the
+        // passphrase on every save. See #1510.
+        assert!(!requires_elevation(
+            &Method::PATCH,
+            "/api/profiles/work/settings"
+        ));
+        assert!(!requires_elevation(
             &Method::PATCH,
             "/api/profiles/work/settings/"
         ));

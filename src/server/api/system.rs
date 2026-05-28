@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::AppState;
 use super::{
-    validate_profile_name, ALLOWED_GLOBAL_SETTINGS_SECTIONS, ALLOWED_PROFILE_SETTINGS_SECTIONS,
-    SESSION_BLOCKED_FIELDS,
+    body_requires_elevation, validate_profile_name, ALLOWED_GLOBAL_SETTINGS_SECTIONS,
+    ALLOWED_PROFILE_SETTINGS_SECTIONS, SESSION_BLOCKED_FIELDS,
 };
+use crate::server::auth::AuthenticatedSession;
 
 // --- Agents ---
 
@@ -922,6 +923,7 @@ pub async fn get_profile_settings(
 pub async fn update_profile_settings(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
+    session: Option<axum::Extension<AuthenticatedSession>>,
     body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
@@ -958,6 +960,39 @@ pub async fn update_profile_settings(
                 )
                     .into_response();
             }
+        }
+    }
+
+    // Body-shape elevation gate. The path-shape gate in
+    // `requires_elevation` exempts this endpoint so safe preference
+    // fields save without a passphrase re-prompt; tamper-surface fields
+    // (sandbox image, worktree templates, dangerous session entries)
+    // re-impose the elevation requirement here. Mirrors the 403
+    // payload shape the path-shape gate returns so the client's
+    // existing `elevation_required` handling (web/src/lib/
+    // fetchInterceptor.ts) fires `ElevationPrompt` unchanged. See
+    // #1510.
+    if state.login_manager.is_enabled() && body_requires_elevation(&body) {
+        let elevated = match session.as_ref() {
+            Some(axum::Extension(AuthenticatedSession(id))) => {
+                state.login_manager.is_elevated(id).await
+            }
+            None => false,
+        };
+        if !elevated {
+            tracing::info!(
+                target: "auth.passphrase",
+                profile = %name,
+                "update_profile_settings: tamper-surface keys in patch without elevation; returning 403"
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "elevation_required",
+                    "message": "Re-enter the passphrase to continue"
+                })),
+            )
+                .into_response();
         }
     }
 

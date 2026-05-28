@@ -110,6 +110,54 @@ pub(super) const SESSION_BLOCKED_FIELDS: &[&str] = &[
     "agent_detect_as",
 ];
 
+/// Top-level settings sections whose presence in a `PATCH
+/// /api/profiles/{name}/settings` body forces a step-up elevation
+/// check inside the handler. These are the persisted-tamper surfaces:
+/// Docker images, volume mounts, worktree templates, hook
+/// configuration. The path-shape gate in `requires_elevation` exempts
+/// the settings PATCH wholesale so safe preference fields (theme,
+/// sound, updates, web, logging, description, safe session) save
+/// without re-prompting the passphrase; the handler re-imposes the
+/// gate when any key in this list is part of the patch. See #1510.
+pub(super) const ELEVATION_REQUIRED_SECTIONS: &[&str] = &["sandbox", "worktree"];
+
+/// Session fields whose presence in a `session` patch forces a
+/// step-up elevation check inside `update_profile_settings`. These
+/// are the agent-command tamper fields that survive
+/// `SESSION_BLOCKED_FIELDS` filtering (they are stripped from the
+/// web payload, but the body-shape gate runs before stripping so
+/// the client gets a typed 403 instead of a silent no-op when
+/// elevation is missing). Stays in sync with `SESSION_BLOCKED_FIELDS`
+/// by design: the same fields are too dangerous to write without
+/// elevation AND too dangerous to write at all from the dashboard.
+pub(super) const ELEVATION_REQUIRED_SESSION_FIELDS: &[&str] = SESSION_BLOCKED_FIELDS;
+
+/// Returns true when the incoming profile-settings PATCH body
+/// contains any key the handler must gate behind elevation. Walks
+/// `ELEVATION_REQUIRED_SECTIONS` for top-level keys and
+/// `ELEVATION_REQUIRED_SESSION_FIELDS` inside a `session` subobject.
+/// `hooks` is intentionally not in `ALLOWED_PROFILE_SETTINGS_SECTIONS`
+/// (the section-level allowlist rejects it with 400 before this
+/// runs); listing it here would be dead code.
+pub(super) fn body_requires_elevation(body: &serde_json::Value) -> bool {
+    let Some(obj) = body.as_object() else {
+        return false;
+    };
+    for key in obj.keys() {
+        if ELEVATION_REQUIRED_SECTIONS.contains(&key.as_str()) {
+            return true;
+        }
+    }
+    if let Some(session) = obj.get("session").and_then(|v| v.as_object()) {
+        for key in session.keys() {
+            if ELEVATION_REQUIRED_SESSION_FIELDS.contains(&key.as_str()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Validate that a profile name contains only safe characters.
 /// Rejects path traversal attempts (../, /) and shell metacharacters.
 pub(super) fn validate_profile_name(name: &str) -> Result<(), String> {
@@ -592,6 +640,108 @@ mod tests {
         assert!(validate_profile_name("my-profile").is_ok());
         assert!(validate_profile_name("profile_2").is_ok());
         assert!(validate_profile_name("A").is_ok());
+    }
+
+    #[test]
+    fn elevation_required_sections_are_pinned() {
+        // Persisted-tamper attack class only. Adding a section here
+        // imposes a passphrase re-prompt on the dashboard for every
+        // patch that touches it, so the bar is the same as adding to
+        // SESSION_BLOCKED_FIELDS: arbitrary command on session spawn,
+        // image / mount / template substitution. Theme, sound,
+        // updates, web (notification toggles), logging, description
+        // and safe session fields stay OFF this list by design;
+        // re-prompting for them trained users to dismiss the real
+        // prompt. See #1510.
+        let expected: &[&str] = &["sandbox", "worktree"];
+        assert_eq!(
+            ELEVATION_REQUIRED_SECTIONS.len(),
+            expected.len(),
+            "ELEVATION_REQUIRED_SECTIONS size changed — widening this list \
+             reintroduces passphrase prompts on user-preference saves. See #1510."
+        );
+        for section in expected {
+            assert!(
+                ELEVATION_REQUIRED_SECTIONS.contains(section),
+                "ELEVATION_REQUIRED_SECTIONS lost section {:?}",
+                section
+            );
+        }
+    }
+
+    #[test]
+    fn elevation_required_session_fields_match_blocked_fields() {
+        // ELEVATION_REQUIRED_SESSION_FIELDS == SESSION_BLOCKED_FIELDS by
+        // design. The two lists answer the same question (does this
+        // session field carry the command-injection / agent-binary
+        // tamper surface?) and must stay in sync. If a future field
+        // is dangerous enough to strip but safe enough to allow
+        // unprivileged set, split them then; today they overlap.
+        assert_eq!(ELEVATION_REQUIRED_SESSION_FIELDS, SESSION_BLOCKED_FIELDS);
+    }
+
+    #[test]
+    fn body_requires_elevation_flags_sandbox() {
+        let body = serde_json::json!({"sandbox": {"default_image": "x"}});
+        assert!(body_requires_elevation(&body));
+    }
+
+    #[test]
+    fn body_requires_elevation_flags_worktree() {
+        let body = serde_json::json!({"worktree": {"path_template": "x"}});
+        assert!(body_requires_elevation(&body));
+    }
+
+    #[test]
+    fn body_requires_elevation_flags_dangerous_session_fields() {
+        for field in ELEVATION_REQUIRED_SESSION_FIELDS {
+            let body = serde_json::json!({"session": {*field: "anything"}});
+            assert!(
+                body_requires_elevation(&body),
+                "session field {:?} should require elevation",
+                field
+            );
+        }
+    }
+
+    #[test]
+    fn body_requires_elevation_passes_safe_sections() {
+        // Theme, sound, updates, web, logging, description, and safe
+        // session fields all save without a passphrase re-prompt. This
+        // is the load-bearing user-visible behavior of #1510.
+        for section in ["theme", "sound", "updates", "web", "logging", "description"] {
+            let body = serde_json::json!({section: {"name": "anything"}});
+            assert!(
+                !body_requires_elevation(&body),
+                "section {:?} should NOT require elevation",
+                section
+            );
+        }
+        let body =
+            serde_json::json!({"session": {"yolo_mode_default": true, "strict_hotkeys": false}});
+        assert!(!body_requires_elevation(&body));
+    }
+
+    #[test]
+    fn body_requires_elevation_handles_mixed_payload() {
+        // A patch that touches both a safe section and a tamper-surface
+        // section must elevate. Half-credit ("strip sandbox, save the
+        // theme") would surprise the user and require a partial-success
+        // response shape. Easier to require elevation up front.
+        let body = serde_json::json!({
+            "theme": {"name": "default"},
+            "sandbox": {"default_image": "x"}
+        });
+        assert!(body_requires_elevation(&body));
+    }
+
+    #[test]
+    fn body_requires_elevation_rejects_non_object() {
+        assert!(!body_requires_elevation(&serde_json::json!(null)));
+        assert!(!body_requires_elevation(&serde_json::json!("string")));
+        assert!(!body_requires_elevation(&serde_json::json!([
+            {"sandbox": {}}
+        ])));
     }
 
     #[test]
