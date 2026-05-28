@@ -1211,6 +1211,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/sessions/{id}/cockpit/files", get(api::cockpit_files))
         .route(
+            "/api/sessions/{id}/cockpit/worker-log",
+            get(api::cockpit_worker_log),
+        )
+        .route(
             "/api/sessions/{id}/cockpit/replay",
             get(api::cockpit_replay),
         )
