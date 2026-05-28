@@ -36,6 +36,8 @@ function makeActions() {
     onToggleSidebar: vi.fn(),
     onToggleRightPanel: vi.fn(),
     onToggleTerminalFocus: vi.fn(),
+    onPreviousProject: vi.fn(),
+    onNextProject: vi.fn(),
   };
 }
 
@@ -81,6 +83,107 @@ describe("useKeyboardShortcuts", () => {
 
     expect(actions.onToggleRightPanel).toHaveBeenCalledTimes(1);
     expect(actions.onToggleSidebar).not.toHaveBeenCalled();
+  });
+
+  it("routes Ctrl+Alt+H and Ctrl+Alt+L to project navigation actions by default", () => {
+    const actions = makeActions();
+    renderHook(() => useKeyboardShortcuts(() => actions));
+
+    dispatch(document.body, {
+      key: "h",
+      code: "KeyH",
+      ctrlKey: true,
+      altKey: true,
+    });
+    dispatch(document.body, {
+      key: "l",
+      code: "KeyL",
+      ctrlKey: true,
+      altKey: true,
+    });
+
+    expect(actions.onPreviousProject).toHaveBeenCalledTimes(1);
+    expect(actions.onNextProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("also accepts Shift+Alt+H/L for existing Ctrl+Alt project shortcut settings", () => {
+    const actions = {
+      ...makeActions(),
+      projectStripShortcut: "ctrl-alt-hl" as const,
+    };
+    renderHook(() => useKeyboardShortcuts(() => actions));
+
+    dispatch(document.body, {
+      key: "l",
+      code: "KeyL",
+      shiftKey: true,
+      altKey: true,
+    });
+
+    expect(actions.onNextProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes Ctrl+H and Ctrl+L when configured", () => {
+    const actions = { ...makeActions(), projectStripShortcut: "ctrl-hl" as const };
+    renderHook(() => useKeyboardShortcuts(() => actions));
+
+    dispatch(document.body, { key: "h", code: "KeyH", ctrlKey: true });
+    dispatch(document.body, { key: "l", code: "KeyL", ctrlKey: true });
+
+    expect(actions.onPreviousProject).toHaveBeenCalledTimes(1);
+    expect(actions.onNextProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not steal Alt-only project navigation shortcuts from regular text inputs", () => {
+    const actions = { ...makeActions(), projectStripShortcut: "alt-hl" as const };
+    renderHook(() => useKeyboardShortcuts(() => actions));
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+
+    dispatch(input, { key: "h", code: "KeyH", altKey: true });
+
+    expect(actions.onPreviousProject).not.toHaveBeenCalled();
+    input.remove();
+  });
+
+  it("treats Ctrl+Alt project navigation as global even from text inputs", () => {
+    const actions = makeActions();
+    renderHook(() => useKeyboardShortcuts(() => actions));
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+
+    dispatch(input, { key: "l", code: "KeyL", ctrlKey: true, altKey: true });
+
+    expect(actions.onNextProject).toHaveBeenCalledTimes(1);
+    input.remove();
+  });
+
+  it("allows project navigation from the project strip filter input", () => {
+    const actions = makeActions();
+    renderHook(() => useKeyboardShortcuts(() => actions));
+    const strip = document.createElement("nav");
+    strip.dataset.projectStrip = "true";
+    const input = document.createElement("input");
+    strip.appendChild(input);
+    document.body.appendChild(strip);
+
+    dispatch(input, { key: "l", code: "KeyL", ctrlKey: true, altKey: true });
+
+    expect(actions.onNextProject).toHaveBeenCalledTimes(1);
+    strip.remove();
+  });
+
+  it("allows project navigation from xterm helper textarea focus", () => {
+    const actions = makeActions();
+    renderHook(() => useKeyboardShortcuts(() => actions));
+    const textarea = document.createElement("textarea");
+    textarea.className = "xterm-helper-textarea";
+    document.body.appendChild(textarea);
+
+    dispatch(textarea, { key: "l", code: "KeyL", ctrlKey: true, altKey: true });
+
+    expect(actions.onNextProject).toHaveBeenCalledTimes(1);
+    textarea.remove();
   });
 
   it("detaches the listener on unmount", () => {

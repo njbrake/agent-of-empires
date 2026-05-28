@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import type { ProjectStripShortcut } from "./useWebSettings";
 
 const IS_MAC =
   typeof navigator !== "undefined" &&
@@ -14,6 +15,9 @@ interface ShortcutActions {
   onToggleSidebar: () => void;
   onToggleRightPanel: () => void;
   onToggleTerminalFocus: () => void;
+  onPreviousProject?: () => void;
+  onNextProject?: () => void;
+  projectStripShortcut?: ProjectStripShortcut;
 }
 
 /**
@@ -23,6 +27,26 @@ interface ShortcutActions {
  */
 export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
   useEffect(() => {
+    const matchesProjectNavigationShortcut = (
+      e: KeyboardEvent,
+      shortcut: ProjectStripShortcut,
+    ) => {
+      if (shortcut === "disabled") return false;
+      if (e.metaKey || (e.code !== "KeyH" && e.code !== "KeyL")) {
+        return false;
+      }
+      if (shortcut === "alt-hl") {
+        return e.altKey && !e.ctrlKey && !e.shiftKey;
+      }
+      if (shortcut === "ctrl-alt-hl") {
+        return (
+          (e.ctrlKey && e.altKey && !e.shiftKey) ||
+          (e.shiftKey && e.altKey && !e.ctrlKey)
+        );
+      }
+      return e.ctrlKey && !e.altKey && !e.shiftKey;
+    };
+
     const handler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
       const isInput =
@@ -30,6 +54,10 @@ export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
           target.isContentEditable);
+      const isTerminalInput =
+        !!target?.closest(".xterm") ||
+        !!target?.classList.contains("xterm-helper-textarea");
+      const isProjectStripInput = !!target?.closest("[data-project-strip='true']");
 
       const actions = getActions();
       const mod = IS_MAC ? e.metaKey : e.metaKey || e.ctrlKey;
@@ -51,6 +79,29 @@ export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
         e.preventDefault();
         actions.onToggleTerminalFocus();
         return;
+      }
+
+      const projectStripShortcut =
+        actions.projectStripShortcut ?? "ctrl-alt-hl";
+      const isProjectNavigationShortcut = matchesProjectNavigationShortcut(
+        e,
+        projectStripShortcut,
+      );
+      if (
+        isProjectNavigationShortcut &&
+        (!isInput ||
+          isTerminalInput ||
+          isProjectStripInput ||
+          projectStripShortcut === "ctrl-alt-hl")
+      ) {
+        const action =
+          e.code === "KeyH" ? actions.onPreviousProject : actions.onNextProject;
+        if (action) {
+          e.preventDefault();
+          e.stopPropagation();
+          action();
+          return;
+        }
       }
 
       // Use e.code for B shortcuts because Option+B on Mac produces "∫"

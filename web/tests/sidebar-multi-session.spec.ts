@@ -12,9 +12,17 @@ interface MockSession {
   project_path: string;
   branch: string | null;
   status?: string;
+  idle_entered_at?: string | null;
 }
 
 async function mockApis(page: Page, sessions: MockSession[]) {
+  const observed: {
+    workspaceOrdering: string[] | null;
+    sessionPatch: { id: string; body: Record<string, unknown> } | null;
+  } = {
+    workspaceOrdering: null,
+    sessionPatch: null,
+  };
   await page.route("**/api/login/status", (r) =>
     r.fulfill({ json: { required: false, authenticated: true } }),
   );
@@ -32,6 +40,7 @@ async function mockApis(page: Page, sessions: MockSession[]) {
           yolo_mode: false,
           created_at: new Date().toISOString(),
           last_accessed_at: null,
+          idle_entered_at: s.idle_entered_at ?? null,
           last_error: null,
           branch: s.branch,
           main_repo_path: null,
@@ -43,6 +52,26 @@ async function mockApis(page: Page, sessions: MockSession[]) {
         workspace_ordering: [],
       },
     });
+  });
+  await page.route("**/api/workspace-ordering", async (r) => {
+    if (r.request().method() !== "PUT") return r.fulfill({ status: 400 });
+    const body = r.request().postDataJSON() as { order?: string[] };
+    observed.workspaceOrdering = body.order ?? null;
+    return r.fulfill({ json: { ok: true } });
+  });
+  await page.route("**/api/sessions/**", async (r) => {
+    const id = (r.request().url().split("/api/sessions/")[1] ?? "").split("/")[0];
+    if (r.request().method() === "PATCH") {
+      observed.sessionPatch = {
+        id,
+        body: r.request().postDataJSON() as Record<string, unknown>,
+      };
+      return r.fulfill({ json: { ok: true } });
+    }
+    if (r.request().method() === "DELETE") {
+      return r.fulfill({ json: { ok: true } });
+    }
+    return r.fulfill({ status: 400 });
   });
   for (const path of [
     "settings",
@@ -58,6 +87,7 @@ async function mockApis(page: Page, sessions: MockSession[]) {
       r.fulfill({ json: path === "docker/status" ? {} : [] }),
     );
   }
+  return observed;
 }
 
 test.describe("Sidebar multi-session (#956)", () => {
@@ -336,5 +366,174 @@ test.describe("Sidebar multi-session (#956)", () => {
     const menu = page.locator("[data-testid='sidebar-group-context-menu']");
     await expect(menu).toBeVisible();
     await expect(menu.locator("[data-testid='sidebar-group-context-menu-rename']")).toBeVisible();
+  });
+
+  test("project strip is opt-in and supports configurable project navigation", async ({
+    page,
+  }) => {
+    const observed = await mockApis(page, [
+      {
+        id: "sess-a",
+        title: "Ethiopians",
+        project_path: "/tmp/alpha",
+        branch: null,
+        status: "Running",
+      },
+      {
+        id: "sess-b",
+        title: "Celts",
+        project_path: "/tmp/beta",
+        branch: null,
+      },
+      {
+        id: "sess-c",
+        title: "Goths",
+        project_path: "/tmp/gamma",
+        branch: null,
+      },
+    ]);
+    await page.setViewportSize({ width: 1280, height: 720 });
+
+    await page.goto("/session/sess-a");
+    await expect(page.locator("header")).toBeVisible();
+    await expect(page.locator("[data-testid='project-strip']")).toHaveCount(0);
+
+    await page.evaluate(() => {
+      window.localStorage.setItem(
+        "aoe-web-settings",
+        JSON.stringify({ projectStrip: true }),
+      );
+    });
+    await page.reload();
+    const strip = page.locator("[data-testid='project-strip']");
+    const projectTab = (name: string) =>
+      strip.locator("[data-testid='project-strip-tab']").filter({ hasText: name });
+    await expect(strip).toBeVisible();
+    await page.goto("/");
+    await expect(strip).toBeVisible();
+
+    await page.keyboard.press("Control+Alt+L");
+    await expect(page).toHaveURL(/\/session\/sess-a$/);
+    await expect(projectTab("alpha")).toHaveAttribute("aria-current", "page");
+
+    await page.keyboard.press("Control+Alt+L");
+    await expect(page).toHaveURL(/\/session\/sess-b$/);
+    await expect(projectTab("beta")).toHaveAttribute("aria-current", "page");
+
+    await page.keyboard.press("Control+Alt+H");
+    await expect(page).toHaveURL(/\/session\/sess-a$/);
+
+    await projectTab("alpha").dblclick();
+    await expect(page.locator("[data-testid='project-strip-menu']")).toBeVisible();
+    await page.mouse.click(8, 8);
+    await expect(page.locator("[data-testid='project-strip-menu']")).toHaveCount(0);
+
+    await projectTab("alpha").dblclick();
+    await page.getByRole("menuitem", { name: /Rename project/i }).click();
+    const renameInput = page.locator("[data-testid='project-strip-rename-input']");
+    await renameInput.fill("Alpha Client");
+    await renameInput.press("Enter");
+    await expect(projectTab("Alpha Client")).toBeVisible();
+
+    await projectTab("Alpha Client").dblclick();
+    await expect(
+      page.getByRole("menuitem", { name: /Delete current session/i }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    await projectTab("Alpha Client").dblclick();
+    await page.locator("[data-testid='project-strip-color-amber']").click();
+    const appearance = await page.evaluate(() =>
+      window.localStorage.getItem("aoe-repo-appearance-v1"),
+    );
+    expect(JSON.parse(appearance ?? "{}")).toMatchObject({
+      "/tmp/alpha": { alias: "Alpha Client", color: "amber" },
+    });
+
+    await expect(projectTab("Alpha Client").getByLabel("Running session in project")).toBeVisible();
+
+    const alphaBox = await projectTab("Alpha Client").boundingBox();
+    const betaBox = await projectTab("beta").boundingBox();
+    expect(alphaBox).not.toBeNull();
+    expect(betaBox).not.toBeNull();
+    await page.mouse.move(
+      alphaBox!.x + alphaBox!.width / 2,
+      alphaBox!.y + alphaBox!.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      betaBox!.x + betaBox!.width / 2,
+      betaBox!.y + betaBox!.height / 2,
+      { steps: 8 },
+    );
+    await page.mouse.up();
+    await expect
+      .poll(() => observed.workspaceOrdering?.[0] ?? null)
+      .toContain("sess-b");
+
+    await page.keyboard.press("Control+Alt+L");
+    await expect(page).toHaveURL(/\/session\/sess-c$/);
+
+    const sessionChip = page.locator("[data-testid='project-strip-session']").filter({
+      hasText: "Goths",
+    });
+    await expect(sessionChip).toHaveCount(1);
+    await expect(sessionChip).not.toContainText("gamma");
+    await sessionChip.click({ button: "right" });
+    await expect(page.locator("[data-testid='project-strip-session-menu']")).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Rename" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Off" })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: /Default/ })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "All events" })).toBeVisible();
+    await expect(page.locator("[data-testid='project-strip-session-menu-delete']")).toBeVisible();
+    await page.getByRole("menuitem", { name: "All events" }).click();
+    await expect
+      .poll(() => observed.sessionPatch)
+      .toMatchObject({
+        id: "sess-c",
+        body: {
+          notify_on_waiting: true,
+          notify_on_idle: true,
+          notify_on_error: true,
+        },
+      });
+    await sessionChip.click({ button: "right" });
+    await page.getByRole("menuitem", { name: "Rename" }).click();
+    await page.locator("[data-testid='project-strip-session-rename-input']").fill("Goths Renamed");
+    await page.locator("[data-testid='project-strip-session-rename-input']").press("Enter");
+    await expect
+      .poll(() => observed.sessionPatch)
+      .toMatchObject({ id: "sess-c", body: { title: "Goths Renamed" } });
+
+    await page.evaluate(() => {
+      window.localStorage.setItem(
+        "aoe-web-settings",
+        JSON.stringify({
+          projectStrip: true,
+          showTopBar: false,
+        }),
+      );
+    });
+    await page.reload();
+    await expect(page.locator("header")).toHaveCount(0);
+    await expect(page.getByText("Search anything…")).toHaveCount(0);
+    await expect(strip).toBeVisible();
+    await page.keyboard.press("Control+Alt+H");
+    await expect(page).toHaveURL(/\/session\/sess-b$/);
+
+    await page.evaluate(() => {
+      window.localStorage.setItem(
+        "aoe-web-settings",
+        JSON.stringify({
+          projectStrip: true,
+          showTopBar: false,
+          projectStripShortcut: "disabled",
+        }),
+      );
+    });
+    await page.reload();
+
+    await page.keyboard.press("Control+Alt+L");
+    await expect(page).toHaveURL(/\/session\/sess-b$/);
   });
 });
