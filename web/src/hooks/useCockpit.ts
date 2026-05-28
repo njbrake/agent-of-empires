@@ -25,6 +25,7 @@ import { useAgentProfile } from "../lib/agentProfileContext";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { safeSetItem } from "../lib/safeStorage";
 import { getToken } from "../lib/token";
+import { setSessionArchive, setSessionSnooze } from "../lib/api";
 
 export type Action =
   | { kind: "frame"; frame: CockpitFrame }
@@ -483,6 +484,15 @@ export function useCockpit(
    *  don't dispatch into a worker that isn't online yet. Defaults to
    *  `"running"` so non-cockpit / pre-#1088 call sites keep working. */
   workerState: "absent" | "resuming" | "running" = "running",
+  /** RFC3339 archived-at, or null. `sendPrompt` clears this server-side
+   *  (via PATCH /api/sessions/{id}/archive) before enqueueing so the
+   *  reconciler stops skipping the session and respawns the worker.
+   *  See #1581. */
+  archivedAt: string | null = null,
+  /** RFC3339 snoozed-until, or null. Same wake purpose as
+   *  `archivedAt`, via PATCH /api/sessions/{id}/snooze with
+   *  `{ minutes: null }`. See #1581. */
+  snoozedUntil: string | null = null,
 ) {
   // Sweep stale persisted state entries on first hook mount in this
   // module's lifetime. Idempotent (guarded by `sweptStorage`) so the
@@ -496,6 +506,18 @@ export function useCockpit(
   useEffect(() => {
     workerStateRef.current = workerState;
   }, [workerState]);
+  // Mirror the triage timestamps onto refs so `sendPrompt`'s wake
+  // step always sees the freshest value without forcing a re-create
+  // of the callback (the dep churn would also blow `dispatchPromptNow`
+  // away on every poll). See #1581.
+  const archivedAtRef = useRef(archivedAt);
+  const snoozedUntilRef = useRef(snoozedUntil);
+  useEffect(() => {
+    archivedAtRef.current = archivedAt;
+  }, [archivedAt]);
+  useEffect(() => {
+    snoozedUntilRef.current = snoozedUntil;
+  }, [snoozedUntil]);
   // Drain mode is sourced from the daemon's resolved `[cockpit]` config
   // and republished via `CockpitPrefsProvider` (App.tsx). Held in a ref
   // so the drain effect's pop logic always sees the latest value
@@ -1021,6 +1043,20 @@ export function useCockpit(
   const sendPrompt = useCallback(
     async (text: string) => {
       if (!sessionId) return;
+      // Auto-wake an archived or actively-snoozed session before
+      // routing. The tmux send path runs this via
+      // `Instance::touch_last_accessed` on the server side, but the
+      // cockpit composer enqueues locally while the worker is down
+      // (which is true precisely BECAUSE the row is sunk), so the
+      // server never sees the prompt and the flag stays set. Clear
+      // it client-side; the reconciler picks the session back up on
+      // its next ~2s tick and the queue drains as soon as a fresh
+      // `AcpSessionAssigned` lands. See #1581.
+      if (archivedAtRef.current) {
+        await setSessionArchive(sessionId, false);
+      } else if (snoozedUntilRef.current) {
+        await setSessionSnooze(sessionId, null);
+      }
       const wsClosed = statusRef.current !== "open";
       const workerNotRunning = workerStateRef.current !== "running";
       const shouldEnqueue = wsClosed || workerNotRunning || state.turnActive || state.workerStopped || state.workerRestarting;

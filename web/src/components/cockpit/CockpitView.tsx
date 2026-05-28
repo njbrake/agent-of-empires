@@ -122,6 +122,8 @@ export function CockpitView({
       <CockpitRuntime
         sessionId={sessionId}
         cockpitWorkerState={cockpitWorkerState}
+        archivedAt={archivedAt}
+        snoozedUntil={snoozedUntil}
         showClearedTurns={showClearedTurns}
       >
         {(ctx) => (

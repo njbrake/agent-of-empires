@@ -47,6 +47,14 @@ interface Props {
    *  Threaded through to `useCockpit` so the drain effect parks queued
    *  prompts while the reconciler is mid-resume. See #1088. */
   cockpitWorkerState?: "absent" | "resuming" | "running";
+  /** RFC3339 archived-at timestamp, or null. Threaded into `useCockpit`
+   *  so `sendPrompt` can auto-unarchive the session before enqueueing,
+   *  matching the `touch_last_accessed` invariant the server enforces
+   *  for tmux sends. See #1581. */
+  archivedAt?: string | null;
+  /** RFC3339 snoozed-until timestamp, or null. Same auto-wake purpose
+   *  as `archivedAt`. See #1581. */
+  snoozedUntil?: string | null;
   /** When true, every row is rendered including those preceding the
    *  most recent `/clear`. When false (the default), rows before the
    *  latest `session_cleared` divider are folded out of the message
@@ -96,10 +104,12 @@ export interface CockpitContext {
 export function CockpitRuntime({
   sessionId,
   cockpitWorkerState = "running",
+  archivedAt = null,
+  snoozedUntil = null,
   showClearedTurns = false,
   children,
 }: Props) {
-  const cockpit = useCockpit(sessionId, cockpitWorkerState);
+  const cockpit = useCockpit(sessionId, cockpitWorkerState, archivedAt, snoozedUntil);
   // Memoise the activity → ThreadMessageLike conversion. The function
   // walks the entire activity array, allocates a new AssistantBuilder
   // per turn, and produces brand-new message objects. Without

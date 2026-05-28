@@ -444,6 +444,47 @@ pub async fn cockpit_prompt(
         Ok(j) => j,
         Err(rej) => return rej.into_response(),
     };
+    // Touch the instance before forwarding so an archived or
+    // currently-snoozed session auto-wakes the same way the tmux send
+    // path does (`/api/sessions/{id}/send`). `touch_last_accessed`
+    // clears `archived_at` and `snoozed_until` so the cockpit
+    // reconciler stops skipping the session on its next ~2s tick and
+    // respawns the worker; the frontend's queue drains as soon as the
+    // fresh `AcpSessionAssigned` lands. See #1581.
+    let triage_changed = {
+        let mut instances = state.instances.write().await;
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+            let was_sunk = inst.is_archived() || inst.is_snoozed();
+            if was_sunk {
+                inst.touch_last_accessed();
+            }
+            was_sunk
+        } else {
+            false
+        }
+    };
+    if triage_changed {
+        let profile = {
+            let instances = state.instances.read().await;
+            instances
+                .iter()
+                .find(|i| i.id == id)
+                .map(|i| i.source_profile.clone())
+                .unwrap_or_default()
+        };
+        if let Ok(storage) = crate::session::Storage::new(&profile) {
+            let id_clone = id.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                storage.update(|instances, _groups| {
+                    if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                        inst.touch_last_accessed();
+                    }
+                    Ok(())
+                })
+            })
+            .await;
+        }
+    }
     // Publish the user's prompt into the event stream BEFORE forwarding
     // to the agent so the replay buffer / on-disk store captures it
     // even if the agent forward fails. The frontend treats UserPromptSent
