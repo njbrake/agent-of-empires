@@ -93,6 +93,15 @@ jobs:
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          # The codecov-action's `files` input is additive, not restrictive:
+          # with `disable_search: false` (the default), the CLI also walks
+          # the workspace and uploads anything that looks like a coverage
+          # report. That picks up web/tests/coverage-matrix.json and
+          # coverage-matrix.exempt.json (our test-mapping metadata, not
+          # coverage data) and ships them to Codecov on every run.
+          # `disable_search: true` restricts the upload to the explicit
+          # `files:` list.
+          disable_search: true
           files: web/coverage/vitest/lcov.info
           flags: vitest
           name: vitest
@@ -153,6 +162,11 @@ jobs:
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          # See the matching comment in the vitest upload step: without
+          # disable_search the action also picks up the coverage-matrix
+          # JSON files under web/tests/ and ships them as if they were
+          # coverage reports.
+          disable_search: true
           files: web/coverage/merged/lcov.info
           flags: playwright-mocked
           name: playwright-mocked
@@ -234,6 +248,11 @@ jobs:
         uses: codecov/codecov-action@e79a6962e0d4c0c17b229090214935d2e33f8354 # v6.0.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+          # See the matching comment in the vitest upload step: without
+          # disable_search the action also picks up the coverage-matrix
+          # JSON files under web/tests/ and ships them as if they were
+          # coverage reports.
+          disable_search: true
           files: web/coverage/merged/lcov.info
           flags: playwright-live
           name: playwright-live

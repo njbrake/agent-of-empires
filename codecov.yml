@@ -12,7 +12,7 @@
 # merges will run well below this, so the report-only philosophy lives
 # in the Codecov "informational" flag at the project level until the
 # follow-ups (#1217-#1224) lift the baseline.
-# Touched 2026-05-27 to force a YAML re-resolve after the org transfer to agent-of-empires.
+# Touched 2026-05-28 to force another YAML re-resolve after reinstalling the Codecov GitHub App on the agent-of-empires org. The 2026-05-27 touch happened before the App install was completed; per-PR processing was still falling back to defaults (bare-bones comment, missing codecov/project status) because the "Current bot" field on the Codecov repo config page stayed at "none".
 
 comment:
   layout: "header, diff, files, components, sunburst, uncovered, footer"

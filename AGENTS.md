@@ -125,9 +125,9 @@ Coverage runs on every PR via the merge of Vitest + Playwright LCOVs (see `web/s
 - **`codecov/patch`** (target: 75%). The lines your PR adds or changes must hit 75% coverage. This is the strict gate, sized so a small frontend PR with one missed line still passes.
 - **`codecov/project`** (target: auto). Overall repo coverage must not drop below `main`'s current level by more than the 1% threshold.
 
-**Per-component checks (`codecov/project/<Component>`, e.g. App Shell, Auth, Cockpit UI) target 90% and currently report FAIL on every PR by design.** The baseline sits well below 90% and is being lifted by the foundation follow-ups (#1217–#1224, threshold enforcement tracked in #1225). They surface where each user-facing surface stands today; they are not merge blockers right now. Do not chase them on unrelated PRs. When you touch one of those surfaces, add tests that improve its number.
+**Components show up in the PR comment, not as status checks.** `codecov.yml` sets `component_management.default_rules.statuses: []`, so the per-component slices (App Shell, Auth, Cockpit UI, etc.) appear under the components table in the Codecov PR comment but never post a separate GitHub status. The repo-wide `codecov/patch` and `codecov/project` checks are the only Codecov gates on the merge box. The component baselines are still being lifted by the foundation follow-ups (#1217 through #1224, threshold enforcement tracked in #1225); when you touch one of those surfaces, add tests that improve its number, but don't chase the comment-only component numbers on unrelated PRs.
 
-**Rust-only PRs.** Patch coverage is reported against `web/src/**` paths only, so a Rust-only diff is N/A for patch coverage and inherits the previous flag value via `carryforward: true`. The per-component checks still display FAIL for the same baseline reason described above; the aggregate `codecov/patch` and `codecov/project` checks pass.
+**Rust-only PRs.** Patch coverage is reported against `web/src/**` paths only, so a Rust-only diff is N/A for patch coverage and inherits the previous flag value via `carryforward: true`. The aggregate `codecov/patch` and `codecov/project` checks pass.
 
 ## Git Configuration
 
