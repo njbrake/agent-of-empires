@@ -841,7 +841,7 @@ export const SessionRow = memo(function SessionRow({
                   <Pencil className="h-3 w-3 text-amber-400/90" />
                 </span>
               )}
-              {isArchived && (
+              {effectiveArchived && (
                 <span
                   title="Archived"
                   aria-label="Archived"

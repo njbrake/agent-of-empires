@@ -278,6 +278,28 @@ describe("SessionRow triage actions", () => {
     });
   });
 
+  it("optimistically shows the Archived chip immediately on click", async () => {
+    // Regression: the chip render used `isArchived` (the prop)
+    // instead of `effectiveArchived` (the optimistic override). On
+    // click the chip didn't appear until the next sessions-poll
+    // confirmed the archive, which felt laggy compared to the
+    // immediate pin glyph flip. See CodeRabbit review on #1585.
+    const ws = workspace("w-live", [session({ id: "sess-opt-archive" })]);
+    render(
+      <Wrap>
+        <SessionRow workspace={ws} isActive={false} onClick={() => {}} />
+      </Wrap>,
+    );
+    fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
+    fireEvent.click(screen.getByTestId("sidebar-context-menu-archive"));
+    // The chip should appear synchronously from the optimistic
+    // state flip, before the PATCH response would have time to
+    // round-trip.
+    await vi.waitFor(() =>
+      expect(screen.queryByLabelText("Archived")).not.toBeNull(),
+    );
+  });
+
   it("Snooze… opens the modal (does NOT POST until a preset is picked)", () => {
     const ws = workspace("w-live", [session({ id: "sess-snooze-it" })]);
     render(
