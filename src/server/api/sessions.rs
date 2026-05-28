@@ -903,6 +903,366 @@ pub async fn update_session_diff_base(
     (StatusCode::OK, Json(serde_json::json!(response))).into_response()
 }
 
+// --- Triage: pin / archive / snooze ---
+//
+// Three sibling endpoints surface the existing `Instance::pin`, `archive`,
+// and `snooze` mutators to the web dashboard. They all follow the same
+// shape: read-only 403, in-memory write under `state.instance_lock`,
+// persist via `Storage::update` matching the notifications and diff-base
+// precedent above. Archive additionally tears down the tmux pane and (for
+// cockpit sessions) the supervisor's worker so the row is genuinely
+// parked. Mutual-exclusion invariants (e.g. archive clears pin/favorite,
+// pin clears archive+snooze) live in the `Instance` methods, so the
+// handlers never set fields directly. See #1581.
+
+#[derive(Deserialize)]
+pub struct UpdatePinBody {
+    pub pinned: bool,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateArchiveBody {
+    pub archived: bool,
+    /// When `archived = true`, kill the tmux pane (parity with the TUI's
+    /// `z` keybind and the CLI's `aoe session archive` default). Omitted
+    /// or `true` means kill; `false` keeps the pane alive while still
+    /// marking the session archived. Ignored when `archived = false`.
+    #[serde(default = "default_kill_pane")]
+    pub kill_pane: bool,
+}
+
+fn default_kill_pane() -> bool {
+    true
+}
+
+#[derive(Deserialize)]
+pub struct UpdateSnoozeBody {
+    /// `Some(positive minutes)` snoozes for that duration. `None` (or a
+    /// missing field) unsnoozes. Validated against
+    /// `crate::session::validate_snooze_duration` so the same bounds the
+    /// TUI dialog and CLI use also apply here.
+    #[serde(default)]
+    pub minutes: Option<u32>,
+}
+
+pub async fn update_session_pin(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Result<Json<UpdatePinBody>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Server is in read-only mode"
+            })),
+        )
+            .into_response();
+    }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
+
+    let lock = state.instance_lock(&id).await;
+    let _guard = lock.lock().await;
+
+    let mut instances = state.instances.write().await;
+    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        )
+            .into_response();
+    };
+
+    if body.pinned {
+        inst.pin();
+    } else {
+        inst.unpin();
+    }
+
+    let response =
+        SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen());
+    let profile = inst.source_profile.clone();
+    let pinned = body.pinned;
+    drop(instances);
+
+    if let Ok(storage) = Storage::new(&profile) {
+        let id_clone = id.clone();
+        match tokio::task::spawn_blocking(move || {
+            storage.update(|instances, _groups| {
+                if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                    if pinned {
+                        inst.pin();
+                    } else {
+                        inst.unpin();
+                    }
+                }
+                Ok(())
+            })
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(
+                target: "http.api.sessions",
+                "Failed to save after pin update: {e}"
+            ),
+            Err(e) => tracing::error!(
+                target: "http.api.sessions",
+                "Pin persist join failed: {e}"
+            ),
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!(response))).into_response()
+}
+
+pub async fn update_session_archive(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Result<Json<UpdateArchiveBody>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Server is in read-only mode"
+            })),
+        )
+            .into_response();
+    }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
+
+    let lock = state.instance_lock(&id).await;
+    let _guard = lock.lock().await;
+
+    // Snapshot what we need for side effects (kill pane / cockpit
+    // shutdown) before we drop the write lock. Clone the instance once
+    // so we can call its `kill()` method outside the lock without
+    // re-borrowing.
+    let (was_cockpit_mode, inst_clone) = {
+        let mut instances = state.instances.write().await;
+        let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "message": "Session not found" })),
+            )
+                .into_response();
+        };
+        if body.archived {
+            inst.archive();
+        } else {
+            inst.unarchive();
+        }
+        let response =
+            SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen());
+        let cockpit;
+        #[cfg(feature = "serve")]
+        {
+            cockpit = inst.cockpit_mode;
+        }
+        #[cfg(not(feature = "serve"))]
+        {
+            cockpit = false;
+        }
+        let inst_snap = inst.clone();
+        // Persist now while we hold the per-instance lock; the side
+        // effects below are best-effort and should not block other
+        // mutations on this session.
+        let profile = inst.source_profile.clone();
+        let archived = body.archived;
+        drop(instances);
+
+        if let Ok(storage) = Storage::new(&profile) {
+            let id_clone = id.clone();
+            match tokio::task::spawn_blocking(move || {
+                storage.update(|instances, _groups| {
+                    if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                        if archived {
+                            inst.archive();
+                        } else {
+                            inst.unarchive();
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::error!(
+                    target: "http.api.sessions",
+                    "Failed to save after archive update: {e}"
+                ),
+                Err(e) => tracing::error!(
+                    target: "http.api.sessions",
+                    "Archive persist join failed: {e}"
+                ),
+            }
+        }
+
+        // Stash the cockpit flag + clone + response and break out to do
+        // the side effects below. Return early on the non-archive path
+        // because we have no work left to do.
+        if !body.archived {
+            return (StatusCode::OK, Json(serde_json::json!(response))).into_response();
+        }
+        if !body.kill_pane {
+            return (StatusCode::OK, Json(serde_json::json!(response))).into_response();
+        }
+        (cockpit, inst_snap)
+    };
+
+    // Best-effort tmux pane teardown for tmux-backed sessions. Mirrors
+    // `toggle_archive_at_cursor` in src/tui/home/operations.rs: if the
+    // kill fails (pane already dead, tmux gone), log and continue
+    // because the on-disk archived flag is the source of truth.
+    if !was_cockpit_mode {
+        let inst_for_kill = inst_clone.clone();
+        match tokio::task::spawn_blocking(move || inst_for_kill.kill()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(
+                target: "http.api.sessions",
+                "Archive: tmux kill failed: {e}"
+            ),
+            Err(e) => tracing::warn!(
+                target: "http.api.sessions",
+                "Archive: tmux kill join failed: {e}"
+            ),
+        }
+    } else {
+        // Cockpit sessions: shut down the worker so the supervisor's
+        // reconciler does not race to respawn it. The reconciler also
+        // skips archived sessions (see cockpit_reconciler.rs), but
+        // shutting down here gives an immediate teardown rather than
+        // waiting for the next poll tick.
+        #[cfg(feature = "serve")]
+        match state.cockpit_supervisor.shutdown(&id).await {
+            Ok(()) | Err(crate::cockpit::supervisor::SupervisorError::UnknownSession(_)) => {}
+            Err(e) => tracing::warn!(
+                target: "cockpit.supervisor",
+                session = %id,
+                "shutdown during archive failed: {e}"
+            ),
+        }
+    }
+
+    // Re-read the in-memory instance so the response reflects the
+    // archived flag (the side effects above did not mutate it, but
+    // re-reading also picks up any peer write that landed during the
+    // unlock window).
+    let instances = state.instances.read().await;
+    let response = match instances.iter().find(|i| i.id == id) {
+        Some(inst) => {
+            SessionResponse::from_instance(inst, crate::claude_settings::read_tui_fullscreen())
+        }
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "message": "Session not found" })),
+            )
+                .into_response();
+        }
+    };
+    (StatusCode::OK, Json(serde_json::json!(response))).into_response()
+}
+
+pub async fn update_session_snooze(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    body: Result<Json<UpdateSnoozeBody>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Server is in read-only mode"
+            })),
+        )
+            .into_response();
+    }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
+
+    // Validate the duration up front. The TUI dialog presets, CLI, and
+    // this endpoint all share the same bounds (1..=43200 minutes); see
+    // `crate::session::config::validate_snooze_duration`.
+    if let Some(minutes) = body.minutes {
+        if let Err(msg) = crate::session::validate_snooze_duration(minutes as u64) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "validation_failed",
+                    "message": msg,
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let lock = state.instance_lock(&id).await;
+    let _guard = lock.lock().await;
+
+    let mut instances = state.instances.write().await;
+    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        )
+            .into_response();
+    };
+
+    match body.minutes {
+        Some(minutes) => inst.snooze(minutes),
+        None => inst.unsnooze(),
+    }
+
+    let response =
+        SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen());
+    let profile = inst.source_profile.clone();
+    let minutes = body.minutes;
+    drop(instances);
+
+    if let Ok(storage) = Storage::new(&profile) {
+        let id_clone = id.clone();
+        match tokio::task::spawn_blocking(move || {
+            storage.update(|instances, _groups| {
+                if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                    match minutes {
+                        Some(m) => inst.snooze(m),
+                        None => inst.unsnooze(),
+                    }
+                }
+                Ok(())
+            })
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::error!(
+                target: "http.api.sessions",
+                "Failed to save after snooze update: {e}"
+            ),
+            Err(e) => tracing::error!(
+                target: "http.api.sessions",
+                "Snooze persist join failed: {e}"
+            ),
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!(response))).into_response()
+}
+
 // --- Delete session ---
 
 #[derive(Default, Deserialize)]
@@ -2749,6 +3109,113 @@ mod tests {
     }
 
     #[test]
+    fn session_response_surfaces_pinned_at() {
+        let mut inst = make_test_instance();
+
+        // Default: no pin -> field omitted from the JSON body.
+        let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
+        assert!(
+            json.get("pinned_at").is_none(),
+            "pinned_at should be omitted when None, got: {json}"
+        );
+
+        inst.pin();
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert!(resp.pinned_at.is_some(), "pinned_at must surface when set");
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(
+            json.get("pinned_at").is_some(),
+            "pinned_at must appear in JSON when set"
+        );
+    }
+
+    #[test]
+    fn session_response_surfaces_archived_at() {
+        let mut inst = make_test_instance();
+        let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
+        assert!(json.get("archived_at").is_none());
+
+        inst.archive();
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert!(resp.archived_at.is_some());
+    }
+
+    #[test]
+    fn session_response_gates_snoozed_until_on_active_snooze() {
+        let mut inst = make_test_instance();
+
+        // Not snoozed -> field omitted.
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert!(resp.snoozed_until.is_none());
+
+        // Active snooze -> field surfaced.
+        inst.snooze(30);
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert!(resp.snoozed_until.is_some());
+
+        // Expired snooze -> stays on disk for the next mutation to rewrite,
+        // but the API gates on `is_snoozed()` so the wire value is None.
+        // This prevents the web from rendering "snoozed 0m" on rows that
+        // have already woken on the server.
+        inst.snoozed_until = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert!(
+            resp.snoozed_until.is_none(),
+            "expired snooze must be filtered out on the wire even though the persisted field stays set"
+        );
+    }
+
+    #[test]
+    fn update_pin_body_parses() {
+        let body: UpdatePinBody = serde_json::from_str(r#"{"pinned": true}"#).unwrap();
+        assert!(body.pinned);
+        let body: UpdatePinBody = serde_json::from_str(r#"{"pinned": false}"#).unwrap();
+        assert!(!body.pinned);
+    }
+
+    #[test]
+    fn update_archive_body_defaults_kill_pane_to_true() {
+        let body: UpdateArchiveBody = serde_json::from_str(r#"{"archived": true}"#).unwrap();
+        assert!(body.archived);
+        assert!(
+            body.kill_pane,
+            "kill_pane must default to true so callers that omit the field get TUI/CLI parity"
+        );
+
+        let body: UpdateArchiveBody =
+            serde_json::from_str(r#"{"archived": true, "kill_pane": false}"#).unwrap();
+        assert!(body.archived);
+        assert!(!body.kill_pane);
+    }
+
+    #[test]
+    fn update_snooze_body_parses_minutes_and_null() {
+        let body: UpdateSnoozeBody = serde_json::from_str(r#"{"minutes": 60}"#).unwrap();
+        assert_eq!(body.minutes, Some(60));
+
+        // `{"minutes": null}` and an empty body both mean unsnooze.
+        let body: UpdateSnoozeBody = serde_json::from_str(r#"{"minutes": null}"#).unwrap();
+        assert_eq!(body.minutes, None);
+        let body: UpdateSnoozeBody = serde_json::from_str(r#"{}"#).unwrap();
+        assert_eq!(body.minutes, None);
+    }
+
+    #[test]
+    fn update_snooze_validates_against_shared_bounds() {
+        // The handler uses `validate_snooze_duration` to reject 0 and >
+        // SNOOZE_MAX_MINUTES. Mirror the assertions here so a regression in
+        // the validator shape (or in the dialog presets at
+        // src/tui/dialogs/snooze_duration.rs) is caught locally.
+        assert!(crate::session::validate_snooze_duration(0).is_err());
+        for &m in &[60u64, 120, 180, 240, 300, 360, 1440, 7 * 1440] {
+            assert!(
+                crate::session::validate_snooze_duration(m).is_ok(),
+                "preset {m} min must pass validator (matches TUI dialog presets)"
+            );
+        }
+    }
+
+    #[test]
     fn claude_fullscreen_unset_for_non_claude_even_when_enabled() {
         let mut inst = make_test_instance();
         inst.tool = "cursor".to_string();
@@ -3687,6 +4154,9 @@ mod workspace_ordering_tests {
             next_wakeup_at: None,
             next_wakeup_reason: None,
             favorited: false,
+            pinned_at: None,
+            archived_at: None,
+            snoozed_until: None,
         }
     }
 

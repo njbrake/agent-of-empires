@@ -1106,6 +1106,15 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions/{id}/diff-base",
             patch(api::update_session_diff_base),
         )
+        .route("/api/sessions/{id}/pin", patch(api::update_session_pin))
+        .route(
+            "/api/sessions/{id}/archive",
+            patch(api::update_session_archive),
+        )
+        .route(
+            "/api/sessions/{id}/snooze",
+            patch(api::update_session_snooze),
+        )
         .route("/api/sessions/{id}/terminal", post(api::ensure_terminal))
         .route(
             "/api/sessions/{id}/container-terminal",
