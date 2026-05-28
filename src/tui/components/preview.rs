@@ -150,8 +150,11 @@ impl Preview {
             area
         };
 
-        // Output section
-        let visible_height = output_area.height.saturating_sub(1) as usize;
+        // Output section. With the info section hidden there's no inner
+        // ` Terminal Output ` banner, so the paragraph gets the full
+        // `output_area`; the visible height must match or `compute_scroll`
+        // clips the top row (and a fresh shell's cursor) in live mode.
+        let visible_height = output_visible_height(output_area.height, render_info_section);
         // Use the pre-parsed cache when the terminal is up; suppress
         // it otherwise so the "press Enter to start terminal" hint
         // can take the inner area instead of a stale capture.
@@ -373,7 +376,11 @@ impl Preview {
         theme: &Theme,
         compact: bool,
     ) {
-        let visible_height = area.height.saturating_sub(1) as usize;
+        // `compact` here doubles as the "skip the inner ` Output ` banner"
+        // flag (see the `inner` split below), so the banner is present
+        // exactly when `!compact`. Match the visible height to the actual
+        // paragraph area or the top row gets clipped when the banner is gone.
+        let visible_height = output_visible_height(area.height, !compact);
         // The error path below returns early, so by the time we use
         // `parsed_output` for the output Paragraph the error case has
         // been handled. Until then `parsed_output` is just the cached
@@ -448,6 +455,24 @@ impl Preview {
                 .alignment(Alignment::Center);
             frame.render_widget(hint, inner);
         }
+    }
+}
+
+/// Rows of captured output actually visible in the preview body.
+///
+/// The body drops one row for the inner ` Output ` / ` Terminal Output `
+/// banner ONLY when that banner is rendered (info section shown, non-compact).
+/// When the banner is hidden (compact viewport or the user toggled the info
+/// header off) the output paragraph claims the full area, so the visible
+/// height must equal the full area height. Subtracting one unconditionally
+/// makes `compute_scroll` walk one row too far past the bottom, clipping the
+/// top line of the capture, where a freshly started shell's prompt and cursor
+/// sit. That is the "first row is invisible in live mode" bug.
+fn output_visible_height(area_height: u16, has_banner: bool) -> usize {
+    if has_banner {
+        area_height.saturating_sub(1) as usize
+    } else {
+        area_height as usize
     }
 }
 
@@ -577,6 +602,38 @@ mod tests {
                 assert_eq!(shortened, "~/projects/");
             }
         }
+    }
+
+    // Regression for the "first row hidden in live mode" bug: with the info
+    // header toggled off there's no inner banner, so the output paragraph
+    // claims the full area and the visible height must equal the area height.
+    // Subtracting one (the pre-fix behavior) made `compute_scroll` walk one
+    // row past the bottom, clipping the top line where a fresh shell's cursor
+    // sits.
+    #[test]
+    fn output_visible_height_matches_area_when_banner_hidden() {
+        assert_eq!(output_visible_height(40, false), 40);
+    }
+
+    #[test]
+    fn output_visible_height_drops_banner_row_when_shown() {
+        assert_eq!(output_visible_height(40, true), 39);
+    }
+
+    #[test]
+    fn output_visible_height_saturates_at_zero() {
+        assert_eq!(output_visible_height(0, true), 0);
+    }
+
+    // The bug end to end: a captured screen exactly as tall as the pane,
+    // live-following (offset 0). With the banner hidden the scroll must be 0
+    // so row 0 (the cursor row) stays on screen; the pre-fix height-1 produced
+    // a scroll of 1 and pushed that row off the top.
+    #[test]
+    fn full_height_capture_does_not_scroll_when_banner_hidden() {
+        let height = 40u16;
+        let visible = output_visible_height(height, false);
+        assert_eq!(compute_scroll(height as usize, visible, 0), 0);
     }
 
     #[test]

@@ -1663,14 +1663,14 @@ impl HomeView {
             // ` Terminal Output ` banner (which usually carries the
             // scroll indicator) is also gone. Surface the indicator
             // here so users still see how far back they've scrolled.
-            // With borders::ALL the inner is area - 2; render_output_cached
-            // / render_terminal_preview then drops one more row before
-            // painting (their compact / info-hidden branches use
-            // height-1 for visible_height), so we match that to keep the
-            // count stable as the user scrolls.
+            // With borders::ALL the inner is area - 2; with the banner
+            // hidden the output paragraph claims that full inner, so the
+            // visible height is `inner_height` (no extra row dropped). This
+            // mirrors `output_visible_height(.., has_banner = false)` in the
+            // preview renderers so the indicator count stays in lockstep.
             let scroll_indicator = if !self.show_preview_info {
                 let inner_height = area.height.saturating_sub(2);
-                let visible_height = inner_height.saturating_sub(1) as usize;
+                let visible_height = inner_height as usize;
                 let captured_lines = match &self.view_mode {
                     ViewMode::Agent => self.preview_cache.captured_lines,
                     ViewMode::Tool(_) => self.tool_preview_cache.captured_lines,
