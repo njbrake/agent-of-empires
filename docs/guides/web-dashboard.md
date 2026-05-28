@@ -249,7 +249,7 @@ The sidebar exposes three triage primitives via the right-click (long-press on t
 
 Snooze and archive are mutually exclusive with pin: pinning a sunk row surfaces it, and archiving or snoozing a pinned row removes the pin. The three primitives can be mixed freely across concurrent surfaces (TUI, CLI, web), and the data layer enforces the mutual-exclusion rules in one place so peer writes cannot leave a row in a contradictory state.
 
-The "Snoozed & archived" footer is collapsed by default per repo group; clicking the header expands the list and remembers the choice per group in localStorage. Drag-to-reorder is disabled on pinned and sunk rows since their placement is computed.
+The "Snoozed & archived" section sits at the very bottom of the sidebar and aggregates every sunk workspace across all repo groups. It is collapsed by default; clicking the header expands the list and remembers the choice in localStorage. Drag-to-reorder is disabled on pinned and sunk rows since their placement is computed.
 
 In read-only mode (`aoe serve --read-only`) the three menu entries are hidden, matching the existing read-only gate on Delete.
 

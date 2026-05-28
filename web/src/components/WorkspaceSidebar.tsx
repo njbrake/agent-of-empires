@@ -172,21 +172,15 @@ function loadSavedWidth(): number {
   return DEFAULT_WIDTH;
 }
 
-/** Hydrate the per-group expanded state for the "Snoozed & archived"
- *  footer from localStorage. Defaults to all-collapsed (TUI parity
- *  with the `toggle_archived_section` keybind starting collapsed). */
-function loadSunkExpanded(): Record<string, boolean> {
+/** Hydrate the single global "Snoozed & archived" footer expanded
+ *  state from localStorage. Defaults to collapsed (TUI parity with
+ *  the `toggle_archived_section` keybind starting collapsed). An
+ *  earlier iteration kept a per-group dict here; any leftover dict
+ *  is treated as collapsed. */
+function loadSunkExpanded(): boolean {
   const raw = safeGetItem(SUNK_EXPANDED_KEY);
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      return parsed as Record<string, boolean>;
-    }
-  } catch {
-    // Fall through to default.
-  }
-  return {};
+  if (raw === "true") return true;
+  return false;
 }
 
 /** One-line sidebar affordance showing plan progress for cockpit
@@ -1503,12 +1497,11 @@ export function WorkspaceSidebar({
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
-  const [sunkExpanded, setSunkExpanded] =
-    useState<Record<string, boolean>>(loadSunkExpanded);
-  const toggleSunkExpanded = useCallback((groupId: string) => {
+  const [sunkExpanded, setSunkExpanded] = useState<boolean>(loadSunkExpanded);
+  const toggleSunkExpanded = useCallback(() => {
     setSunkExpanded((prev) => {
-      const next = { ...prev, [groupId]: !prev[groupId] };
-      safeSetItem(SUNK_EXPANDED_KEY, JSON.stringify(next));
+      const next = !prev;
+      safeSetItem(SUNK_EXPANDED_KEY, next ? "true" : "false");
       return next;
     });
   }, []);
@@ -1781,103 +1774,46 @@ export function WorkspaceSidebar({
                     offline={offline}
                   />
                   {showExpanded && (() => {
-                    // Partition into a live tier (rendered inline with
-                    // the existing SortableContext drag-reorder) and a
-                    // sunk tier (archived or actively snoozed across
-                    // every session in the workspace). The sunk tier
-                    // lives in a collapsible footer per repo group,
-                    // default-collapsed, so the active list stays
-                    // focused. See #1581.
+                    // Each group renders only its live tier. Sunk
+                    // workspaces (archived or actively snoozed across
+                    // every session) are pulled out into a single
+                    // global "Snoozed & archived" section at the very
+                    // bottom of the sidebar, rather than one footer
+                    // per repo group. See #1581.
                     const liveWorkspaces = group.workspaces.filter(
                       (ws) => !workspaceIsSunk(ws),
                     );
-                    const sunkWorkspaces = group.workspaces.filter(
-                      (ws) => workspaceIsSunk(ws),
-                    );
-                    const isSunkOpen = !!sunkExpanded[group.id];
                     return (
-                      <>
-                        <SortableContext
-                          items={liveWorkspaces.map((ws) => ws.id)}
-                          strategy={verticalListSortingStrategy}
-                        >
-                          {liveWorkspaces.map((ws) => (
-                            <SortableSessionRow
-                              key={ws.id}
-                              workspace={ws}
-                              isActive={ws.id === displayedActiveId}
-                              onClick={() => {
-                                setOptimisticActive({
-                                  id: ws.id,
-                                  fromActiveId: activeId,
-                                });
-                                onSelect(ws.id);
-                              }}
-                              onDelete={onDeleteSession}
-                              readOnly={readOnly}
-                              // Drag is disabled when the tier comparator
-                              // already controls placement: lastActivity
-                              // mode has no manual concept, pinned rows
-                              // always float to the top of their group.
-                              // See #1581.
-                              dragDisabled={
-                                sortMode === "lastActivity" ||
-                                workspaceIsPinned(ws)
-                              }
-                            />
-                          ))}
-                        </SortableContext>
-                        {sunkWorkspaces.length > 0 && (
-                          <div data-testid="sidebar-sunk-section" data-group-id={group.id}>
-                            <button
-                              onClick={() => toggleSunkExpanded(group.id)}
-                              data-testid="sidebar-sunk-toggle"
-                              aria-expanded={isSunkOpen}
-                              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-mono uppercase tracking-widest text-text-muted hover:text-text-secondary hover:bg-surface-800/40 cursor-pointer transition-colors"
-                            >
-                              <svg
-                                width="10"
-                                height="10"
-                                viewBox="0 0 10 10"
-                                fill="currentColor"
-                                className={`shrink-0 transition-transform duration-75 ${
-                                  isSunkOpen ? "" : "-rotate-90"
-                                }`}
-                              >
-                                <path
-                                  d="M2 3 L5 6.5 L8 3"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="1.5"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                />
-                              </svg>
-                              <span>
-                                Snoozed &amp; archived ({sunkWorkspaces.length})
-                              </span>
-                            </button>
-                            {isSunkOpen &&
-                              sunkWorkspaces.map((ws) => (
-                                <SessionRow
-                                  key={ws.id}
-                                  workspace={ws}
-                                  isActive={ws.id === displayedActiveId}
-                                  onClick={() => {
-                                    setOptimisticActive({
-                                      id: ws.id,
-                                      fromActiveId: activeId,
-                                    });
-                                    onSelect(ws.id);
-                                  }}
-                                  onDelete={onDeleteSession}
-                                  readOnly={readOnly}
-                                  indented
-                                />
-                              ))}
-                          </div>
-                        )}
-                      </>
+                      <SortableContext
+                        items={liveWorkspaces.map((ws) => ws.id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        {liveWorkspaces.map((ws) => (
+                          <SortableSessionRow
+                            key={ws.id}
+                            workspace={ws}
+                            isActive={ws.id === displayedActiveId}
+                            onClick={() => {
+                              setOptimisticActive({
+                                id: ws.id,
+                                fromActiveId: activeId,
+                              });
+                              onSelect(ws.id);
+                            }}
+                            onDelete={onDeleteSession}
+                            readOnly={readOnly}
+                            // Drag is disabled when the tier comparator
+                            // already controls placement: lastActivity
+                            // mode has no manual concept, pinned rows
+                            // always float to the top of their group.
+                            // See #1581.
+                            dragDisabled={
+                              sortMode === "lastActivity" ||
+                              workspaceIsPinned(ws)
+                            }
+                          />
+                        ))}
+                      </SortableContext>
                     );
                   })()}
                 </div>
@@ -1885,6 +1821,70 @@ export function WorkspaceSidebar({
             })}
           </DndContext>
           </DragSuppressContext.Provider>
+          {(() => {
+            // Single global "Snoozed & archived" section at the very
+            // bottom of the sidebar. Aggregates sunk workspaces from
+            // every repo group (live filtered) so users see one
+            // collapsible bucket rather than one footer per repo.
+            // Rows are listed flat in the order they appear inside
+            // their respective groups; each row's SessionRow already
+            // surfaces the title/branch/repo chips that anchor it to
+            // its project. See #1581.
+            const sunkWorkspaces = filteredGroups.flatMap((g) =>
+              g.workspaces.filter(workspaceIsSunk),
+            );
+            if (sunkWorkspaces.length === 0) return null;
+            return (
+              <div data-testid="sidebar-sunk-section">
+                <button
+                  onClick={toggleSunkExpanded}
+                  data-testid="sidebar-sunk-toggle"
+                  aria-expanded={sunkExpanded}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-mono uppercase tracking-widest text-text-muted hover:text-text-secondary hover:bg-surface-800/40 cursor-pointer transition-colors border-t border-surface-800/60"
+                >
+                  <svg
+                    width="10"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    fill="currentColor"
+                    className={`shrink-0 transition-transform duration-75 ${
+                      sunkExpanded ? "" : "-rotate-90"
+                    }`}
+                  >
+                    <path
+                      d="M2 3 L5 6.5 L8 3"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                  <span>
+                    Snoozed &amp; archived ({sunkWorkspaces.length})
+                  </span>
+                </button>
+                {sunkExpanded &&
+                  sunkWorkspaces.map((ws) => (
+                    <SessionRow
+                      key={ws.id}
+                      workspace={ws}
+                      isActive={ws.id === displayedActiveId}
+                      onClick={() => {
+                        setOptimisticActive({
+                          id: ws.id,
+                          fromActiveId: activeId,
+                        });
+                        onSelect(ws.id);
+                      }}
+                      onDelete={onDeleteSession}
+                      readOnly={readOnly}
+                      indented
+                    />
+                  ))}
+              </div>
+            );
+          })()}
 
           {!hasResults && filterQuery && (
             <div className="px-4 py-8 text-center">
