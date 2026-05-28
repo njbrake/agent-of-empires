@@ -1871,6 +1871,51 @@
         "web/src/components/session-wizard/sessionNames.ts",
         "web/src/components/session-wizard/steps/ReviewStep.tsx"
       ]
+    },
+    {
+      "id": "triage.pin-toggle",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/triage-pin.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/lib/sidebarSort.ts"
+      ]
+    },
+    {
+      "id": "triage.archive-toggle",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/triage-archive.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "triage.snooze-toggle",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/triage-snooze.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "triage.api-wire-format",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/lib/api.test.ts"
+      ],
+      "components": [
+        "web/src/lib/api.ts"
+      ]
     }
   ]
 }
