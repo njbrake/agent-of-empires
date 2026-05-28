@@ -57,6 +57,7 @@ import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
 import { reportError } from "../lib/toastBus";
 import {
+  repoGroupHasLiveWorkspace,
   resolveEffectiveSnoozedUntil,
   snoozeTimestampCloseEnough,
   triageMenuShape,
@@ -1854,7 +1855,7 @@ export function WorkspaceSidebar({
             collisionDetection={closestCenter}
             onDragEnd={dragDisabled ? undefined : handleDragEnd}
           >
-            {filteredGroups.map((group) => {
+            {filteredGroups.filter(repoGroupHasLiveWorkspace).map((group) => {
               const showExpanded = q ? true : !group.collapsed;
               const hasActiveChild = group.workspaces.some(
                 (ws) => ws.id === displayedActiveId,

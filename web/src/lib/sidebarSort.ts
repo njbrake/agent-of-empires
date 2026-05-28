@@ -1,4 +1,4 @@
-import type { Workspace } from "./types";
+import type { RepoGroup, Workspace } from "./types";
 import { safeGetItem, safeSetItem } from "./safeStorage";
 
 export type SidebarSortMode = "manual" | "lastActivity";
@@ -71,6 +71,17 @@ export function workspaceIsSunk(ws: Workspace): boolean {
   return ws.sessions.every(
     (s) => s.archived_at != null || s.snoozed_until != null,
   );
+}
+
+/** True when a repo group still has at least one workspace that is
+ *  not sunk (archived or actively snoozed across all sessions). The
+ *  sidebar uses this to hide the group's header when every workspace
+ *  has dropped into the global "Snoozed & archived" footer, so the
+ *  live list does not show an orphan header with no rows. The footer
+ *  itself scans the unfiltered group list, so sunk sessions are not
+ *  lost. See #1600. */
+export function repoGroupHasLiveWorkspace(group: RepoGroup): boolean {
+  return group.workspaces.some((ws) => !workspaceIsSunk(ws));
 }
 
 /** Triage tier for a workspace: 0 = pinned (top of every sort), 1 =

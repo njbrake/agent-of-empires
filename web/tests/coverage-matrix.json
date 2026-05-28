@@ -1929,6 +1929,18 @@
       ]
     },
     {
+      "id": "triage.empty-group-hide",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/lib/__tests__/sidebarSort.test.ts"
+      ],
+      "components": [
+        "web/src/lib/sidebarSort.ts",
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
       "id": "triage.session-row-chips",
       "kind": "vitest",
       "risk": "medium",
