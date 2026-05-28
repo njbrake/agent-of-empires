@@ -1875,7 +1875,7 @@ describe("applyEvent / IncompatibleAgent (claude-agent-acp v0.37.0)", () => {
             installed: "0.32.0",
             required: "0.37.0",
             install_command:
-              "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+              "npm install -g @agentclientprotocol/claude-agent-acp@latest",
           },
         },
       },
@@ -1900,7 +1900,7 @@ describe("applyEvent / IncompatibleAgent (claude-agent-acp v0.37.0)", () => {
             installed: "0.32.0",
             required: "0.37.0",
             install_command:
-              "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+              "npm install -g @agentclientprotocol/claude-agent-acp@latest",
           },
         },
       },

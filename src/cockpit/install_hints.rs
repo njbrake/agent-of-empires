@@ -8,7 +8,7 @@
 /// unknown commands so callers can fall through to a generic message.
 pub fn install_hint_for(binary: &str) -> Option<&'static str> {
     Some(match binary {
-        "claude-agent-acp" => "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+        "claude-agent-acp" => "npm install -g @agentclientprotocol/claude-agent-acp@latest",
         "codex-acp" => "npm install -g @zed-industries/codex-acp",
         "pi-acp" => {
             "npm install -g pi-acp (also requires `npm install -g @earendil-works/pi-coding-agent`)"

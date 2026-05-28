@@ -697,7 +697,7 @@ cockpit refuses to enter a session with an older adapter and surfaces a
 dedicated remediation screen with the exact install command:
 
 ```bash
-npm install -g @agentclientprotocol/claude-agent-acp@0.37.0
+npm install -g @agentclientprotocol/claude-agent-acp@latest
 ```
 
 Then run `claude login` if you haven't already.

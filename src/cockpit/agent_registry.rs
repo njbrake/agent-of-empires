@@ -2,6 +2,7 @@
 //! `aoe-agent`, `gemini`) to a spawn command + args. Users add agents via
 //! the settings TUI; this module is the in-memory model.
 
+use super::install_hints::install_hint_for;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -55,14 +56,15 @@ impl AgentRegistry {
     pub fn with_defaults() -> Self {
         let mut reg = Self::new();
 
+        let claude_install = install_hint_for("claude-agent-acp").unwrap_or("(see project docs)");
         reg.agents.insert(
             "claude".into(),
             AgentSpec {
                 command: "claude-agent-acp".into(),
                 args: vec![],
-                description:
-                    "Anthropic Claude via the official ACP adapter (npm i -g @agentclientprotocol/claude-agent-acp@0.37.0)"
-                        .into(),
+                description: format!(
+                    "Anthropic Claude via the official ACP adapter ({claude_install})"
+                ),
                 env_allowlist: None,
             },
         );
