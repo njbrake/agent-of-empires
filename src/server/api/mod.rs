@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(
             ELEVATION_REQUIRED_SECTIONS.len(),
             expected.len(),
-            "ELEVATION_REQUIRED_SECTIONS size changed — widening this list \
+            "ELEVATION_REQUIRED_SECTIONS size changed: widening this list \
              reintroduces passphrase prompts on user-preference saves. See #1510."
         );
         for section in expected {
