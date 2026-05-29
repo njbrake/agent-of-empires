@@ -773,7 +773,7 @@ After the switch, the modal fetches the context primer and pre-fills the compose
 
 When the cockpit banner shows an error of the form
 
-```
+```text
 Claude Code native binary at /usr/lib/node_modules/.../claude exists but failed to launch.
 ```
 
