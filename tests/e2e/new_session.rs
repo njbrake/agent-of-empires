@@ -479,29 +479,46 @@ fn test_new_session_from_saved_project_prefills_path() {
     require_tmux!();
 
     let mut h = TuiTestHarness::new("new_from_project");
-    let repo = h.home_path().join("repo-pick");
-    init_git_repo_for_project(&repo);
-    let add = h.run_cli(&["project", "add", repo.to_str().unwrap()]);
-    assert!(
-        add.status.success(),
-        "project add failed: {}",
-        String::from_utf8_lossy(&add.stderr)
-    );
+    // Seed several projects so the picker's filter has something to narrow.
+    for name in ["frontend", "backend", "mobile"] {
+        let repo = h.home_path().join(name);
+        init_git_repo_for_project(&repo);
+        let add = h.run_cli(&["project", "add", repo.to_str().unwrap()]);
+        assert!(
+            add.status.success(),
+            "project add {name} failed: {}",
+            String::from_utf8_lossy(&add.stderr)
+        );
+    }
 
     h.spawn_tui();
     h.wait_for(" aoe ");
     h.send_keys("Enter"); // dismiss first-run welcome
     h.wait_for("No sessions yet");
 
-    // `b` opens the saved-project picker, which lists the registered repo.
+    // `b` opens the saved-project picker, which lists every registered repo.
     h.send_keys("b");
     h.wait_for("New Session from Project");
-    h.assert_screen_contains("repo-pick");
+    h.assert_screen_contains("frontend");
+    h.assert_screen_contains("backend");
+    h.assert_screen_contains("mobile");
 
-    // Selecting it opens the new-session dialog pre-filled with the path.
+    // Typing filters the list; "mob" narrows to the single "mobile" project.
+    // Send one char at a time: `type_text`'s literal (`-l`) mode arrives as a
+    // bracketed paste, which the picker's filter input doesn't capture.
+    h.send_keys("m");
+    h.send_keys("o");
+    h.send_keys("b");
+    h.wait_for_absent("frontend", std::time::Duration::from_secs(5));
+    h.assert_screen_not_contains("backend");
+    h.assert_screen_contains("mobile");
+
+    // Selecting the filtered match opens the new-session dialog pre-filled
+    // with that project's path.
     h.send_keys("Enter");
     h.wait_for("Title");
     h.assert_screen_contains("Path");
+    h.assert_screen_contains("mobile");
 }
 
 #[test]
