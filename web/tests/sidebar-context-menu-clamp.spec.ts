@@ -58,14 +58,28 @@ async function mockApis(page: Page, sessions: MockSession[]) {
 }
 
 async function menuFitsViewport(page: Page, locator: string) {
-  const box = await page.locator(locator).boundingBox();
-  expect(box).not.toBeNull();
+  // Web fonts and icons can grow the menu after first paint, so the
+  // component reclamps via ResizeObserver. Wait for fonts to settle
+  // before sampling the bounding box so this test does not race the
+  // late layout. See #1601.
+  await page.evaluate(() => document.fonts?.ready);
   const viewport = page.viewportSize();
   expect(viewport).not.toBeNull();
-  expect(box!.x).toBeGreaterThanOrEqual(0);
-  expect(box!.y).toBeGreaterThanOrEqual(0);
-  expect(box!.x + box!.width).toBeLessThanOrEqual(viewport!.width);
-  expect(box!.y + box!.height).toBeLessThanOrEqual(viewport!.height);
+  await expect
+    .poll(
+      async () => {
+        const box = await page.locator(locator).boundingBox();
+        if (!box) return null;
+        return (
+          box.x >= 0 &&
+          box.y >= 0 &&
+          box.x + box.width <= viewport!.width &&
+          box.y + box.height <= viewport!.height
+        );
+      },
+      { timeout: 5_000 },
+    )
+    .toBe(true);
 }
 
 test.describe("Sidebar context-menu viewport clamp (#1601)", () => {

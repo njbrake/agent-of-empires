@@ -669,18 +669,30 @@ export const SessionRow = memo(function SessionRow({
 
   useLayoutEffect(() => {
     if (!contextMenu || !menuRef.current) return;
-    const rect = menuRef.current.getBoundingClientRect();
-    const next = clampMenuPosition({
-      x: contextMenu.x,
-      y: contextMenu.y,
-      menuWidth: rect.width,
-      menuHeight: rect.height,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-    });
-    if (next.x !== contextMenu.x || next.y !== contextMenu.y) {
-      setContextMenu(next);
-    }
+    const menu = menuRef.current;
+    const clamp = () => {
+      const rect = menu.getBoundingClientRect();
+      const next = clampMenuPosition({
+        x: contextMenu.x,
+        y: contextMenu.y,
+        menuWidth: rect.width,
+        menuHeight: rect.height,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+      });
+      if (next.x !== contextMenu.x || next.y !== contextMenu.y) {
+        setContextMenu(next);
+      }
+    };
+    clamp();
+    // Re-clamp when the menu's own size changes after mount: web fonts
+    // loading, icon images decoding, or any deferred layout work can
+    // grow the menu past what the first measurement saw, which would
+    // otherwise leak items off-screen at the bottom edge. See #1601.
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(clamp);
+    ro.observe(menu);
+    return () => ro.disconnect();
   }, [contextMenu]);
 
   useEffect(() => {
@@ -1395,18 +1407,26 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
 
   useLayoutEffect(() => {
     if (!contextMenu || !menuRef.current) return;
-    const rect = menuRef.current.getBoundingClientRect();
-    const next = clampMenuPosition({
-      x: contextMenu.x,
-      y: contextMenu.y,
-      menuWidth: rect.width,
-      menuHeight: rect.height,
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-    });
-    if (next.x !== contextMenu.x || next.y !== contextMenu.y) {
-      setContextMenu(next);
-    }
+    const menu = menuRef.current;
+    const clamp = () => {
+      const rect = menu.getBoundingClientRect();
+      const next = clampMenuPosition({
+        x: contextMenu.x,
+        y: contextMenu.y,
+        menuWidth: rect.width,
+        menuHeight: rect.height,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+      });
+      if (next.x !== contextMenu.x || next.y !== contextMenu.y) {
+        setContextMenu(next);
+      }
+    };
+    clamp();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(clamp);
+    ro.observe(menu);
+    return () => ro.disconnect();
   }, [contextMenu]);
 
   useEffect(() => {
