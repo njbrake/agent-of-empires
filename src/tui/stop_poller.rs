@@ -44,7 +44,12 @@ impl StopPoller {
     }
 
     pub fn request_stop(&self, request: StopRequest) {
-        let _ = self.request_tx.send(request);
+        if let Err(e) = self.request_tx.send(request) {
+            // `perform_stop` is panic-safe, so a send failure means the worker
+            // thread is gone (channel closed at teardown). Log it rather than
+            // dropping silently so a stuck-looking "Stopping" row is traceable.
+            tracing::warn!(target: "tui.stop_poller", error = %e, "stop request dropped; worker thread unavailable");
+        }
     }
 
     pub fn try_recv_result(&self) -> Option<StopResult> {
