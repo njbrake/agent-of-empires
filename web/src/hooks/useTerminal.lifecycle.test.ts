@@ -1493,3 +1493,162 @@ describe("useTerminal lifecycle", () => {
     }
   });
 });
+
+// Mobile soft-keyboard Backspace autorepeat handler (#1450). The hook
+// intercepts `beforeinput` on xterm's hidden textarea and emits one DEL
+// (0x7f) per `deleteContentBackward` tick, gated to coarse-pointer devices
+// without a fine pointer. jsdom lets us drive every branch deterministically:
+// matchMedia controls the gate, the FakeSocket's readyState the open guard.
+describe("useTerminal mobile backspace autorepeat", () => {
+  function stubPointer(coarse: boolean, anyFine: boolean): void {
+    vi.stubGlobal(
+      "matchMedia",
+      (q: string) =>
+        ({
+          matches:
+            q === "(pointer: coarse)"
+              ? coarse
+              : q === "(any-pointer: fine)"
+                ? anyFine
+                : false,
+        }) as MediaQueryList,
+    );
+  }
+
+  // Mount the hook, attach a container, and drive the socket to OPEN so the
+  // beforeinput handler's `ws.readyState === OPEN` guard passes. Returns the
+  // textarea xterm's mock created and the live FakeSocket.
+  async function mountOpen(): Promise<{
+    div: HTMLDivElement;
+    ws: FakeSocket;
+    ta: HTMLTextAreaElement;
+  }> {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    renderHook(() => {
+      const term = useTerminal("s-bksp", "ws", false, false);
+      if (term.containerRef && !term.containerRef.current) {
+        (
+          term.containerRef as unknown as { current: HTMLDivElement | null }
+        ).current = div;
+      }
+      return term;
+    });
+    await flushAsync();
+    const ws = sockets[0]!;
+    act(() => {
+      ws.readyState = FakeWebSocket.OPEN;
+      ws.onopen?.(new Event("open"));
+    });
+    await flushAsync();
+    const ta = div.querySelector("textarea") as HTMLTextAreaElement;
+    return { div, ws, ta };
+  }
+
+  function fireDelete(
+    ta: HTMLTextAreaElement,
+    count: number,
+    opts: { inputType?: string; isComposing?: boolean } = {},
+  ): void {
+    const inputType = opts.inputType ?? "deleteContentBackward";
+    act(() => {
+      for (let i = 0; i < count; i++) {
+        const e = new InputEvent("beforeinput", {
+          inputType,
+          bubbles: true,
+          cancelable: true,
+        });
+        if (opts.isComposing) {
+          Object.defineProperty(e, "isComposing", { get: () => true });
+        }
+        ta.dispatchEvent(e);
+      }
+    });
+  }
+
+  function delBytes(ws: FakeSocket): number {
+    return ws.sent.filter(
+      (m) => typeof m !== "string" && m.length === 1 && m[0] === 0x7f,
+    ).length;
+  }
+
+  it("emits one DEL per tick on a coarse pointer", async () => {
+    stubPointer(true, false);
+    const { div, ws, ta } = await mountOpen();
+    try {
+      fireDelete(ta, 3);
+      expect(delBytes(ws)).toBe(3);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("emits exactly one DEL for a single tick (no double-delete)", async () => {
+    stubPointer(true, false);
+    const { div, ws, ta } = await mountOpen();
+    try {
+      fireDelete(ta, 1);
+      expect(delBytes(ws)).toBe(1);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("does nothing on a fine pointer", async () => {
+    stubPointer(false, false);
+    const { div, ws, ta } = await mountOpen();
+    try {
+      fireDelete(ta, 3);
+      expect(delBytes(ws)).toBe(0);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("does nothing when a fine pointer is also present (iPad + keyboard)", async () => {
+    stubPointer(true, true);
+    const { div, ws, ta } = await mountOpen();
+    try {
+      fireDelete(ta, 3);
+      expect(delBytes(ws)).toBe(0);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("ignores non-delete input types", async () => {
+    stubPointer(true, false);
+    const { div, ws, ta } = await mountOpen();
+    try {
+      fireDelete(ta, 3, { inputType: "insertText" });
+      expect(delBytes(ws)).toBe(0);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("leaves composition deletes to xterm", async () => {
+    stubPointer(true, false);
+    const { div, ws, ta } = await mountOpen();
+    try {
+      fireDelete(ta, 3, { isComposing: true });
+      expect(delBytes(ws)).toBe(0);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("does not send while the socket is not open", async () => {
+    stubPointer(true, false);
+    const { div, ws, ta } = await mountOpen();
+    try {
+      act(() => {
+        ws.readyState = FakeWebSocket.CLOSED;
+      });
+      fireDelete(ta, 3);
+      expect(delBytes(ws)).toBe(0);
+    } finally {
+      div.remove();
+    }
+  });
+});

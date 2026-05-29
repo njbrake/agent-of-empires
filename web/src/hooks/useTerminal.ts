@@ -262,6 +262,34 @@ export function useTerminal(
 
     term.open(termEl);
 
+    // Mobile soft-keyboard Backspace autorepeat arrives as a stream of
+    // `beforeinput` events (inputType "deleteContentBackward", with keydown
+    // surfacing as "Unidentified" / keyCode 229). xterm decodes only the
+    // first into a single onData, so holding Backspace deletes one character
+    // instead of repeat-deleting; the PTY sees one DEL rather than one per
+    // tick. Intercept on xterm's hidden textarea and emit one DEL per tick
+    // ourselves. preventDefault blocks the textarea mutation so xterm's
+    // input-diff decoder never fires its own onData for the same tick (no
+    // double-delete). Gated to coarse-pointer-without-fine-pointer: a
+    // hardware Backspace fires a recognized keydown that xterm preventDefaults,
+    // which per the UI Events spec suppresses the follow-on beforeinput, so
+    // this path only runs for soft keyboards. Mirrors the mobile-Enter
+    // interception in Composer.tsx. See #1450.
+    const xtermTextarea = termEl.querySelector("textarea");
+    const onBeforeInput = (e: InputEvent) => {
+      if (e.inputType !== "deleteContentBackward" || e.isComposing) return;
+      const coarse = window.matchMedia?.("(pointer: coarse)").matches;
+      const anyFine = window.matchMedia?.("(any-pointer: fine)").matches;
+      if (!coarse || anyFine) return;
+      const ws = wsRef.current;
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      e.preventDefault();
+      ws.send(new TextEncoder().encode("\x7f"));
+    };
+    xtermTextarea?.addEventListener("beforeinput", onBeforeInput, {
+      capture: true,
+    });
+
     // Shift+Enter → bracketed paste containing a newline. Agents like
     // Claude Code treat pasted newlines as literal text (inserted, not
     // submitted). Bracketed paste passes cleanly through tmux without
@@ -1270,6 +1298,9 @@ export function useTerminal(
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
       viewport.removeEventListener("click", onClickCapture, true);
       viewport.removeEventListener("wheel", onWheelCapture, true);
+      xtermTextarea?.removeEventListener("beforeinput", onBeforeInput, {
+        capture: true,
+      });
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
