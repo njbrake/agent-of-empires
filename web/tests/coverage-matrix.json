@@ -1704,6 +1704,28 @@
       ]
     },
     {
+      "id": "cockpit.story.composer-ios-dictation",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-ios-dictation.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.composer-ios-dictation-state-machine",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/components/cockpit/Composer.dictation.test.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
       "id": "cockpit.story.composer-streamed-response",
       "kind": "live-playwright",
       "risk": "high",
