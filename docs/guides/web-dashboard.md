@@ -231,6 +231,12 @@ aoe serve --daemon
 - **Connected Devices** view in Settings > Security
 - **Push notifications** on Waiting / Idle / Error transitions, with per-session overrides ([guide](push-notifications.md))
 
+### Mobile layout
+
+On phones (below the `md` breakpoint) the dashboard shows a single full-viewport pane rather than the desktop side-by-side split. The right-panel button in the top bar opens a picker that swaps the main pane between three views: the **Agent terminal**, the **Diff** (changed files and review), and the **Paired terminal** (host or container shell). A back chip in the top-left of the diff and paired views returns you to the agent terminal.
+
+This replaces the earlier slide-in overlay, which left the paired terminal almost no room once the soft keyboard opened. Because each view now owns the whole viewport, the paired terminal handles the keyboard the same way the agent terminal does. The agent terminal and the paired shell stay alive in the background when you switch away, so their scrollback and focus are preserved. The desktop side-by-side split is unchanged.
+
 ### Sidebar sort
 
 By default the sidebar shows your manually-ordered list. Drag a row with a press-and-hold gesture to move it; the new order persists across browsers and devices via `workspace-ordering.json`.
