@@ -25,7 +25,7 @@ import { SoundSettings } from "./settings/SoundSettings";
 import { UpdateSettings } from "./settings/UpdateSettings";
 import { TmuxSettings } from "./settings/TmuxSettings";
 import { LoggingSettings } from "./settings/LoggingSettings";
-import { ProfileSelector } from "./settings/ProfileSelector";
+import { SettingsHeader } from "./settings/SettingsHeader";
 
 type TabId =
   | "session"
@@ -496,31 +496,13 @@ export function SettingsView({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-surface-900">
-      {/* Header: ProfileSelector wraps onto its own row on mobile via basis-full so the Back affordance and title keep their space */}
-      <div
-        data-testid="settings-header"
-        className="bg-surface-850 border-b border-surface-700 shrink-0 flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2 md:flex-nowrap md:h-12 md:py-0"
-      >
-        <button
-          onClick={onClose}
-          className="text-brand-500 cursor-pointer text-sm shrink-0"
-        >
-          &larr; Back
-        </button>
-        <span className="text-sm font-semibold text-text-bright shrink-0">Settings</span>
-        {saving && (
-          <span className="text-xs text-text-dim shrink-0">Saving...</span>
-        )}
-        {saveError && (
-          <span className="text-xs text-red-400 truncate min-w-0">{saveError}</span>
-        )}
-        <div className="basis-full flex justify-center overflow-x-auto md:basis-auto md:ml-auto md:overflow-visible md:justify-end shrink-0">
-          <ProfileSelector
-            selectedProfile={selectedProfile}
-            onSelect={setSelectedProfile}
-          />
-        </div>
-      </div>
+      <SettingsHeader
+        onClose={onClose}
+        saving={saving}
+        saveError={saveError}
+        selectedProfile={selectedProfile}
+        onSelectProfile={setSelectedProfile}
+      />
 
       {/* Mobile tabs (horizontal scroll) */}
       <div className="md:hidden border-b border-surface-700 bg-surface-850 overflow-x-auto">

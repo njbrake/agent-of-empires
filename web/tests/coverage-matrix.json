@@ -101,7 +101,19 @@
       ],
       "components": [
         "web/src/components/SettingsView.tsx",
+        "web/src/components/settings/SettingsHeader.tsx",
         "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "settings.header-branches",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": [
+        "src/components/settings/__tests__/SettingsHeader.test.tsx"
+      ],
+      "components": [
+        "web/src/components/settings/SettingsHeader.tsx"
       ]
     },
     {
