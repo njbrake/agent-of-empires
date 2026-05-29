@@ -1768,11 +1768,24 @@ fn spawn_runner_detached(
     // container_workdir is reused from the SessionSandbox built upstream
     // so we don't redo `compute_volume_paths`.
     let sandbox_argv = match (&config.sandbox_info, session_sandbox) {
-        (Some(sandbox), Some(handle)) => Some(build_sandbox_docker_argv(
-            config,
-            sandbox,
-            handle.container_workdir.to_string_lossy().as_ref(),
-        )?),
+        (Some(sandbox), Some(handle)) => {
+            let argv = build_sandbox_docker_argv(
+                config,
+                sandbox,
+                handle.container_workdir.to_string_lossy().as_ref(),
+            )?;
+            info!(
+                target: "cockpit.acp.spawn",
+                session = %session_id,
+                container = %sandbox.container_name,
+                container_id = sandbox.container_id.as_deref().unwrap_or("?"),
+                image = %sandbox.image,
+                workdir = %handle.container_workdir.display(),
+                docker = %argv.docker_binary,
+                "docker wrap applied"
+            );
+            Some(argv)
+        }
         (Some(_), None) => {
             return Err(AcpError::Spawn(
                 "sandbox_info set but SessionSandbox handle missing; \
@@ -1780,7 +1793,14 @@ fn spawn_runner_detached(
                     .into(),
             ));
         }
-        (None, _) => None,
+        (None, _) => {
+            info!(
+                target: "cockpit.acp.spawn",
+                session = %session_id,
+                "docker wrap skipped (no sandbox_info)"
+            );
+            None
+        }
     };
 
     // Resolve the agent binary against PATH + known node-manager dirs so

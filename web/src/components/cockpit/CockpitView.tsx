@@ -1538,7 +1538,7 @@ export function SnoozedWorkerStoppedBanner({
   );
 }
 
-function StartupErrorBanner({
+export function StartupErrorBanner({
   sessionId,
   message,
 }: {
@@ -1556,6 +1556,13 @@ function StartupErrorBanner({
   );
   const isProjectPathMissing = projectPathMissingMatch !== null;
   const missingPath = projectPathMissingMatch?.[1]?.trim() ?? null;
+  // The adapter found the bundled Claude Code native sub-binary at the
+  // global-npm path but `execve` failed. Usually arch/libc/loader
+  // mismatch inside a sandbox container, or a bind-mounted host
+  // node_modules whose binary doesn't match the container arch. See
+  // #1449.
+  const isNativeBinaryLaunchFail =
+    /native binary at .* exists but failed to launch/i.test(message);
   const [retryState, setRetryState] = useState<
     "idle" | "retrying" | "ok" | "failed"
   >("idle");
@@ -1668,6 +1675,42 @@ function StartupErrorBanner({
               </li>
             </ol>
           </>
+        ) : isNativeBinaryLaunchFail ? (
+          <>
+            The adapter is installed but its bundled Claude Code native
+            sub-binary couldn't launch. The binary exists on disk, the
+            kernel rejected the <code className="rounded bg-rose-900/60 px-1">execve</code>.
+            Reinstalling the adapter won't help; the binary is already
+            there. Likely causes:
+            <ul className="mt-1 list-disc space-y-0.5 pl-5">
+              <li>
+                Architecture mismatch (e.g. an{" "}
+                <code className="rounded bg-rose-900/60 px-1">arm64</code> binary
+                inside an <code className="rounded bg-rose-900/60 px-1">amd64</code>{" "}
+                sandbox container, or vice versa).
+              </li>
+              <li>
+                Container image missing the dynamic loader or a glibc
+                version old enough to refuse the binary.
+              </li>
+              <li>
+                Host{" "}
+                <code className="rounded bg-rose-900/60 px-1">node_modules</code>{" "}
+                bind-mounted into a container of a different arch.
+              </li>
+            </ul>
+            Open the agent log below for the verbatim adapter error, or
+            see{" "}
+            <a
+              href="https://agent-of-empires.com/docs/cockpit#native-binary-launch-failure"
+              target="_blank"
+              rel="noreferrer"
+              className="underline hover:text-rose-100"
+            >
+              the troubleshooting guide
+            </a>
+            .
+          </>
         ) : (
           <>
             Run <code className="rounded bg-rose-900/60 px-1">aoe cockpit doctor --fix</code>{" "}
@@ -1678,6 +1721,127 @@ function StartupErrorBanner({
           </>
         )}
       </div>
+      <AgentLogDisclosure sessionId={sessionId} />
+    </div>
+  );
+}
+
+/** Collapsible viewer for the per-session cockpit runner log.
+ *
+ *  Surfaces the same stream `aoe cockpit logs --session <id>` reads,
+ *  so a dashboard user without host terminal access (Tailscale Funnel,
+ *  remote setups) can see the verbatim adapter error when the startup
+ *  banner is otherwise opaque. See #1449.
+ */
+function AgentLogDisclosure({ sessionId }: { sessionId: string }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState<
+    "idle" | "loading" | "ok" | "failed"
+  >("idle");
+  const [tail, setTail] = useState<string>("");
+  const [exists, setExists] = useState<boolean>(false);
+  const [truncated, setTruncated] = useState<boolean>(false);
+  const [errorText, setErrorText] = useState<string | null>(null);
+
+  const fetchLog = async () => {
+    setState("loading");
+    setErrorText(null);
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/worker-log?tail=200`,
+      );
+      if (!res.ok) {
+        const detail = (await res.text().catch(() => "")).slice(0, 200);
+        setState("failed");
+        setErrorText(`Server returned ${res.status}. ${detail}`.trim());
+        return;
+      }
+      const body = (await res.json()) as {
+        path?: string;
+        exists?: boolean;
+        tail?: string;
+        truncated?: boolean;
+      };
+      setExists(Boolean(body.exists));
+      setTail(typeof body.tail === "string" ? body.tail : "");
+      setTruncated(Boolean(body.truncated));
+      setState("ok");
+    } catch (e) {
+      setState("failed");
+      setErrorText(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleToggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && state === "idle") {
+      void fetchLog();
+    }
+  };
+
+  return (
+    <div className="mt-3 border-t border-rose-900/60 pt-2">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={handleToggle}
+          data-testid="cockpit-agent-log-toggle"
+          aria-expanded={open}
+          className="text-xs font-medium text-rose-100 underline-offset-2 hover:underline"
+        >
+          {open ? "Hide agent log" : "Open agent log"}
+        </button>
+        {open && (
+          <button
+            type="button"
+            onClick={() => void fetchLog()}
+            disabled={state === "loading"}
+            data-testid="cockpit-agent-log-refresh"
+            className="rounded-md border border-rose-800/60 bg-rose-900/40 px-2 py-0.5 text-[10px] font-medium text-rose-100 hover:bg-rose-900/60 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {state === "loading" ? "Loading…" : "Refresh"}
+          </button>
+        )}
+      </div>
+      {open && (
+        <div className="mt-2" data-testid="cockpit-agent-log-body">
+          {state === "loading" && (
+            <div className="text-xs text-rose-200/80">Loading log…</div>
+          )}
+          {state === "failed" && errorText && (
+            <div className="text-xs text-rose-100/90">
+              Could not load log: {errorText}
+            </div>
+          )}
+          {state === "ok" && !exists && (
+            <div className="text-xs text-rose-200/80">
+              No log output yet. The worker may not have written anything
+              before exiting.
+            </div>
+          )}
+          {state === "ok" && exists && tail.length === 0 && (
+            <div className="text-xs text-rose-200/80">
+              Log file exists but is empty.
+            </div>
+          )}
+          {state === "ok" && exists && tail.length > 0 && (
+            <>
+              {truncated && (
+                <div className="mb-1 text-[10px] text-rose-200/70">
+                  Log is large; showing the tail.
+                </div>
+              )}
+              <pre
+                data-testid="cockpit-agent-log-pre"
+                className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-rose-950/70 p-2 font-mono text-[11px] text-rose-100/90"
+              >
+                {tail}
+              </pre>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -182,13 +182,22 @@ pub async fn run(args: CockpitRunnerArgs) -> Result<()> {
 
     // Drain agent stderr into the per-session log file. Without this the
     // child blocks once the stderr pipe fills (~64KB on Linux), looking
-    // like a wedged handshake.
+    // like a wedged handshake. The same lines also land on the daemon
+    // debug.log via tracing so they appear in the unified timeline; the
+    // direct file write is what gives `aoe cockpit logs --session <id>`
+    // and `GET /api/sessions/:id/cockpit/worker-log` something to read
+    // (init_runner_logging routes tracing to debug.log, not the
+    // per-session file). See #1449.
     if let Some(stderr) = agent_stderr {
         let label = args.session_id.clone();
+        let per_session_log = worker_registry::log_path_for(&args.session_id).ok();
         tokio::spawn(async move {
             let mut reader = BufReader::new(stderr).lines();
             while let Ok(Some(line)) = reader.next_line().await {
                 debug!(target: "cockpit.runner.agent.stderr", session = %label, "{line}");
+                if let Some(path) = per_session_log.as_ref() {
+                    append_agent_stderr_line(path, &line);
+                }
             }
         });
     }
@@ -670,8 +679,12 @@ fn init_runner_logging(session_id: &str) -> Result<()> {
     // --session <id>` and any external tail works. The actual tracing
     // output goes to the shared `debug.log` so daemon + every runner
     // appear in one timeline; runner spans add `session_id` for filtering.
+    // The agent stderr drainer at run() writes lines here directly so
+    // the per-session file is the cockpit's "what did the adapter say"
+    // surface (used by GET /cockpit/worker-log). See #1449.
     let per_session = worker_registry::log_path_for(session_id)?;
     open_log_file(&per_session)?;
+    write_runner_startup_marker(&per_session, session_id);
 
     // Same precedence as main.rs: env > [logging] in config.toml > info
     // baseline. The notify watcher on runtime_filter still takes over
@@ -699,6 +712,40 @@ fn init_runner_logging(session_id: &str) -> Result<()> {
         tracing::warn!(target: "log.runtime", "{}", w);
     }
     Ok(())
+}
+
+/// Write a one-line marker to the per-session log so the file is never
+/// empty after the runner has started. Best-effort.
+fn write_runner_startup_marker(path: &Path, session_id: &str) {
+    use std::io::Write;
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+    let _ = writeln!(
+        f,
+        "[{ts}] runner.startup: cockpit runner up session={session_id}"
+    );
+}
+
+/// Append one line of agent stderr to the per-session log file with a
+/// timestamp prefix. Best-effort: a write failure is ignored so the
+/// runner does not crash when disk fills, lost permissions, etc.
+fn append_agent_stderr_line(path: &Path, line: &str) {
+    use std::io::Write;
+    let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    else {
+        return;
+    };
+    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+    let _ = writeln!(f, "[{ts}] agent.stderr: {line}");
 }
 
 fn open_log_file(path: &Path) -> Result<()> {

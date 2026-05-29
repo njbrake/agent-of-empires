@@ -150,8 +150,10 @@ function sendResult(id, result) {
   send({ jsonrpc: "2.0", id, result });
 }
 
-function sendError(id, code, message) {
-  send({ jsonrpc: "2.0", id, error: { code, message } });
+function sendError(id, code, message, data) {
+  const error = { code, message };
+  if (data !== undefined) error.data = data;
+  send({ jsonrpc: "2.0", id, error });
 }
 
 function sendNotification(method, params) {
@@ -324,6 +326,26 @@ async function handleRequest(msg) {
       // ignore log errors
     }
   }
+  // Script-controlled failure injection: lets specs simulate "adapter
+  // returns a JSON-RPC error on method X" without needing a hand-rolled
+  // ACP server per failure mode. Shape: script.failOn = { method:
+  // "session/new", code: -32603, message: "Internal error", data: {...} }.
+  // Single-shot by default; set `repeat: true` to keep failing on every
+  // call. See web/tests/live/cockpit-stories/startup-error-banner-native-binary.spec.ts.
+  if (script.failOn && script.failOn.method === method) {
+    const f = script.failOn;
+    sendError(
+      id,
+      typeof f.code === "number" ? f.code : -32603,
+      typeof f.message === "string" ? f.message : "Internal error",
+      f.data,
+    );
+    if (!f.repeat) {
+      script.failOn = null;
+    }
+    return;
+  }
+
   switch (method) {
     case "initialize":
       sendResult(id, INITIALIZE_RESULT);
