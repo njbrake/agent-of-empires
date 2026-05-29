@@ -237,6 +237,65 @@ fn test_has_dialog_returns_true_for_new_dialog() {
 
 #[test]
 #[serial]
+fn test_b_opens_project_session_picker_when_projects_exist() {
+    use crate::session::projects::{self, Project, ProjectScope};
+    let mut env = create_test_env_empty();
+    let repo = env._temp.path().join("repoA");
+    std::fs::create_dir_all(&repo).unwrap();
+    projects::add(
+        "test",
+        ProjectScope::Profile,
+        Project::new("repoA", repo.to_string_lossy(), ProjectScope::Profile),
+        false,
+    )
+    .unwrap();
+
+    assert!(env.view.project_session_picker_dialog.is_none());
+    env.view.handle_key(key(KeyCode::Char('b')), None);
+    assert!(env.view.project_session_picker_dialog.is_some());
+    assert!(env.view.info_dialog.is_none());
+}
+
+#[test]
+#[serial]
+fn test_b_shows_info_dialog_when_no_projects() {
+    let mut env = create_test_env_empty();
+    assert!(env.view.info_dialog.is_none());
+    env.view.handle_key(key(KeyCode::Char('b')), None);
+    assert!(env.view.info_dialog.is_some());
+    assert!(env.view.project_session_picker_dialog.is_none());
+}
+
+#[test]
+#[serial]
+fn test_b_submit_opens_new_dialog_with_prefilled_path() {
+    use crate::session::projects::{self, Project, ProjectScope};
+    let mut env = create_test_env_empty();
+    let repo = env._temp.path().join("repoB");
+    std::fs::create_dir_all(&repo).unwrap();
+    projects::add(
+        "test",
+        ProjectScope::Profile,
+        Project::new("repoB", repo.to_string_lossy(), ProjectScope::Profile),
+        false,
+    )
+    .unwrap();
+    let expected = projects::load_merged("test").unwrap()[0].path.clone();
+
+    env.view.handle_key(key(KeyCode::Char('b')), None);
+    assert!(env.view.project_session_picker_dialog.is_some());
+    env.view.handle_key(key(KeyCode::Enter), None);
+    assert!(env.view.project_session_picker_dialog.is_none());
+    let dialog = env
+        .view
+        .new_dialog
+        .as_ref()
+        .expect("new session dialog should open after picking a project");
+    assert_eq!(dialog.path_value(), expected);
+}
+
+#[test]
+#[serial]
 fn test_cursor_down_j() {
     let mut env = create_test_env_with_sessions(5);
     assert_eq!(env.view.cursor, 0);

@@ -889,6 +889,22 @@ impl HomeView {
             }
             return true;
         }
+        if let Some(dialog) = &mut self.project_session_picker_dialog {
+            match dialog.handle_click(col, row) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.project_session_picker_dialog = None;
+                }
+                DialogResult::Submit(path) => {
+                    self.project_session_picker_dialog = None;
+                    self.open_new_session_dialog();
+                    if let Some(d) = &mut self.new_dialog {
+                        d.set_path(path);
+                    }
+                }
+            }
+            return true;
+        }
         if let Some(palette) = &mut self.command_palette {
             match palette.handle_click(col, row) {
                 DialogResult::Continue => {}
@@ -1552,6 +1568,23 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.project_session_picker_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.project_session_picker_dialog = None;
+                }
+                DialogResult::Submit(path) => {
+                    self.project_session_picker_dialog = None;
+                    self.open_new_session_dialog();
+                    if let Some(d) = &mut self.new_dialog {
+                        d.set_path(path);
+                    }
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.sort_picker_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -1835,6 +1868,12 @@ impl HomeView {
                 if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
                 self.show_profile_picker();
+            }
+            KeyCode::Char('b') if !self.strict_hotkeys => {
+                self.open_project_session_picker();
+            }
+            KeyCode::Char('B') if self.strict_hotkeys => {
+                self.open_project_session_picker();
             }
             #[cfg(feature = "serve")]
             KeyCode::Char('R') if !self.strict_hotkeys => {
@@ -2646,6 +2685,10 @@ impl HomeView {
             }
             PaletteAction::OpenGroupPicker => {
                 self.show_group_picker();
+                None
+            }
+            PaletteAction::OpenProjectSessionPicker => {
+                self.open_project_session_picker();
                 None
             }
         }
@@ -3613,6 +3656,9 @@ impl HomeView {
             overlay_changed |= dialog.handle_hover(col, row);
         }
         if let Some(dialog) = &mut self.group_picker_dialog {
+            overlay_changed |= dialog.handle_hover(col, row);
+        }
+        if let Some(dialog) = &mut self.project_session_picker_dialog {
             overlay_changed |= dialog.handle_hover(col, row);
         }
         if let Some(palette) = &mut self.command_palette {

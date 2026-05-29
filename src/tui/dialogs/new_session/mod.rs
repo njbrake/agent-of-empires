@@ -841,7 +841,7 @@ impl NewSessionDialog {
 /// Label shown in the registered-projects picker. Includes scope so users
 /// can disambiguate when the same name exists across scopes (rare; the
 /// merger dedupes by path, not name).
-fn project_picker_label(p: &crate::session::Project) -> String {
+pub(crate) fn project_picker_label(p: &crate::session::Project) -> String {
     format!("{} [{}]  {}", p.name, p.scope.as_str(), p.path)
 }
 

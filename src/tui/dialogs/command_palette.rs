@@ -73,6 +73,11 @@ pub enum PaletteAction {
     /// End, so no single synthesized key reaches the show helper in both
     /// modes.
     OpenGroupPicker,
+    /// Open the saved-project picker that starts a new session pre-filled with
+    /// the chosen project's path. Dedicated variant because the lowercase `b`
+    /// binding is gated `!strict_hotkeys`, so a synthesized `Char('b')` would
+    /// not fire in strict mode.
+    OpenProjectSessionPicker,
 }
 
 /// One entry in the palette. `payload` is what gets returned when the user picks it.
@@ -119,6 +124,14 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
             keywords: vec!["create", "duplicate", "clone"],
             hotkey: hotkey_label("N", "Ctrl+N", strict_hotkeys),
             payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT)),
+        },
+        PaletteCommand {
+            id: "new-from-project",
+            title: "New session from saved project".to_string(),
+            group: PaletteGroup::Actions,
+            keywords: vec!["project", "saved", "registry", "create"],
+            hotkey: hotkey_label("b", "B", strict_hotkeys),
+            payload: PaletteAction::OpenProjectSessionPicker,
         },
         PaletteCommand {
             id: "attach",
@@ -752,6 +765,23 @@ mod tests {
     }
 
     #[test]
+    fn new_from_project_entry_uses_dedicated_payload() {
+        // Regression guard mirroring `picker_entries_use_dedicated_payload_variants`:
+        // the lowercase `b` binding is gated `!strict_hotkeys`, so the palette
+        // entry must route through `OpenProjectSessionPicker` rather than a
+        // synthesized `Key('b')` that would silently no-op in strict mode.
+        let cmds = builtin_commands(false, true);
+        let entry = cmds
+            .iter()
+            .find(|c| c.id == "new-from-project")
+            .expect("builtin commands must include 'new-from-project'");
+        assert!(
+            matches!(&entry.payload, PaletteAction::OpenProjectSessionPicker),
+            "new-from-project entry must dispatch PaletteAction::OpenProjectSessionPicker"
+        );
+    }
+
+    #[test]
     fn keywords_match_searches() {
         // "Move session to group" complaint from issue #889: searching for
         // "move" should surface the rename entry via its keyword.
@@ -963,6 +993,9 @@ mod tests {
                 }
                 PaletteAction::OpenGroupPicker => {
                     palette_chars.insert('g');
+                }
+                PaletteAction::OpenProjectSessionPicker => {
+                    palette_chars.insert('b');
                 }
                 PaletteAction::EnterLiveSend
                 | PaletteAction::JumpToCursor(_)
