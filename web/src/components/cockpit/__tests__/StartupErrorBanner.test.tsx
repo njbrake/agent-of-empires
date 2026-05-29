@@ -168,6 +168,75 @@ describe("AgentLogDisclosure", () => {
     });
   });
 
+  it("renders 'log file exists but is empty' when tail is empty and exists=true", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        path: "/tmp/x.log",
+        exists: true,
+        tail: "",
+        lines_returned: 0,
+        truncated: false,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const { getByTestId, container } = render(
+      <StartupErrorBanner sessionId="s-1" message={NATIVE_BINARY_MSG} />,
+    );
+    fireEvent.click(getByTestId("cockpit-agent-log-toggle"));
+    await waitFor(() => {
+      expect(container.textContent).toContain("Log file exists but is empty");
+    });
+  });
+
+  it("renders the truncated-log hint when the response sets truncated=true", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        path: "/tmp/x.log",
+        exists: true,
+        tail: "tail content",
+        lines_returned: 1,
+        truncated: true,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const { getByTestId, container } = render(
+      <StartupErrorBanner sessionId="s-1" message={NATIVE_BINARY_MSG} />,
+    );
+    fireEvent.click(getByTestId("cockpit-agent-log-toggle"));
+    await waitFor(() => {
+      expect(container.textContent).toContain("Log is large; showing the tail");
+    });
+  });
+
+  it("hides the body when the toggle is clicked a second time", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        path: "/tmp/x.log",
+        exists: true,
+        tail: "abc",
+        lines_returned: 1,
+        truncated: false,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const { getByTestId, queryByTestId } = render(
+      <StartupErrorBanner sessionId="s-1" message={NATIVE_BINARY_MSG} />,
+    );
+    const toggle = getByTestId("cockpit-agent-log-toggle");
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(queryByTestId("cockpit-agent-log-pre")).not.toBeNull();
+    });
+    fireEvent.click(toggle);
+    expect(queryByTestId("cockpit-agent-log-pre")).toBeNull();
+  });
+
   it("re-fetches when the Refresh button is clicked", async () => {
     const fetchSpy = vi.fn().mockResolvedValue({
       ok: true,
