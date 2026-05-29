@@ -254,6 +254,11 @@ fn test_b_opens_project_session_picker_when_projects_exist() {
     env.view.handle_key(key(KeyCode::Char('b')), None);
     assert!(env.view.project_session_picker_dialog.is_some());
     assert!(env.view.info_dialog.is_none());
+    // The picker captures filter chars, so it must register as a modal: an
+    // unregistered picker lets the global `q` shortcut quit the app and the
+    // paste-burst detector fire mid-filter (text gets stranded in handle_paste).
+    assert!(env.view.has_dialog());
+    assert!(!env.view.wants_paste_burst());
 }
 
 #[test]
