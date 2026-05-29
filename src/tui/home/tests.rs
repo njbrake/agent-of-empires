@@ -3612,6 +3612,18 @@ fn test_project_group_name_handles_trailing_slash() {
 }
 
 #[test]
+fn test_project_group_name_groups_scratch_under_scratch() {
+    use super::project_group_name;
+
+    let mut inst = Instance::new(
+        "test",
+        "/home/user/.config/agent-of-empires/scratch/a4535853054b4096",
+    );
+    inst.scratch = true;
+    assert_eq!(project_group_name(&inst), "scratch");
+}
+
+#[test]
 #[serial]
 fn test_cursor_follows_session_after_deletion() {
     let mut env = create_test_env_with_sessions(4);

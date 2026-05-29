@@ -45,6 +45,12 @@ use super::status_poller::{StatusPoller, StatusUpdate};
 /// Uses `worktree_info.main_repo_path` for worktree sessions (so all branches of the
 /// same repo group together), otherwise uses `project_path`. Returns the last path segment.
 fn project_group_name(inst: &Instance) -> String {
+    // Scratch sessions live under `<app_dir>/scratch/<instance-id>/`, so the last
+    // path segment is the opaque instance id. Group them under a readable label.
+    if inst.scratch {
+        return "scratch".to_string();
+    }
+
     let base_path = inst
         .worktree_info
         .as_ref()
