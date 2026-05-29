@@ -1097,8 +1097,11 @@ export function TodoGroupCard({ items }: { items: TodoGroupChild[] }) {
         .filter(
           (
             s,
-          ): s is { tool: ToolCall; result?: ActivityRow; todos: TodoItem[] } =>
-            s !== null,
+          ): s is {
+            tool: ToolCall;
+            result: ActivityRow | undefined;
+            todos: TodoItem[];
+          } => s !== null,
         ),
     [items, profile],
   );
