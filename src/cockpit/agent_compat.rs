@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn claude_above_minimum_accepted() {
-        let init = make_init("@agentclientprotocol/claude-agent-acp", "0.38.1");
+        let init = make_init("@agentclientprotocol/claude-agent-acp", "0.39.1");
         validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap();
     }
 
