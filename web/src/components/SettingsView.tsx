@@ -25,7 +25,7 @@ import { SoundSettings } from "./settings/SoundSettings";
 import { UpdateSettings } from "./settings/UpdateSettings";
 import { TmuxSettings } from "./settings/TmuxSettings";
 import { LoggingSettings } from "./settings/LoggingSettings";
-import { ProfileSelector } from "./settings/ProfileSelector";
+import { SettingsHeader } from "./settings/SettingsHeader";
 
 type TabId =
   | "session"
@@ -496,28 +496,13 @@ export function SettingsView({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-surface-900">
-      {/* Header */}
-      <div className="h-12 bg-surface-850 border-b border-surface-700 flex items-center px-4 shrink-0">
-        <button
-          onClick={onClose}
-          className="text-brand-500 mr-3 cursor-pointer text-sm"
-        >
-          &larr; Back
-        </button>
-        <span className="text-sm font-semibold text-text-bright">Settings</span>
-        {saving && (
-          <span className="ml-2 text-xs text-text-dim">Saving...</span>
-        )}
-        {saveError && (
-          <span className="ml-2 text-xs text-red-400">{saveError}</span>
-        )}
-        <div className="flex-1 flex justify-center">
-          <ProfileSelector
-            selectedProfile={selectedProfile}
-            onSelect={setSelectedProfile}
-          />
-        </div>
-      </div>
+      <SettingsHeader
+        onClose={onClose}
+        saving={saving}
+        saveError={saveError}
+        selectedProfile={selectedProfile}
+        onSelectProfile={setSelectedProfile}
+      />
 
       {/* Mobile tabs (horizontal scroll) */}
       <div className="md:hidden border-b border-surface-700 bg-surface-850 overflow-x-auto">
