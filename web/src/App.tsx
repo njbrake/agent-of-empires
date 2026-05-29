@@ -19,6 +19,8 @@ import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
 import { useIsCoarsePointer } from "./hooks/useIsCoarsePointer";
+import { useIsWideViewport } from "./hooks/useIsWideViewport";
+import type { RightPanelView } from "./lib/rightPanelView";
 import {
   loginStatus,
   logout,
@@ -57,6 +59,10 @@ const CockpitView = lazy(() =>
   })),
 );
 import { RightPanel } from "./components/RightPanel";
+import { PairedShellPane } from "./components/PairedTerminal";
+import { MobileRightPanelPicker } from "./components/MobileRightPanelPicker";
+import { DiffFileList } from "./components/diff/DiffFileList";
+import { CommentsBanner } from "./components/diff/comments/CommentsBanner";
 import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
 import { ProjectsView } from "./components/ProjectsView";
@@ -268,6 +274,20 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   useEffect(() => {
     safeSetItem(RIGHT_PANEL_COLLAPSED_KEY, diffCollapsed ? "1" : "0");
   }, [diffCollapsed]);
+  // Layout topology is width-driven so it stays aligned with the `md:`
+  // Tailwind classes the rest of the layout uses. At md and up the
+  // side-by-side ContentSplit renders; below md a single full-viewport
+  // pane shows one of agent / diff / paired, chosen via the picker (#1452).
+  const isMdUp = useIsWideViewport();
+  const singlePane = !isMdUp;
+  const [rightPanelView, setRightPanelView] =
+    useState<RightPanelView>("agent");
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // The paired shell mounts lazily on first activation, then stays mounted
+  // (kept alive but hidden) so its PTY, scrollback, and focus survive view
+  // switches. Mounting it eagerly would spawn a shell for every mobile
+  // session the user never opens the shell on.
+  const [pairedMounted, setPairedMounted] = useState(false);
   const [showSessionWizard, setShowSessionWizard] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
@@ -287,6 +307,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     (s) => s.id === activeSessionId,
   );
 
+  // Fetch the diff when the panel is actually showing: on desktop when the
+  // split is expanded, on mobile when the diff view is the active pane.
+  const diffPanelActive = isMdUp ? !diffCollapsed : rightPanelView === "diff";
   const {
     files: diffFiles,
     perRepoBases,
@@ -294,7 +317,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     loading: diffFilesLoading,
     revision,
     refresh: refreshDiffFiles,
-  } = useDiffFiles(activeSessionId, !diffCollapsed);
+  } = useDiffFiles(activeSessionId, diffPanelActive);
 
   // Diff-viewer comments (#928). Cockpit-only and session-scoped. The
   // banner lives in RightPanel while the inline UI lives inside
@@ -337,6 +360,32 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       setSelectedFile(null);
     }
   }, [activeSessionId, diffFiles, diffFilesLoading, selectedFilePath]);
+
+  // Reset the mobile single-pane view to the agent terminal whenever the
+  // active session changes, and close the picker. Landing a freshly opened
+  // session on a stale "paired"/"diff" view would strand the user on a
+  // shell or empty file list before the new session's terminal is ready.
+  useEffect(() => {
+    setRightPanelView("agent");
+    setPickerOpen(false);
+    setPairedMounted(false);
+  }, [activeSessionId]);
+
+  // Mount the paired shell on first activation and keep it mounted after.
+  useEffect(() => {
+    if (rightPanelView === "paired") setPairedMounted(true);
+  }, [rightPanelView]);
+
+  // Refit the newly active terminal after a single-pane view switch: the
+  // layers keep their geometry while hidden (visibility, not display:none),
+  // but a resize nudge re-runs the xterm fit so the grid matches exactly.
+  useEffect(() => {
+    if (!singlePane) return;
+    const id = requestAnimationFrame(() =>
+      window.dispatchEvent(new Event("resize")),
+    );
+    return () => cancelAnimationFrame(id);
+  }, [singlePane, rightPanelView]);
 
   useEffect(() => {
     setSelectedFile(null);
@@ -484,7 +533,20 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setShowSessionWizard(true);
   }, [sessions]);
 
-  const toggleDiff = useCallback(() => setDiffCollapsed((c) => !c), []);
+  // The right-panel control toggles the desktop split, but on mobile there
+  // is no split to collapse: it opens the view picker instead (#1452).
+  const toggleDiff = useCallback(() => {
+    if (isMdUp) {
+      setDiffCollapsed((c) => !c);
+    } else {
+      setPickerOpen((o) => !o);
+    }
+  }, [isMdUp]);
+
+  const handlePickView = useCallback((view: RightPanelView) => {
+    setRightPanelView(view);
+    setPickerOpen(false);
+  }, []);
 
   const handleSelectFile = useCallback(
     (path: string, repoName?: string) => {
@@ -541,7 +603,13 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   }, []);
 
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
-  const openDiff = useCallback(() => setDiffCollapsed(false), []);
+  const openDiff = useCallback(() => {
+    if (isMdUp) {
+      setDiffCollapsed(false);
+    } else {
+      setPickerOpen(true);
+    }
+  }, [isMdUp]);
   useEdgeSwipe({
     edge: "left",
     enabled: !sidebarOpen,
@@ -566,10 +634,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   const handleToggleTerminalFocus = useCallback(() => {
     if (!activeSessionId) return;
-    // ContentSplit renders the right pane twice (desktop inline + mobile
-    // overlay); each instance mounts its own PairedTerminal. Probing by
-    // data-term attribute is robust against that duplication and against
-    // future panel reorderings.
+    // Probe by data-term attribute rather than a component ref: it is
+    // robust against panel reorderings and against the paired terminal
+    // living in either the desktop split or the mobile single pane.
     //
     // Semantic: VSCode-like "Cmd+` opens/focuses the terminal." So if the
     // user is NOT in the paired terminal, send them there; only flip back
@@ -589,6 +656,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     }
     const target = inPaired ? "agent" : "paired";
 
+    if (singlePane) {
+      // Below md there is one full-viewport pane. Promote the target view,
+      // then dispatch focus on the next frame: the inactive layer is inert
+      // until React commits the switch, and focus() on an inert subtree is
+      // a no-op.
+      setRightPanelView(target);
+      requestAnimationFrame(() => dispatchFocusTerminal(target));
+      return;
+    }
+
     if (target === "paired" && diffCollapsed) {
       // Right panel is collapsed; paired terminal is unmounted. Set the
       // pending intent so PairedTerminal grabs focus once it mounts and
@@ -606,7 +683,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       return;
     }
     dispatchFocusTerminal(target);
-  }, [activeSessionId, diffCollapsed, selectedFilePath]);
+  }, [activeSessionId, singlePane, diffCollapsed, selectedFilePath]);
 
   useKeyboardShortcuts(
     useCallback(
@@ -654,7 +731,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onSettings: () => (showSettings ? handleCloseSettings() : navigate("/settings")),
         onPalette: () => setShowPalette((p) => !p),
         onToggleSidebar: () => setSidebarOpen((o) => !o),
-        onToggleRightPanel: () => setDiffCollapsed((c) => !c),
+        onToggleRightPanel: () => toggleDiff(),
         onToggleTerminalFocus: handleToggleTerminalFocus,
       }),
       [
@@ -731,6 +808,161 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       );
     }
 
+    const agentPane = activeSession?.cockpit_mode ? (
+      <Suspense fallback={<CockpitLoadingFallback />}>
+        <CockpitView
+          key={activeSessionId}
+          sessionId={activeSessionId!}
+          cockpitWorkerState={activeSession.cockpit_worker_state ?? "absent"}
+          tool={activeSession.tool}
+          archivedAt={activeSession.archived_at ?? null}
+          snoozedUntil={activeSession.snoozed_until ?? null}
+        />
+      </Suspense>
+    ) : (
+      <TerminalSessionStack
+        activeSessionId={activeSessionId!}
+        sessions={sessions.filter((session) => !session.cockpit_mode)}
+        cockpitMasterEnabled={!!serverAbout?.cockpit_master_enabled}
+        persistent={webSettings.persistentTerminals}
+        maxPersistentTerminals={webSettings.maxPersistentTerminals}
+      />
+    );
+
+    const diffViewerNode =
+      selectedFilePath && activeSessionId ? (
+        <DiffFileViewer
+          sessionId={activeSessionId}
+          filePath={selectedFilePath}
+          repoName={selectedRepoName}
+          revision={revision}
+          onClose={handleCloseFile}
+          commentsEnabled={commentsEnabled}
+          commentsStore={diffComments}
+        />
+      ) : null;
+
+    const diffListNode = (
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        {commentsEnabled && diffComments.count > 0 && (
+          <CommentsBanner
+            count={diffComments.count}
+            sendEnabled={commentSendEnabled}
+            sendDisabledReason={commentSendDisabledReason}
+            onSend={() => setSendDialogOpen(true)}
+            onDiscardAll={diffComments.clearComments}
+          />
+        )}
+        <DiffFileList
+          files={diffFiles}
+          perRepoBases={perRepoBases}
+          warning={warning}
+          selectedPath={selectedFilePath}
+          selectedRepoName={selectedRepoName}
+          loading={diffFilesLoading}
+          onSelectFile={handleSelectFile}
+          sessionId={activeSessionId}
+          repoPath={
+            activeSession?.main_repo_path ??
+            activeSession?.project_path ??
+            null
+          }
+          baseBranchOverride={activeSession?.base_branch_override ?? null}
+          onBaseBranchChanged={refreshDiffFiles}
+        />
+      </div>
+    );
+
+    const sendDialogNode = sendDialogOpen &&
+      commentsEnabled &&
+      activeSessionId && (
+        <SendCommentsDialog
+          sessionId={activeSessionId}
+          comments={diffComments.comments}
+          isMultiRepo={commentsIsMultiRepo}
+          sendEnabled={commentSendEnabled}
+          sendDisabledReason={commentSendDisabledReason}
+          introDraft={diffComments.introDraft}
+          outroDraft={diffComments.outroDraft}
+          clearAfterSend={diffComments.clearAfterSend}
+          onChangeIntro={diffComments.setIntroDraft}
+          onChangeOutro={diffComments.setOutroDraft}
+          onChangeClearAfterSend={diffComments.setClearAfterSend}
+          onClose={() => setSendDialogOpen(false)}
+          onSent={() => {
+            if (diffComments.clearAfterSend) {
+              diffComments.clearComments();
+              diffComments.setIntroDraft("");
+              diffComments.setOutroDraft("");
+            }
+            setSendDialogOpen(false);
+            // Close the diff viewer so the cockpit transcript is in
+            // view: the user just dispatched feedback and wants to
+            // see the agent's response. They can re-open any file
+            // from the right-panel list afterwards.
+            setSelectedFile(null);
+            toastBus.handler?.info("Comments sent to agent");
+          }}
+        />
+      );
+
+    // Below the md breakpoint there is no room for the side-by-side split.
+    // Render one full-viewport pane and let the picker choose which view
+    // occupies it (#1452). The agent terminal (and the paired shell, once
+    // first opened) stay mounted but hidden so their PTY, scrollback, and
+    // focus survive view switches; the diff view has no xterm so it mounts
+    // on demand. Inactive layers use visibility, never display:none, which
+    // would collapse xterm's measured geometry to zero.
+    if (singlePane) {
+      const layerClass = (active: boolean) =>
+        active
+          ? "absolute inset-0 flex flex-col min-h-0 overflow-hidden"
+          : "absolute inset-0 flex flex-col min-h-0 overflow-hidden invisible pointer-events-none";
+      const viewLabel = rightPanelView === "diff" ? "Diff" : "Paired terminal";
+      return (
+        <div className="flex-1 flex flex-col min-h-0">
+          {rightPanelView !== "agent" && (
+            <div className="flex items-center gap-2 h-9 px-2 border-b border-surface-700/20 bg-surface-900 shrink-0">
+              <button
+                onClick={() => setRightPanelView("agent")}
+                data-testid="mobile-back-to-agent"
+                className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-text-secondary hover:text-text-primary hover:bg-surface-800 cursor-pointer transition-colors"
+              >
+                <span aria-hidden>&larr;</span> Agent
+              </button>
+              <span className="text-xs text-text-dim">{viewLabel}</span>
+            </div>
+          )}
+          <div className="relative flex-1 flex flex-col min-h-0 overflow-hidden">
+            <div
+              className={layerClass(rightPanelView === "agent")}
+              inert={rightPanelView !== "agent"}
+            >
+              {agentPane}
+            </div>
+            {pairedMounted && (
+              <div
+                className={layerClass(rightPanelView === "paired")}
+                inert={rightPanelView !== "paired"}
+              >
+                <PairedShellPane
+                  session={activeSession ?? null}
+                  sessionId={activeSessionId}
+                  fullViewport
+                />
+              </div>
+            )}
+            {rightPanelView === "diff" && (
+              <div className="absolute inset-0 z-10 flex flex-col min-h-0 overflow-hidden bg-surface-900">
+                {diffViewerNode ?? diffListNode}
+              </div>
+            )}
+          </div>
+          {sendDialogNode}
+        </div>
+      );
+    }
+
     return (
       <div className="flex-1 flex flex-col min-h-0">
         <ContentSplit
@@ -745,43 +977,10 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                     : "flex-1 flex flex-col min-h-0 overflow-hidden"
                 }
               >
-                {activeSession?.cockpit_mode ? (
-                  <Suspense fallback={<CockpitLoadingFallback />}>
-                    <CockpitView
-                      key={activeSessionId}
-                      sessionId={activeSessionId!}
-                      cockpitWorkerState={activeSession.cockpit_worker_state ?? "absent"}
-                      tool={activeSession.tool}
-                      archivedAt={activeSession.archived_at ?? null}
-                      snoozedUntil={activeSession.snoozed_until ?? null}
-                    />
-                  </Suspense>
-                ) : (
-                  <TerminalSessionStack
-                    activeSessionId={activeSessionId!}
-                    sessions={sessions.filter((session) => !session.cockpit_mode)}
-                    cockpitMasterEnabled={
-                      !!serverAbout?.cockpit_master_enabled
-                    }
-                    persistent={webSettings.persistentTerminals}
-                    maxPersistentTerminals={
-                      webSettings.maxPersistentTerminals
-                    }
-                  />
-                )}
+                {agentPane}
               </div>
 
-              {selectedFilePath && activeSessionId && (
-                <DiffFileViewer
-                  sessionId={activeSessionId}
-                  filePath={selectedFilePath}
-                  repoName={selectedRepoName}
-                  revision={revision}
-                  onClose={handleCloseFile}
-                  commentsEnabled={commentsEnabled}
-                  commentsStore={diffComments}
-                />
-              )}
+              {diffViewerNode}
             </div>
           }
           right={
@@ -805,36 +1004,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             />
           }
         />
-        {sendDialogOpen && commentsEnabled && activeSessionId && (
-          <SendCommentsDialog
-            sessionId={activeSessionId}
-            comments={diffComments.comments}
-            isMultiRepo={commentsIsMultiRepo}
-            sendEnabled={commentSendEnabled}
-            sendDisabledReason={commentSendDisabledReason}
-            introDraft={diffComments.introDraft}
-            outroDraft={diffComments.outroDraft}
-            clearAfterSend={diffComments.clearAfterSend}
-            onChangeIntro={diffComments.setIntroDraft}
-            onChangeOutro={diffComments.setOutroDraft}
-            onChangeClearAfterSend={diffComments.setClearAfterSend}
-            onClose={() => setSendDialogOpen(false)}
-            onSent={() => {
-              if (diffComments.clearAfterSend) {
-                diffComments.clearComments();
-                diffComments.setIntroDraft("");
-                diffComments.setOutroDraft("");
-              }
-              setSendDialogOpen(false);
-              // Close the diff viewer so the cockpit transcript is in
-              // view: the user just dispatched feedback and wants to
-              // see the agent's response. They can re-open any file
-              // from the right-panel list afterwards.
-              setSelectedFile(null);
-              toastBus.handler?.info("Comments sent to agent");
-            }}
-          />
-        )}
+        {sendDialogNode}
       </div>
     );
   };
@@ -853,9 +1023,17 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   // the active session is cockpit so `h-dvh` plus the viewport meta's
   // `interactive-widget=resizes-content` shrink the container with the
   // keyboard and lift the composer back into view.
+  //
+  // Exception: when the single-pane paired shell is the active mobile view,
+  // an xterm.js terminal owns the viewport even on a cockpit session, so it
+  // needs the pin (plus the reservation in PairedTerminal) for the same
+  // reason the agent terminal does (#1452).
   const { isMobile, stableViewportHeight } = useMobileKeyboard();
+  const pairedFullViewport = singlePane && rightPanelView === "paired";
   const pinRootHeight =
-    isMobile && stableViewportHeight > 0 && !activeSession?.cockpit_mode;
+    isMobile &&
+    stableViewportHeight > 0 &&
+    (!activeSession?.cockpit_mode || pairedFullViewport);
   const rootStyle = pinRootHeight
     ? { height: `${stableViewportHeight}px` }
     : undefined;
@@ -969,6 +1147,15 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onClose={() => setShowPalette(false)}
         actions={commandActions}
       />
+
+      {activeWorkspace && activeSession && (
+        <MobileRightPanelPicker
+          open={pickerOpen && singlePane}
+          active={rightPanelView}
+          onSelect={handlePickView}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
 
       <textarea
         ref={keyboardProxyRef}
