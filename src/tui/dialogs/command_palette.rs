@@ -756,7 +756,7 @@ mod tests {
                 bindings::BINDINGS
                     .iter()
                     .find(|b| b.id == *id)
-                    .map_or(true, |b| b.palette.is_some())
+                    .is_none_or(|b| b.palette.is_some())
             })
             .collect();
         assert!(
