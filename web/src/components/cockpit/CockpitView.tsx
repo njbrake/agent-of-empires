@@ -362,7 +362,8 @@ function CockpitChrome({
         <ThreadPrimitive.Viewport
           autoScroll
           ref={viewportRef}
-          className="flex-1 overflow-y-auto"
+          data-testid="cockpit-viewport"
+          className="flex-1 overflow-x-hidden overflow-y-auto"
         >
           <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl px-4 py-6">
             <ThreadPrimitive.Empty>

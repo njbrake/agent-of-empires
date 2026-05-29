@@ -1799,6 +1799,18 @@
       ]
     },
     {
+      "id": "cockpit.story.chat-bubble-overflow",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/chat-bubble-overflow.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/Markdown.tsx"
+      ]
+    },
+    {
       "id": "cockpit.story.composer-stop-mid-turn",
       "kind": "live-playwright",
       "risk": "high",

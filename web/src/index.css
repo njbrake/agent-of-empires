@@ -214,6 +214,16 @@ body {
   text-decoration: underline;
 }
 .cockpit-markdown a:hover { color: var(--color-brand-400); }
+/* Break long unbreakable tokens (URLs, absolute file paths, the `─` rule
+   lines Playwright's list reporter emits) so they wrap inside the chat
+   bubble instead of pushing it past its width cap and forcing a
+   viewport-level horizontal scrollbar. `anywhere` (not `break-word`) so the
+   token also contributes to intrinsic min-content width, letting the
+   bubble's `min-w-0 max-w-[80%]` actually shrink. Fenced code blocks are
+   excluded; they keep their own `overflow-x-auto` scroll. See #1469. */
+.cockpit-markdown :where(p, li, blockquote, a) {
+  overflow-wrap: anywhere;
+}
 .cockpit-markdown pre {
   margin: 0.5rem 0;
   border-radius: 0.375rem;
