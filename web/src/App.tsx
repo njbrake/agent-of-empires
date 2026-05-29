@@ -36,7 +36,11 @@ import {
 } from "./lib/idleDecay";
 import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
-import { requestSessionInputFocus } from "./lib/terminalFocus";
+import {
+  dispatchFocusTerminal,
+  requestSessionInputFocus,
+  setPendingTerminalFocus,
+} from "./lib/terminalFocus";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
