@@ -30,12 +30,17 @@ export function SettingsHeader({
       >
         &larr; Back
       </button>
-      <span className="text-sm font-semibold text-text-bright shrink-0">Settings</span>
+      <span className="text-xs font-mono text-text-bright shrink-0">Settings</span>
       {saving && (
-        <span className="text-xs text-text-dim shrink-0">Saving...</span>
+        <span className="text-[11px] font-mono text-text-dim shrink-0">Saving...</span>
       )}
       {saveError && (
-        <span className="text-xs text-red-400 truncate min-w-0">{saveError}</span>
+        <span
+          data-testid="settings-header-save-error"
+          className="text-[11px] font-mono text-status-error truncate min-w-0"
+        >
+          {saveError}
+        </span>
       )}
       <div className="basis-full flex justify-center overflow-x-auto md:basis-auto md:ml-auto md:overflow-visible md:justify-end shrink-0">
         <ProfileSelector
