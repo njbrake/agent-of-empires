@@ -1929,6 +1929,32 @@
       ]
     },
     {
+      "id": "triage.empty-group-hide",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/lib/__tests__/sidebarSort.test.ts",
+        "tests/live/triage-archive.spec.ts"
+      ],
+      "components": [
+        "web/src/lib/sidebarSort.ts",
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.context-menu-clamp",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/lib/__tests__/menuPosition.test.ts",
+        "tests/sidebar-context-menu-clamp.spec.ts"
+      ],
+      "components": [
+        "web/src/lib/menuPosition.ts",
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
       "id": "triage.session-row-chips",
       "kind": "vitest",
       "risk": "medium",

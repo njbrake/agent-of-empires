@@ -54,9 +54,11 @@ import {
   setSessionSnooze,
 } from "../lib/api";
 import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
+import { useClampedMenuPosition } from "../lib/menuPosition";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
 import { reportError } from "../lib/toastBus";
 import {
+  repoGroupHasLiveWorkspace,
   resolveEffectiveSnoozedUntil,
   snoozeTimestampCloseEnough,
   triageMenuShape,
@@ -664,6 +666,8 @@ export const SessionRow = memo(function SessionRow({
     if (renaming) renameRef.current?.select();
   }, [renaming]);
 
+  useClampedMenuPosition(contextMenu, menuRef, setContextMenu);
+
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -939,8 +943,12 @@ export const SessionRow = memo(function SessionRow({
         <div
           ref={menuRef}
           data-testid="sidebar-context-menu"
-          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[180px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[180px] overflow-y-auto"
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+            maxHeight: "calc(100vh - 16px)",
+          }}
         >
           <button
             onClick={startRename}
@@ -1374,6 +1382,8 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
     if (renaming) renameRef.current?.select();
   }, [renaming]);
 
+  useClampedMenuPosition(contextMenu, menuRef, setContextMenu);
+
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
@@ -1486,8 +1496,12 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
         <div
           ref={menuRef}
           data-testid="sidebar-group-context-menu"
-          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[190px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[190px] overflow-y-auto"
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+            maxHeight: "calc(100vh - 16px)",
+          }}
         >
           <button
             onClick={() => {
@@ -1854,7 +1868,7 @@ export function WorkspaceSidebar({
             collisionDetection={closestCenter}
             onDragEnd={dragDisabled ? undefined : handleDragEnd}
           >
-            {filteredGroups.map((group) => {
+            {filteredGroups.filter(repoGroupHasLiveWorkspace).map((group) => {
               const showExpanded = q ? true : !group.collapsed;
               const hasActiveChild = group.workspaces.some(
                 (ws) => ws.id === displayedActiveId,

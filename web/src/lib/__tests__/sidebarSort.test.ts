@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it } from "vitest";
-import type { SessionResponse, Workspace } from "../types";
+import type { RepoGroup, SessionResponse, Workspace } from "../types";
 import {
   SIDEBAR_SORT_MODE_KEY,
   compareWorkspacesByLastActivityDesc,
   loadSidebarSortMode,
+  repoGroupHasLiveWorkspace,
   repoGroupLastActivityMs,
   resolveEffectiveSnoozedUntil,
   saveSidebarSortMode,
@@ -582,5 +583,73 @@ describe("loadSidebarSortMode / saveSidebarSortMode", () => {
     saveSidebarSortMode("lastActivity");
     saveSidebarSortMode("manual");
     expect(loadSidebarSortMode()).toBe("manual");
+  });
+});
+
+function repoGroup(id: string, workspaces: Workspace[]): RepoGroup {
+  return {
+    id,
+    repoPath: id,
+    displayName: id,
+    defaultDisplayName: id,
+    alias: null,
+    color: null,
+    remoteOwner: null,
+    workspaces,
+    status: "idle",
+    collapsed: false,
+  };
+}
+
+describe("repoGroupHasLiveWorkspace", () => {
+  it("returns true when at least one workspace is live", () => {
+    const g = repoGroup("repo-a", [
+      workspace("w-live", [session({})]),
+      workspace("w-archived", [
+        session({ id: "s-arch", archived_at: "2026-01-01T00:00:00Z" }),
+      ]),
+    ]);
+    expect(repoGroupHasLiveWorkspace(g)).toBe(true);
+  });
+
+  it("returns false when every workspace is sunk", () => {
+    const g = repoGroup("repo-sunk", [
+      workspace("w-archived", [
+        session({ id: "s1", archived_at: "2026-01-01T00:00:00Z" }),
+      ]),
+      workspace("w-snoozed", [
+        session({ id: "s2", snoozed_until: "2099-01-01T00:00:00Z" }),
+      ]),
+    ]);
+    expect(repoGroupHasLiveWorkspace(g)).toBe(false);
+  });
+
+  it("returns false for an empty workspace list", () => {
+    const g = repoGroup("repo-empty", []);
+    expect(repoGroupHasLiveWorkspace(g)).toBe(false);
+  });
+
+  it("flips back to live when a sunk session is unsnoozed/unarchived", () => {
+    const g = repoGroup("repo-flip", [
+      workspace("w", [
+        session({ id: "s", archived_at: "2026-01-01T00:00:00Z" }),
+      ]),
+    ]);
+    expect(repoGroupHasLiveWorkspace(g)).toBe(false);
+    const revived: RepoGroup = {
+      ...g,
+      workspaces: [workspace("w", [session({ id: "s" })])],
+    };
+    expect(repoGroupHasLiveWorkspace(revived)).toBe(true);
+  });
+
+  it("treats a multi-session workspace with one live session as live", () => {
+    const g = repoGroup("repo-mixed", [
+      workspace("w-mixed", [
+        session({ id: "s-live" }),
+        session({ id: "s-arch", archived_at: "2026-01-01T00:00:00Z" }),
+      ]),
+    ]);
+    expect(repoGroupHasLiveWorkspace(g)).toBe(true);
   });
 });
