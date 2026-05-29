@@ -35,7 +35,12 @@ pub enum HttpError {
     SessionNotFound(String),
     #[error("daemon is read-only (started with --read-only); request refused")]
     ReadOnly,
-    #[error("authentication failed; check AOE_DAEMON_TOKEN or restart `aoe serve`")]
+    // The daemon may reject for several reasons: stale token, missing
+    // passphrase session, device binding mismatch. Pointing at
+    // `AOE_DAEMON_TOKEN` was misleading on `--auth=passphrase` and
+    // `--auth=none` daemons that never had a token in the first
+    // place. See #1525.
+    #[error("daemon rejected the request (401); restart `aoe serve` or check `--auth` mode")]
     Unauthorized,
     #[error("daemon returned HTTP {status}: {body}")]
     Server { status: StatusCode, body: String },
@@ -210,5 +215,24 @@ mod tests {
     fn auth_skips_bearer_when_no_token() {
         let client = HttpClient::new(endpoint("http://127.0.0.1:8080", None)).unwrap();
         assert!(client.endpoint().token.is_none());
+    }
+
+    // Regression test for #1525. The startup toast on a 401 from the
+    // cockpit endpoints folds in `HttpError::Unauthorized`'s Display.
+    // Previously that Display string hard-coded `AOE_DAEMON_TOKEN`,
+    // which made the toast actively misleading on `--auth=passphrase`
+    // and `--auth=none` daemons that never had a token. Pin the new
+    // wording so the env-var hint can't regress back in.
+    #[test]
+    fn unauthorized_display_omits_token_env_var() {
+        let rendered = HttpError::Unauthorized.to_string();
+        assert!(
+            !rendered.contains("AOE_DAEMON_TOKEN"),
+            "Unauthorized message must not pin diagnosis to a token env var that does not exist in passphrase or no-auth mode: {rendered}"
+        );
+        assert!(
+            rendered.contains("401"),
+            "Unauthorized message should still surface the underlying HTTP status: {rendered}"
+        );
     }
 }

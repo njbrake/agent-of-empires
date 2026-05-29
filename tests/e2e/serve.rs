@@ -214,13 +214,17 @@ fn cli_serve_daemon_writes_marker_to_debug_log_not_serve_log() {
 /// branch is locked in CI rather than relying on manual smoke tests.
 ///
 /// Flow:
-///   1. GET `/api/about` without a session  -> 401 `login_required`
-///      (proves the wall actually blocks API traffic).
+///   1. GET `/api/about` from a simulated non-loopback caller (loopback
+///      socket + `X-Forwarded-For: 10.0.0.5`, which `resolve_client_ip`
+///      trusts because the socket itself is loopback) -> 401
+///      `login_required`. Proves the wall still blocks remote API
+///      traffic after the #1525 loopback bypass landed.
 ///   2. POST `/api/login` with the correct passphrase + a fresh
 ///      device-binding secret -> 200 with `Set-Cookie: aoe_session=`.
 ///   3. GET `/api/about` carrying the session cookie + binding header
-///      -> 200, body has `"auth_mode":"passphrase"` (proves both the
-///      wall handoff and the `/api/about` mode-derivation surface).
+///      (no XFF so the caller is loopback) -> 200, body has
+///      `"auth_mode":"passphrase"`. Proves both the wall handoff and
+///      the `/api/about` mode-derivation surface.
 #[test]
 #[serial]
 fn cli_serve_auth_passphrase_login_round_trip() {
@@ -267,9 +271,14 @@ fn cli_serve_auth_passphrase_login_round_trip() {
             .build()
             .map_err(|e| format!("build client: {e}"))?;
 
-        // 1. Unauthenticated GET must come back with 401 + login_required body.
+        // 1. Unauthenticated GET from a simulated remote caller must
+        //    come back with 401 + login_required body. The daemon
+        //    binds loopback, so `resolve_client_ip` trusts XFF; we
+        //    pin a non-loopback last-hop IP so the #1525 loopback
+        //    bypass does not fire.
         let about_unauth = client
             .get(format!("{base}/api/about"))
+            .header("x-forwarded-for", "10.0.0.5")
             .send()
             .await
             .map_err(|e| format!("GET /api/about (unauth): {e}"))?;
@@ -349,6 +358,109 @@ fn cli_serve_auth_passphrase_login_round_trip() {
 
     // Always tear the daemon down before asserting, so a failed assert
     // doesn't leak a process that owns the test port.
+    let _ = h.run_cli(&["serve", "--stop"]);
+
+    if let Err(e) = result {
+        panic!("{e}");
+    }
+}
+
+/// Regression test for #1525. With `--auth=passphrase` the daemon used
+/// to route loopback callers through the passphrase wall, breaking the
+/// local TUI cockpit attach: it had no session cookie + device binding
+/// to present so `/api/sessions/{id}/cockpit/replay` and the cockpit ws
+/// upgrade always 401'd. The fix mirrors the token-auth path's #1168
+/// carve-out and treats loopback as fs-trusted.
+///
+/// Flow:
+///   1. Start `aoe serve --daemon --auth=passphrase`.
+///   2. GET `/api/about` from 127.0.0.1 with no session cookie, no
+///      device binding, no XFF -> 200 with `"auth_mode":"passphrase"`.
+///      Without the bypass this would 401 `login_required`.
+///   3. GET `/api/sessions` from 127.0.0.1 -> 200 (proves the bypass
+///      covers the cockpit REST surface, not just `/api/about`).
+#[test]
+#[serial]
+fn cli_serve_auth_passphrase_loopback_bypass() {
+    let h = TuiTestHarness::new("serve_auth_passphrase_loopback");
+    let port = pick_free_port();
+    let port_s = port.to_string();
+
+    let start = h.run_cli(&[
+        "serve",
+        "--daemon",
+        "--port",
+        &port_s,
+        "--auth",
+        "passphrase",
+        "--passphrase",
+        "e2e-pass",
+    ]);
+    assert!(
+        start.status.success(),
+        "aoe serve --daemon --auth=passphrase failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&start.stdout),
+        String::from_utf8_lossy(&start.stderr),
+    );
+
+    assert!(
+        wait_for_port(port, Duration::from_secs(10)),
+        "daemon never bound port {}",
+        port
+    );
+
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let result: Result<(), String> = rt.block_on(async {
+        let base = format!("http://127.0.0.1:{port}");
+        let client = reqwest::Client::builder()
+            .build()
+            .map_err(|e| format!("build client: {e}"))?;
+
+        // No cookie, no device binding, no XFF: the loopback bypass
+        // (#1525) lets the request through. Pre-fix this would have
+        // returned 401 login_required.
+        let about = client
+            .get(format!("{base}/api/about"))
+            .send()
+            .await
+            .map_err(|e| format!("GET /api/about (loopback bypass): {e}"))?;
+        if !about.status().is_success() {
+            let s = about.status();
+            let b = about.text().await.unwrap_or_default();
+            return Err(format!(
+                "loopback /api/about should 200 under --auth=passphrase, got status={s} body={b}"
+            ));
+        }
+        let body: serde_json::Value = about
+            .json()
+            .await
+            .map_err(|e| format!("decode about body: {e}"))?;
+        if body.get("auth_mode").and_then(|v| v.as_str()) != Some("passphrase") {
+            return Err(format!(
+                "expected auth_mode=passphrase on loopback bypass, got {body}"
+            ));
+        }
+
+        // The cockpit REST surface lives under the same wall, so the
+        // bypass must extend to it. A successful 200 on `/api/sessions`
+        // from loopback without a session is what unblocks the local
+        // TUI cockpit attach in the issue report.
+        let sessions = client
+            .get(format!("{base}/api/sessions"))
+            .send()
+            .await
+            .map_err(|e| format!("GET /api/sessions (loopback bypass): {e}"))?;
+        if !sessions.status().is_success() {
+            let s = sessions.status();
+            let b = sessions.text().await.unwrap_or_default();
+            return Err(format!(
+                "loopback /api/sessions should 200 under --auth=passphrase, got status={s} body={b}"
+            ));
+        }
+
+        Ok(())
+    });
+
     let _ = h.run_cli(&["serve", "--stop"]);
 
     if let Err(e) = result {
