@@ -984,6 +984,20 @@
       ]
     },
     {
+      "id": "cockpit.todo-group-fold",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/components/cockpit/CockpitRuntime.test.ts",
+        "src/components/cockpit/ToolCards.render.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitRuntime.tsx",
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/ToolCards.tsx"
+      ]
+    },
+    {
       "id": "cockpit.context-primer-banner",
       "kind": "vitest",
       "risk": "medium",
