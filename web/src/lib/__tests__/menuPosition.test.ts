@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { clampMenuPosition } from "../menuPosition";
+// @vitest-environment jsdom
+
+import { describe, expect, it, vi } from "vitest";
+import { renderHook } from "@testing-library/react";
+import { useRef } from "react";
+import { clampMenuPosition, useClampedMenuPosition } from "../menuPosition";
 
 describe("clampMenuPosition", () => {
   const VW = 1000;
@@ -90,5 +94,80 @@ describe("clampMenuPosition", () => {
       viewportHeight: VH,
     });
     expect(out).toEqual({ x: 8, y: 8 });
+  });
+});
+
+describe("useClampedMenuPosition", () => {
+  function setupHook(opts: {
+    anchor: { x: number; y: number } | null;
+    menuRect: { width: number; height: number };
+    viewport: { width: number; height: number };
+  }) {
+    const setContextMenu = vi.fn<(next: { x: number; y: number }) => void>();
+    const menu = document.createElement("div");
+    menu.getBoundingClientRect = () =>
+      ({
+        width: opts.menuRect.width,
+        height: opts.menuRect.height,
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: opts.menuRect.width,
+        bottom: opts.menuRect.height,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: opts.viewport.width,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: opts.viewport.height,
+    });
+    const { rerender } = renderHook(
+      ({ ctx }: { ctx: { x: number; y: number } | null }) => {
+        const ref = useRef<HTMLDivElement | null>(menu);
+        useClampedMenuPosition(ctx, ref, setContextMenu);
+      },
+      { initialProps: { ctx: opts.anchor } },
+    );
+    return { setContextMenu, rerender };
+  }
+
+  it("no-ops when the menu fits at the anchor", () => {
+    const { setContextMenu } = setupHook({
+      anchor: { x: 100, y: 100 },
+      menuRect: { width: 180, height: 240 },
+      viewport: { width: 1280, height: 720 },
+    });
+    expect(setContextMenu).not.toHaveBeenCalled();
+  });
+
+  it("flips the menu upward when the anchor overflows the bottom edge", () => {
+    const { setContextMenu } = setupHook({
+      anchor: { x: 100, y: 700 },
+      menuRect: { width: 180, height: 240 },
+      viewport: { width: 1280, height: 720 },
+    });
+    expect(setContextMenu).toHaveBeenCalledWith({ x: 100, y: 472 });
+  });
+
+  it("clamps the menu left when the anchor overflows the right edge", () => {
+    const { setContextMenu } = setupHook({
+      anchor: { x: 1270, y: 100 },
+      menuRect: { width: 180, height: 240 },
+      viewport: { width: 1280, height: 720 },
+    });
+    expect(setContextMenu).toHaveBeenCalledWith({ x: 1092, y: 100 });
+  });
+
+  it("does not call setContextMenu when contextMenu is null", () => {
+    const { setContextMenu } = setupHook({
+      anchor: null,
+      menuRect: { width: 180, height: 240 },
+      viewport: { width: 1280, height: 720 },
+    });
+    expect(setContextMenu).not.toHaveBeenCalled();
   });
 });

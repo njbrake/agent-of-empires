@@ -4,7 +4,6 @@ import {
   useCallback,
   useContext,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -55,7 +54,7 @@ import {
   setSessionSnooze,
 } from "../lib/api";
 import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
-import { clampMenuPosition } from "../lib/menuPosition";
+import { useClampedMenuPosition } from "../lib/menuPosition";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
 import { reportError } from "../lib/toastBus";
 import {
@@ -667,33 +666,7 @@ export const SessionRow = memo(function SessionRow({
     if (renaming) renameRef.current?.select();
   }, [renaming]);
 
-  useLayoutEffect(() => {
-    if (!contextMenu || !menuRef.current) return;
-    const menu = menuRef.current;
-    const clamp = () => {
-      const rect = menu.getBoundingClientRect();
-      const next = clampMenuPosition({
-        x: contextMenu.x,
-        y: contextMenu.y,
-        menuWidth: rect.width,
-        menuHeight: rect.height,
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
-      });
-      if (next.x !== contextMenu.x || next.y !== contextMenu.y) {
-        setContextMenu(next);
-      }
-    };
-    clamp();
-    // Re-clamp when the menu's own size changes after mount: web fonts
-    // loading, icon images decoding, or any deferred layout work can
-    // grow the menu past what the first measurement saw, which would
-    // otherwise leak items off-screen at the bottom edge. See #1601.
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(clamp);
-    ro.observe(menu);
-    return () => ro.disconnect();
-  }, [contextMenu]);
+  useClampedMenuPosition(contextMenu, menuRef, setContextMenu);
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -1409,29 +1382,7 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
     if (renaming) renameRef.current?.select();
   }, [renaming]);
 
-  useLayoutEffect(() => {
-    if (!contextMenu || !menuRef.current) return;
-    const menu = menuRef.current;
-    const clamp = () => {
-      const rect = menu.getBoundingClientRect();
-      const next = clampMenuPosition({
-        x: contextMenu.x,
-        y: contextMenu.y,
-        menuWidth: rect.width,
-        menuHeight: rect.height,
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
-      });
-      if (next.x !== contextMenu.x || next.y !== contextMenu.y) {
-        setContextMenu(next);
-      }
-    };
-    clamp();
-    if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(clamp);
-    ro.observe(menu);
-    return () => ro.disconnect();
-  }, [contextMenu]);
+  useClampedMenuPosition(contextMenu, menuRef, setContextMenu);
 
   useEffect(() => {
     if (!contextMenu) return;
