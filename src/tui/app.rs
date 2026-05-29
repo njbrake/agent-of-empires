@@ -511,6 +511,7 @@ impl App {
         let mut last_disk_refresh = std::time::Instant::now();
         let mut last_spinner_redraw = std::time::Instant::now();
         let mut last_heartbeat = std::time::Instant::now();
+        let mut last_presence_refresh = std::time::Instant::now();
         // Throttle for how often the periodic block re-reads settings;
         // without this, the inner guards would re-fire on every loop
         // iteration once any time has passed, hitting the config file at
@@ -521,10 +522,21 @@ impl App {
         // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
         const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(120);
         const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+        // How often to recount live TUIs for the footer indicator. Cheap dir
+        // listing (a handful of entries), so a tight-ish cadence keeps the
+        // "another instance appeared/left" signal responsive without disk I/O
+        // on the hot render path.
+        const PRESENCE_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+        // A presence file counts as live while its mtime is within this window.
+        // Larger than HEARTBEAT_INTERVAL so a couple of missed beats (busy loop,
+        // brief stall) don't drop an instance; matches the push consumer.
+        const PRESENCE_FRESH_WINDOW: Duration = Duration::from_secs(30);
 
         // Signal that the TUI is active so the web push consumer can
-        // suppress notifications while the user is watching the dashboard.
+        // suppress notifications while the user is watching the dashboard, and
+        // so other TUIs can count this instance.
         crate::session::write_tui_heartbeat();
+        self.home.active_tui_count = crate::session::count_active_tuis(PRESENCE_FRESH_WINDOW);
 
         loop {
             // Force full redraw if needed (e.g., after returning from tmux).
@@ -1060,6 +1072,15 @@ impl App {
             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
                 crate::session::write_tui_heartbeat();
                 last_heartbeat = std::time::Instant::now();
+            }
+
+            if last_presence_refresh.elapsed() >= PRESENCE_REFRESH_INTERVAL {
+                last_presence_refresh = std::time::Instant::now();
+                let count = crate::session::count_active_tuis(PRESENCE_FRESH_WINDOW);
+                if count != self.home.active_tui_count {
+                    self.home.active_tui_count = count;
+                    refresh_needed = true;
+                }
             }
 
             // Periodic update re-check (#1471). The startup spawn only fires

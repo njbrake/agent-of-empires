@@ -454,42 +454,77 @@ pub fn collect_startup_config_warnings(profile: &str) -> Option<String> {
     }
 }
 
-// ── TUI heartbeat ──────────────────────────────────────────────────────────
+// ── TUI presence ────────────────────────────────────────────────────────────
+//
+// Each running TUI process drops a `<pid>` file under `tui-presence/` and
+// refreshes its mtime on the heartbeat tick. This lets us (a) tell the push
+// consumer whether *any* TUI is watching, and (b) count how many TUIs are
+// alive so the footer can surface "another instance is watching" when two
+// `aoe` TUIs run at once (the launcher TUI isn't tmux-backed, so there's no
+// tmux client list to read). A presence file is considered live while its
+// mtime is fresh; stale ones (crash without cleanup) are swept on read.
 
-const TUI_HEARTBEAT_FILE: &str = "tui.active";
+const TUI_PRESENCE_DIR: &str = "tui-presence";
 
-/// Write (or touch) the TUI heartbeat file so the push consumer knows the
-/// TUI is currently running. Called periodically from the TUI event loop.
+fn presence_dir() -> Option<std::path::PathBuf> {
+    get_app_dir().ok().map(|d| d.join(TUI_PRESENCE_DIR))
+}
+
+fn own_presence_file() -> Option<std::path::PathBuf> {
+    presence_dir().map(|d| d.join(std::process::id().to_string()))
+}
+
+/// Write (or touch) this process's presence file so the push consumer knows
+/// a TUI is running and other TUIs can count us. Called periodically from the
+/// TUI event loop.
 pub fn write_tui_heartbeat() {
-    if let Ok(dir) = get_app_dir() {
-        let _ = fs::write(dir.join(TUI_HEARTBEAT_FILE), b"");
+    if let Some(dir) = presence_dir() {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join(std::process::id().to_string()), b"");
     }
 }
 
-/// Remove the heartbeat file on TUI exit.
+/// Remove this process's presence file on TUI exit.
 pub fn clear_tui_heartbeat() {
-    if let Ok(dir) = get_app_dir() {
-        let _ = fs::remove_file(dir.join(TUI_HEARTBEAT_FILE));
+    if let Some(file) = own_presence_file() {
+        let _ = fs::remove_file(file);
     }
 }
 
-/// Returns true if the TUI heartbeat file was modified within `threshold`.
+/// Count TUI presence files whose mtime is fresh within `threshold`, sweeping
+/// any stale entries left behind by crashed processes. Returns the number of
+/// live TUIs (including this process, if its file is fresh).
+pub fn count_active_tuis(threshold: Duration) -> usize {
+    let dir = match presence_dir() {
+        Some(d) => d,
+        None => return 0,
+    };
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let mut live = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let fresh = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|t| t.elapsed().unwrap_or(Duration::MAX) < threshold)
+            .unwrap_or(false);
+        if fresh {
+            live += 1;
+        } else {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    live
+}
+
+/// Returns true if any TUI presence file was modified within `threshold`.
 /// Used by the push consumer to suppress notifications when the user is
-/// actively watching the TUI.
+/// actively watching a TUI.
 pub fn is_tui_active(threshold: Duration) -> bool {
-    let dir = match get_app_dir() {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-    let meta = match fs::metadata(dir.join(TUI_HEARTBEAT_FILE)) {
-        Ok(m) => m,
-        Err(_) => return false,
-    };
-    let modified = match meta.modified() {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
-    modified.elapsed().unwrap_or(Duration::MAX) < threshold
+    count_active_tuis(threshold) > 0
 }
 
 #[cfg(test)]
@@ -511,6 +546,34 @@ mod tests {
         let dir = temp_home.path().join(APP_DIR_NAME_OTHER);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_tui_presence_counts_and_sweeps() {
+        let temp = isolate_app_dir();
+        let pdir = app_dir(&temp).join(TUI_PRESENCE_DIR);
+
+        // Our own heartbeat counts as one live TUI.
+        write_tui_heartbeat();
+        assert_eq!(count_active_tuis(Duration::from_secs(30)), 1);
+        assert!(is_tui_active(Duration::from_secs(30)));
+
+        // A second instance's presence file bumps the count to two.
+        fs::write(pdir.join("999999"), b"").unwrap();
+        assert_eq!(count_active_tuis(Duration::from_secs(30)), 2);
+
+        // A zero threshold makes every file stale; they're swept and the
+        // directory is left empty.
+        assert_eq!(count_active_tuis(Duration::ZERO), 0);
+        assert!(!is_tui_active(Duration::from_secs(30)));
+        assert_eq!(fs::read_dir(&pdir).unwrap().count(), 0);
+
+        // Exit cleanup removes only our own file.
+        write_tui_heartbeat();
+        fs::write(pdir.join("999999"), b"").unwrap();
+        clear_tui_heartbeat();
+        assert_eq!(count_active_tuis(Duration::from_secs(30)), 1);
     }
 
     #[test]

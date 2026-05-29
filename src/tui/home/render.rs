@@ -2291,6 +2291,21 @@ impl HomeView {
             }
         }
 
+        // Other-TUI indicator: shown only when more than one `aoe` TUI is
+        // alive. Two TUIs watching the same agent sessions clash over pane
+        // sizes (tmux reflows to the smallest attached client), so surface the
+        // count as a heads-up. The value is recomputed on a throttle in the
+        // app loop, not per frame.
+        if self.active_tui_count > 1 {
+            groups.push((
+                0,
+                vec![Span::styled(
+                    format!(" \u{25C9} {} watching ", self.active_tui_count),
+                    Style::default().fg(theme.accent).bold(),
+                )],
+            ));
+        }
+
         // Pending-paste indicator: text was captured at the home view but
         // couldn't be routed yet (no runnable session selected). Surface a
         // high-priority hint so the user knows the paste/dictation didn't

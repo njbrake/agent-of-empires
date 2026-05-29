@@ -555,6 +555,12 @@ pub struct HomeView {
     // dictation / stray keystrokes triggering destructive actions).
     pub(super) strict_hotkeys: bool,
 
+    // Number of live `aoe` TUI processes (including this one), refreshed on a
+    // throttle from the app loop. The footer surfaces it when >1 so the user
+    // knows another instance is attached (the two clash over agent pane sizes
+    // since tmux reflows to the smallest attached client).
+    pub(super) active_tui_count: usize,
+
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
     /// Flag to indicate we're confirming settings close (unsaved changes)
@@ -826,6 +832,7 @@ impl HomeView {
             status_hook_config,
             status_hook_configs,
             strict_hotkeys,
+            active_tui_count: 1,
             idle_decay_window,
             settings_view: None,
             settings_close_confirm: false,
