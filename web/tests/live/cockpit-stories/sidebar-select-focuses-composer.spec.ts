@@ -63,3 +63,74 @@ base(
     }
   },
 );
+
+base(
+  "coarse pointer: selecting a cockpit session does not focus the composer",
+  async ({ page }, testInfo) => {
+    const serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "story-focus-composer-coarse" }),
+    });
+
+    try {
+      // Chromium emulation does not reliably flip the pointer media
+      // queries, so force a touch-only profile: `(pointer: coarse)` matches
+      // and `(any-pointer: fine)` does not. This drives both production
+      // gates, `useIsCoarsePointer()` (suppresses the select dispatch) and
+      // the composer's `detectMobileInput()` (disables its mount autofocus,
+      // #1178). Every other query passes through to the real matchMedia.
+      await page.addInitScript(() => {
+        const orig = window.matchMedia.bind(window);
+        const forced: Record<string, boolean> = {
+          "(pointer: coarse)": true,
+          "(any-pointer: fine)": false,
+        };
+        window.matchMedia = (query: string) => {
+          if (query in forced) {
+            return {
+              matches: forced[query],
+              media: query,
+              onchange: null,
+              addEventListener: () => {},
+              removeEventListener: () => {},
+              addListener: () => {},
+              removeListener: () => {},
+              dispatchEvent: () => false,
+            } as MediaQueryList;
+          }
+          return orig(query);
+        };
+      });
+
+      const sessions = await listSessions(serve.baseUrl);
+      const seeded = sessions.find(
+        (s) => s.title === "story-focus-composer-coarse",
+      );
+      if (!seeded) {
+        throw new Error("seeded session 'story-focus-composer-coarse' missing");
+      }
+      await enableCockpitAndWait(serve.baseUrl, seeded.id);
+
+      await page.goto(serve.baseUrl);
+      const row = page
+        .locator('[data-testid="sidebar-session-row"]')
+        .first();
+      await expect(row).toBeVisible({ timeout: 10_000 });
+
+      await row.click();
+      await waitForCockpitView(page);
+      const composer = page.getByRole("textbox", {
+        name: /Send a message|Queue a follow-up/i,
+      });
+      // Give any stray focus dispatch a beat to land, then assert the
+      // composer never took focus.
+      await page.waitForTimeout(1_000);
+      await expect(composer).not.toBeFocused();
+    } finally {
+      await serve.stop();
+    }
+  },
+);
