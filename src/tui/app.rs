@@ -209,7 +209,7 @@ impl App {
             // changelog so the warning is what the user sees first, and avoid
             // overwriting a malformed config.toml with defaults via save_config.
         } else if !config.app_state.has_seen_welcome {
-            home.show_welcome();
+            home.show_intro(theme_name);
             config.app_state.has_seen_welcome = true;
             config.app_state.last_seen_version = Some(current_version);
             save_config(&config)?;
@@ -403,8 +403,8 @@ impl App {
         // wrap estimation under-counts when Paragraph word-wraps mid-line.
         let height = ((visual_lines as u16).saturating_add(7)).clamp(9, 35);
         // Warnings preempt onboarding dialogs so the user sees the problem
-        // before the welcome screen.
-        self.home.welcome_dialog = None;
+        // before the intro walkthrough.
+        self.home.intro_dialog = None;
         self.home.changelog_dialog = None;
         tracing::info!(target: "tui.dialog", dialog = "warning", "opening warning dialog");
         self.home.info_dialog =
@@ -437,6 +437,11 @@ impl App {
     ) -> Result<()> {
         // Initial render
         terminal.clear()?;
+        // Sync mouse capture before the first paint so any onboarding
+        // surface that wants native drag-to-select (intro Welcome page,
+        // changelog, info dialog) gets capture turned off on frame 1.
+        // Otherwise the user would have to press a key first.
+        self.sync_mouse_capture(terminal)?;
         self.draw(terminal)?;
 
         // Refresh tmux session cache
@@ -727,6 +732,13 @@ impl App {
                                     // leftover preview highlight so it doesn't
                                     // linger behind / through the dialog.
                                     let _ = self.home.clear_preview_selection();
+                                    // Intro dialog can queue a live theme
+                                    // preview or a final pick on click; apply
+                                    // it before redrawing so the next frame
+                                    // already reflects the choice.
+                                    if let Some(name) = self.home.take_pending_intro_theme() {
+                                        self.set_theme(&name);
+                                    }
                                     self.sync_mouse_capture(terminal)?;
                                     self.draw(terminal)?;
                                     None

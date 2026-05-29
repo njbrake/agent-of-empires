@@ -32,10 +32,10 @@ use super::deletion_poller::DeletionPoller;
 use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
-    GroupPickerDialog, HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData,
-    NewSessionDialog, NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog,
-    RestartDialog, SnoozeDurationDialog, SortPickerDialog, UnifiedDeleteDialog,
-    UpdateConfirmDialog, WelcomeDialog,
+    GroupPickerDialog, HookTrustDialog, HooksInstallDialog, InfoDialog, IntroDialog,
+    NewSessionData, NewSessionDialog, NoAgentsDialog, ProfilePickerDialog, ProjectsDialog,
+    RenameDialog, RestartDialog, SnoozeDurationDialog, SortPickerDialog, UnifiedDeleteDialog,
+    UpdateConfirmDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -367,7 +367,12 @@ pub struct HomeView {
     pub(super) hooks_install_dialog: Option<HooksInstallDialog>,
     /// Session data pending agent hooks acknowledgment
     pub(super) pending_hooks_install_data: Option<NewSessionData>,
-    pub(super) welcome_dialog: Option<WelcomeDialog>,
+    pub(super) intro_dialog: Option<IntroDialog>,
+    /// Theme name queued by a click on the intro dialog (live preview or
+    /// final pick). Drained by the `App` mouse handler after
+    /// `handle_dialog_click` so the click path can apply the theme without
+    /// returning an Action.
+    pub(super) pending_intro_theme: Option<String>,
     pub(super) no_agents_dialog: Option<NoAgentsDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
@@ -734,7 +739,8 @@ impl HomeView {
             pending_hook_trust_data: None,
             hooks_install_dialog: None,
             pending_hooks_install_data: None,
-            welcome_dialog: None,
+            intro_dialog: None,
+            pending_intro_theme: None,
             no_agents_dialog: None,
             changelog_dialog: None,
             info_dialog: None,
@@ -2039,7 +2045,13 @@ impl HomeView {
         #[cfg(not(feature = "serve"))]
         let serve_open = false;
 
-        serve_open || self.info_dialog.is_some() || self.changelog_dialog.is_some()
+        serve_open
+            || self.info_dialog.is_some()
+            || self.changelog_dialog.is_some()
+            || self
+                .intro_dialog
+                .as_ref()
+                .is_some_and(|d| d.wants_text_selection())
     }
 
     /// Same membership as `has_dialog()` minus live-send. Two callers:
@@ -2071,7 +2083,7 @@ impl HomeView {
             || self.restart_dialog.is_some()
             || self.hook_trust_dialog.is_some()
             || self.hooks_install_dialog.is_some()
-            || self.welcome_dialog.is_some()
+            || self.intro_dialog.is_some()
             || self.no_agents_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
@@ -2104,7 +2116,7 @@ impl HomeView {
             || self.restart_dialog.is_some()
             || self.hook_trust_dialog.is_some()
             || self.hooks_install_dialog.is_some()
-            || self.welcome_dialog.is_some()
+            || self.intro_dialog.is_some()
             || self.no_agents_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
@@ -2203,9 +2215,9 @@ impl HomeView {
         self.update_selected();
     }
 
-    pub fn show_welcome(&mut self) {
-        tracing::info!(target: "tui.dialog", dialog = "welcome", "opening");
-        self.welcome_dialog = Some(WelcomeDialog::new());
+    pub fn show_intro(&mut self, current_theme: &str) {
+        tracing::info!(target: "tui.dialog", dialog = "intro", "opening");
+        self.intro_dialog = Some(IntroDialog::new(current_theme));
     }
 
     pub fn show_no_agents(&mut self) {

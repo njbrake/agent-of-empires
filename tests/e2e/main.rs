@@ -20,6 +20,7 @@ mod harness;
 mod cli;
 mod command_palette;
 mod errors;
+mod intro;
 mod logs;
 mod new_session;
 mod profile_picker;
