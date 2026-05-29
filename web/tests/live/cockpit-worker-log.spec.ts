@@ -21,17 +21,20 @@ interface WorkerLogResponse {
 }
 
 base("worker-log returns exists=false before the runner writes anything", async ({}, testInfo) => {
+  const title = "worker-log-empty";
   const serve = await spawnAoeServe({
     authMode: "none",
     cockpit: true,
     workerIndex: testInfo.workerIndex,
     parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "worker-log-empty" }),
+    seedFn: seedSessionViaAoeAdd({ title }),
   });
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === title);
+    if (!seeded) throw new Error(`seeded session '${title}' missing`);
+    const sessionId = seeded.id;
 
     const res = await fetch(
       `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/worker-log?tail=200`,
@@ -49,17 +52,20 @@ base("worker-log returns exists=false before the runner writes anything", async 
 });
 
 base("worker-log returns the runner tail after cockpit spawns", async ({}, testInfo) => {
+  const title = "worker-log-populated";
   const serve = await spawnAoeServe({
     authMode: "none",
     cockpit: true,
     workerIndex: testInfo.workerIndex,
     parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "worker-log-populated" }),
+    seedFn: seedSessionViaAoeAdd({ title }),
   });
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === title);
+    if (!seeded) throw new Error(`seeded session '${title}' missing`);
+    const sessionId = seeded.id;
 
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 
@@ -88,17 +94,20 @@ base("worker-log returns the runner tail after cockpit spawns", async ({}, testI
 });
 
 base("worker-log clamps an oversized tail request to the server max", async ({}, testInfo) => {
+  const title = "worker-log-clamp";
   const serve = await spawnAoeServe({
     authMode: "none",
     cockpit: true,
     workerIndex: testInfo.workerIndex,
     parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "worker-log-clamp" }),
+    seedFn: seedSessionViaAoeAdd({ title }),
   });
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === title);
+    if (!seeded) throw new Error(`seeded session '${title}' missing`);
+    const sessionId = seeded.id;
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     const res = await fetch(
