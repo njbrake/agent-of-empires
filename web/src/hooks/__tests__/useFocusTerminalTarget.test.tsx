@@ -57,6 +57,27 @@ describe("useFocusTerminalTarget", () => {
     }
   });
 
+  it("ignores a focus event with no detail", () => {
+    const el = document.createElement("textarea");
+    document.body.appendChild(el);
+    try {
+      renderWithElement("composer", el);
+      // A bare event (detail undefined) must not throw or focus.
+      window.dispatchEvent(new CustomEvent("aoe:focus-terminal"));
+      expect(document.activeElement).not.toBe(el);
+    } finally {
+      el.remove();
+    }
+  });
+
+  it("consuming a latch with no element present is a no-op", () => {
+    setPendingTerminalFocus("composer");
+    // ref.current is null on mount: the latch is consumed but focus() is
+    // skipped via optional chaining, with nothing left dangling.
+    renderWithElement("composer", null);
+    expect(consumePendingTerminalFocus("composer")).toBe(false);
+  });
+
   it("stashes the latch when the element is not present at event time", () => {
     renderWithElement("composer", null);
     dispatchFocusTerminal("composer");

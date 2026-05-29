@@ -36,17 +36,24 @@ afterEach(() => {
 describe("requestSessionInputFocus", () => {
   it("does nothing on a coarse pointer", () => {
     const done = captureDispatch();
-    requestSessionInputFocus(true, true);
-    requestSessionInputFocus(false, true);
+    requestSessionInputFocus({ cockpit_mode: true }, true);
+    requestSessionInputFocus({ cockpit_mode: false }, true);
     const events = done();
     expect(events).toHaveLength(0);
     expect(consumePendingTerminalFocus("composer")).toBe(false);
     expect(consumePendingTerminalFocus("agent")).toBe(false);
   });
 
+  it("does nothing when there is no session", () => {
+    const done = captureDispatch();
+    requestSessionInputFocus(undefined, false);
+    expect(done()).toHaveLength(0);
+    expect(consumePendingTerminalFocus("agent")).toBe(false);
+  });
+
   it("targets the composer for cockpit sessions on a fine pointer", () => {
     const done = captureDispatch();
-    requestSessionInputFocus(true, false);
+    requestSessionInputFocus({ cockpit_mode: true }, false);
     const events = done();
     expect(events).toEqual([{ target: "composer" }]);
     // Latch was set for the not-yet-mounted case.
@@ -56,7 +63,7 @@ describe("requestSessionInputFocus", () => {
 
   it("targets the agent terminal for non-cockpit sessions on a fine pointer", () => {
     const done = captureDispatch();
-    requestSessionInputFocus(false, false);
+    requestSessionInputFocus({ cockpit_mode: false }, false);
     const events = done();
     expect(events).toEqual([{ target: "agent" }]);
     expect(consumePendingTerminalFocus("agent")).toBe(true);

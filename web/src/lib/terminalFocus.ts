@@ -40,14 +40,16 @@ export function consumePendingTerminalFocus(
 // composer in cockpit mode, the xterm textarea otherwise. Sets the pending
 // latch (consumed on mount when the target is still resolving) and dispatches
 // (handled immediately when the target is already mounted, e.g. re-selecting
-// the active session). A no-op on coarse pointers so a session swap never
-// pops the soft keyboard (#1178).
+// the active session). No-ops when there is no session or on coarse pointers,
+// so a session swap never pops the soft keyboard (#1178).
 export function requestSessionInputFocus(
-  cockpitMode: boolean,
+  session: { cockpit_mode?: boolean } | undefined,
   isCoarse: boolean,
 ): void {
-  if (isCoarse) return;
-  const target: TerminalFocusTarget = cockpitMode ? "composer" : "agent";
+  if (!session || isCoarse) return;
+  const target: TerminalFocusTarget = session.cockpit_mode
+    ? "composer"
+    : "agent";
   setPendingTerminalFocus(target);
   dispatchFocusTerminal(target);
 }

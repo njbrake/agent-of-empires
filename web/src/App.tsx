@@ -354,10 +354,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   // requestSessionInputFocus for the dispatch/latch and coarse-pointer rules.
   const isCoarse = useIsCoarsePointer();
   const focusAgentInput = useCallback(
-    (session: SessionResponse | undefined) => {
-      if (!session) return;
-      requestSessionInputFocus(!!session.cockpit_mode, isCoarse);
-    },
+    (session: SessionResponse | undefined) =>
+      requestSessionInputFocus(session, isCoarse),
     [isCoarse],
   );
 
