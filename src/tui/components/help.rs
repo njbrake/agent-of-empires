@@ -393,6 +393,36 @@ mod tests {
     }
 
     #[test]
+    fn help_shows_corrected_labels_for_relocated_actions() {
+        // The six strict-mode relocations must surface with their corrected
+        // chords in the `?` overlay, not the pre-fix labels. (bindings.rs
+        // `labels_match_mode` pins `label()`; this pins that the overlay
+        // actually renders those labels in both modes.)
+        // Format: (desc substring, non-strict key, strict key).
+        let cases = [
+            ("Diff view", "D", "Ctrl+D"),
+            ("Serve", "R", "Ctrl+R"),
+            ("Attach to terminal", "T", "Ctrl+T"),
+            ("New from selection", "N", "Ctrl+N"),
+            ("Projects", "p", "P"),
+            ("Profiles", "P", "Ctrl+P"),
+        ];
+        for (desc_sub, non_strict_key, strict_key) in cases {
+            for (strict, expected_key) in [(false, non_strict_key), (true, strict_key)] {
+                let all = shortcuts(strict, false);
+                let found = all.iter().any(|(_, keys)| {
+                    keys.iter()
+                        .any(|(k, desc)| k == expected_key && desc.contains(desc_sub))
+                });
+                assert!(
+                    found,
+                    "help overlay (strict={strict}) should list '{expected_key}' for '{desc_sub}'"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn help_lists_snooze() {
         // PR #1084 introduced the snooze primitive (H in strict mode, h in
         // non-strict) but did not advertise it in the help overlay. Lock the
