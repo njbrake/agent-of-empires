@@ -1923,10 +1923,9 @@ fn test_o_key_opens_sort_picker() {
 #[test]
 #[serial]
 fn test_shift_o_opens_sort_picker_in_strict_mode() {
-    // Regression guard: normalize_strict_key maps Shift+O → bare 'o'. The main
-    // match must handle 'o' without an `if !self.strict_hotkeys` guard,
-    // otherwise the key falls through to capture_letter_to_compose and opens
-    // the message dialog instead of the sort picker.
+    // Regression guard: the SortPicker binding lists Shift+O (Char('O')) for
+    // strict mode, so it must resolve to the sort picker rather than falling
+    // through to the typing-guard (capture_letter_to_compose).
     use crate::session::config::SortOrder;
 
     let mut env = create_test_env_with_mixed_sessions();
@@ -2167,12 +2166,9 @@ fn test_non_strict_w_jumps_to_next_waiting_in_attention_sort() {
 #[test]
 #[serial]
 fn test_strict_mode_ctrl_g_opens_group_picker() {
-    // Regression guard: the help overlay lists "Ctrl+G" for Group by in
-    // strict mode. Previously normalize_strict_key stripped CTRL and routed
-    // the result into the typing-guard catch-all, so the advertised hotkey
-    // was a no-op (the bare 'g' landed in pending_paste). Ctrl+G must now
-    // keep its modifier and open the group picker, while bare 'g' continues
-    // to fall into the typing-guard catch-all.
+    // Regression guard: the GroupBy binding is Ctrl+G in strict mode. It must
+    // open the group picker, while bare 'g' continues to fall into the
+    // typing-guard catch-all (it lands in pending_paste).
     use crate::session::config::GroupByMode;
 
     let mut env = create_test_env_with_sessions(3);
@@ -2278,6 +2274,141 @@ fn test_strict_mode_ctrl_t_and_ctrl_n_reach_secondary_actions() {
     assert!(
         env.view.new_dialog.is_some(),
         "Ctrl+N in strict mode must open the new-from-selection dialog"
+    );
+}
+
+#[test]
+#[serial]
+fn test_strict_mode_ctrl_d_r_p_reach_secondary_actions() {
+    // Regression guard (2026-05-29): normalize_strict_key used to fold
+    // Ctrl+D/Ctrl+R/Ctrl+P to bare 'D'/'R'/'P', which collided with the
+    // Shift+letter primary arms. In strict mode Shift+D=delete, Shift+R=rename,
+    // Shift+P=profiles, so the folds made Ctrl+D fire delete (not diff), Ctrl+R
+    // fire rename (not serve), and orphaned the diff/serve/projects arms. All
+    // three Ctrl chords must keep CTRL so their secondary arms fire.
+    let mut env = create_test_env_with_sessions(1);
+    env.view.strict_hotkeys = true;
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    // Shift+D opens the delete confirmation (primary uppercase action).
+    assert!(env.view.unified_delete_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT), None);
+    assert!(
+        env.view.unified_delete_dialog.is_some(),
+        "Shift+D must open the delete dialog"
+    );
+    env.view.unified_delete_dialog = None;
+
+    // Ctrl+D routes to the diff arm, NOT delete. The test session's path is not
+    // a real git worktree so the diff view may fail to open (info dialog) or
+    // open empty; either way the regression is that Ctrl+D must never reach
+    // open_delete_for_selected. Clear any takeover the diff arm leaves behind so
+    // it doesn't swallow the next keypress.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.unified_delete_dialog.is_none(),
+        "Ctrl+D in strict mode must NOT open the delete dialog (it targets diff)"
+    );
+    env.view.diff_view = None;
+    env.view.info_dialog = None;
+
+    // Shift+R opens the rename dialog (primary uppercase action).
+    assert!(env.view.rename_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT), None);
+    assert!(
+        env.view.rename_dialog.is_some(),
+        "Shift+R must open the rename dialog"
+    );
+    env.view.rename_dialog = None;
+
+    // Ctrl+R routes to the serve arm, NOT rename.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.rename_dialog.is_none(),
+        "Ctrl+R in strict mode must NOT open the rename dialog (it targets serve)"
+    );
+    env.view.info_dialog = None;
+    #[cfg(feature = "serve")]
+    {
+        env.view.serve_view = None;
+    }
+
+    // P follows the same relocation rule as D/R/T/N: the bare-`p` (primary)
+    // action -> Shift+P, the Shift+P (secondary) action -> Ctrl+P. So in strict
+    // mode Shift+P opens projects and Ctrl+P opens profiles.
+    assert!(env.view.projects_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT), None);
+    assert!(
+        env.view.projects_dialog.is_some(),
+        "Shift+P in strict mode must open the projects dialog"
+    );
+    assert!(
+        env.view.profile_picker_dialog.is_none(),
+        "Shift+P must not open the profile picker"
+    );
+    env.view.projects_dialog = None;
+
+    // Ctrl+P opens the profile picker, NOT projects.
+    assert!(env.view.profile_picker_dialog.is_none());
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.profile_picker_dialog.is_some(),
+        "Ctrl+P in strict mode must open the profile picker"
+    );
+    assert!(
+        env.view.projects_dialog.is_none(),
+        "Ctrl+P must not open the projects dialog"
+    );
+}
+
+#[test]
+#[serial]
+fn test_command_palette_diff_invokes_diff_in_strict_mode() {
+    // Regression guard for the palette half of the strict-mode bug: the palette
+    // used to synthesize a keypress, so picking "Open diff view" in strict mode
+    // routed through Shift+D and fired DELETE instead. Palette entries now carry
+    // an ActionId and run the action directly, so the mode can't matter.
+    let mut env = create_test_env_with_sessions(1);
+    env.view.strict_hotkeys = true;
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    // Open the palette and filter to the diff command.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.command_palette.is_some(),
+        "Ctrl+K opens the palette"
+    );
+    for ch in "diff view".chars() {
+        env.view.handle_key(key(KeyCode::Char(ch)), None);
+    }
+    env.view.handle_key(key(KeyCode::Enter), None);
+
+    // The diff action ran (opened the diff view, or raised an info dialog if the
+    // temp path isn't a real git repo). Crucially, it did NOT delete.
+    assert!(
+        env.view.unified_delete_dialog.is_none(),
+        "palette 'diff' in strict mode must not open the delete dialog"
+    );
+    assert!(
+        env.view.diff_view.is_some() || env.view.info_dialog.is_some(),
+        "palette 'diff' in strict mode must attempt to open the diff view"
     );
 }
 

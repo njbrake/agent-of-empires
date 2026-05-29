@@ -5,6 +5,7 @@ use ratatui::prelude::Position;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
+use super::bindings::{self, ActionId};
 use super::{live_send, DragKind, HomeView, PreviewSelection, TerminalMode, ViewMode};
 use crate::session::config::{load_config, save_config, GroupByMode, SortOrder};
 use crate::session::{list_profiles, repo_config, resolve_config_or_warn, Item, Status};
@@ -1736,39 +1737,28 @@ impl HomeView {
             return None;
         }
 
-        // In strict_hotkeys mode, normalize shifted/ctrl keys to their standard
-        // equivalents so the match block below doesn't need duplication.
-        //
-        // Mapping (strict mode only):
-        //   Shift+letter actions -> pass through unchanged: each has its own
-        //     `Char('UPPER') if self.strict_hotkeys` arm in the main match.
-        //   Ctrl+letter relocated bindings -> uppercase: Ctrl+D->D, Ctrl+R->R, Ctrl+P->P
-        //   Ctrl+T, Ctrl+N, Ctrl+G, Ctrl+O -> pass through with CTRL intact.
-        //     Ctrl+T/Ctrl+N have distinct secondary arms that would be
-        //     orphaned if folded onto Shift+T/Shift+N; Ctrl+G/Ctrl+O match
-        //     with their modifier and stripping CTRL would collide with the
-        //     bare-lowercase typing-guard.
-        //   Bare lowercase action letters -> blocked (return None)
-        let key = if self.strict_hotkeys {
-            self.normalize_strict_key(key)
-        } else {
-            Some(key)
-        };
-        let key = key?;
-
+        // Strict-mode relocation is handled inside dispatch_action_key via the
+        // shared bindings registry (resolve picks the right chord per mode and
+        // a typing-guard catches unbound bare lowercase), so no key rewriting
+        // happens here.
         self.dispatch_action_key(key, update_info)
     }
 
-    /// Run the main action dispatch (the giant match block) on a key.
-    /// Extracted from `handle_key` so the command palette can synthesize
-    /// keys and run them through the same code path without re-entering
-    /// dialog routing or strict-mode normalization.
+    /// Run the main action dispatch on a key.
+    ///
+    /// Extracted from `handle_key` so the command palette can route through the
+    /// same code path. Relocatable action keys are resolved through the shared
+    /// [`bindings`](super::bindings) registry, so the dispatcher, palette, and
+    /// help overlay can't drift on which chord (or mode) an action binds to.
+    /// Pure navigation/structural keys, which never relocate between modes,
+    /// stay as explicit arms below and are tried after the registry. The
+    /// strict-mode typing-guard is the final fallback.
     fn dispatch_action_key(
         &mut self,
         key: KeyEvent,
         update_info: Option<&crate::update::UpdateInfo>,
     ) -> Option<Action> {
-        // Dynamic tool session hotkeys (checked before static match block)
+        // Dynamic tool session hotkeys (checked before everything else).
         if let Some(tool_name) = self.match_tool_hotkey(&key) {
             if matches!(&self.view_mode, ViewMode::Tool(current) if current == &tool_name) {
                 self.view_mode = ViewMode::Agent;
@@ -1780,605 +1770,64 @@ impl HomeView {
             return None;
         }
 
-        // Normal mode keybindings
+        // Context-dependent Esc handling (not a relocatable action).
         match key.code {
             KeyCode::Esc if !self.search_matches.is_empty() => {
                 self.search_matches.clear();
                 self.search_match_index = 0;
                 self.search_query = Input::default();
+                return None;
             }
             KeyCode::Esc if matches!(self.view_mode, ViewMode::Tool(_)) => {
                 self.view_mode = ViewMode::Agent;
+                return None;
             }
-            KeyCode::Char('q') => return Some(Action::Quit),
-            // `h` / `H` (snooze) and `f` / `F` (favorite) are gated to
-            // Attention sort. Snooze and favorite are triage primitives; they
-            // only have a visible effect (and a sort impact) in Attention mode.
-            // Outside Attention, mutating these flags would silently change
-            // persisted state with no on-screen feedback, so we ignore the
-            // press entirely (`h` then falls through to the group-collapse
-            // binding). Snooze used to also live on `w` / `W`, which shadowed
-            // the jump-to-next-waiting binding below in Attention sort; #1524
-            // moved it off so `w` is navigation again.
-            KeyCode::Char('h')
-                if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
-            {
-                if let Err(e) = self.toggle_snooze_at_cursor() {
-                    tracing::error!("toggle_snooze_at_cursor failed: {}", e);
-                }
-            }
-            KeyCode::Char('H')
-                if self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
-            {
-                if let Err(e) = self.toggle_snooze_at_cursor() {
-                    tracing::error!("toggle_snooze_at_cursor failed: {}", e);
-                }
-            }
-            KeyCode::Char('f')
-                if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
-            {
-                if let Err(e) = self.toggle_favorite_at_cursor() {
-                    tracing::error!("toggle_favorite_at_cursor failed: {}", e);
-                }
-            }
-            KeyCode::Char('F')
-                if self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
-            {
-                if let Err(e) = self.toggle_favorite_at_cursor() {
-                    tracing::error!("toggle_favorite_at_cursor failed: {}", e);
-                }
-            }
-            // `z` / `Z`: toggle archive on the cursor's session. Archive is
-            // the "park this, I'm done with it" sink. The row drops to tier
-            // 99 in the Attention sort, the spinner stops, and the agent
-            // pane is killed so a stale process can't keep claiming attention.
-            // Pressing it again on an archived row unarchives (no kill, the
-            // pane stays gone). Mnemonic: Zzz / archive box. Distinct from
-            // `h`/`H` snooze (temporary, auto wakes) and separate from `d`/`D`
-            // (destructive delete, unchanged).
-            KeyCode::Char('z') if !self.strict_hotkeys => {
-                if let Err(e) = self.toggle_archive_at_cursor() {
-                    tracing::error!("toggle_archive_at_cursor failed: {}", e);
-                }
-            }
-            KeyCode::Char('Z') if self.strict_hotkeys => {
-                if let Err(e) = self.toggle_archive_at_cursor() {
-                    tracing::error!("toggle_archive_at_cursor failed: {}", e);
-                }
-            }
-            KeyCode::Char('?') => {
-                self.show_help = true;
-                self.help_scroll = 0;
-            }
-            KeyCode::Char('e') if !self.strict_hotkeys => {
-                self.open_restart_dialog();
-            }
-            KeyCode::Char('E') if self.strict_hotkeys => {
-                self.open_restart_dialog();
-            }
-            KeyCode::F(5) => {
-                self.open_restart_dialog();
-            }
-            KeyCode::Char('P') => {
-                self.show_profile_picker();
-            }
-            KeyCode::Char('p') if !self.strict_hotkeys => {
-                let profile = self.config_profile();
-                self.projects_dialog = Some(ProjectsDialog::new(&profile));
-            }
-            KeyCode::Char('p')
-                if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                self.show_profile_picker();
-            }
-            KeyCode::Char('b') if !self.strict_hotkeys => {
-                self.open_project_session_picker();
-            }
-            KeyCode::Char('B') if self.strict_hotkeys => {
-                self.open_project_session_picker();
-            }
-            #[cfg(feature = "serve")]
-            KeyCode::Char('R') if !self.strict_hotkeys => {
-                self.serve_view = Some(crate::tui::dialogs::ServeView::new());
-            }
-            #[cfg(feature = "serve")]
-            KeyCode::Char('r')
-                if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                self.serve_view = Some(crate::tui::dialogs::ServeView::new());
-            }
-            #[cfg(not(feature = "serve"))]
-            KeyCode::Char('R') if !self.strict_hotkeys => {
-                self.info_dialog = Some(InfoDialog::new(
-                    "Serve unavailable",
-                    "This `aoe` binary was built without the `serve` feature, \
-                     so the web dashboard, local network serving, and \
-                     Cloudflare Tunnel integration are not included.\n\n\
-                     To serve to your phone (LAN / Tailscale / tunnel):\n\
-                       \u{2022} Install a release build from GitHub Releases, or\n\
-                       \u{2022} Build from source with:\n\
-                         cargo build --release --features serve\n\n\
-                     Once you have a `serve`-enabled binary, press R again to \
-                     open the serve dialog.",
-                ));
-            }
-            #[cfg(not(feature = "serve"))]
-            KeyCode::Char('r')
-                if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                self.info_dialog = Some(InfoDialog::new(
-                    "Serve unavailable",
-                    "This `aoe` binary was built without the `serve` feature, \
-                     so the web dashboard, local network serving, and \
-                     Cloudflare Tunnel integration are not included.\n\n\
-                     To serve to your phone (LAN / Tailscale / tunnel):\n\
-                       \u{2022} Install a release build from GitHub Releases, or\n\
-                       \u{2022} Build from source with:\n\
-                         cargo build --release --features serve\n\n\
-                     Once you have a `serve`-enabled binary, press R again to \
-                     open the serve dialog.",
-                ));
-            }
-            KeyCode::Char('t') if !self.strict_hotkeys => {
-                self.view_mode = match self.view_mode {
-                    ViewMode::Agent => ViewMode::Terminal,
-                    ViewMode::Terminal | ViewMode::Tool(_) => ViewMode::Agent,
-                };
-            }
-            KeyCode::Char('T') if self.strict_hotkeys => {
-                self.view_mode = match self.view_mode {
-                    ViewMode::Agent => ViewMode::Terminal,
-                    ViewMode::Terminal | ViewMode::Tool(_) => ViewMode::Agent,
-                };
-            }
-            KeyCode::Char('T') if !self.strict_hotkeys => {
-                // Quick-attach to paired terminal from any view
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        if matches!(inst.status, Status::Deleting | Status::Creating) {
-                            return None;
-                        }
-                    }
-                    let terminal_mode = if let Some(inst) = self.get_instance(id) {
-                        if inst.is_sandboxed() {
-                            self.get_terminal_mode(id)
-                        } else {
-                            TerminalMode::Host
-                        }
-                    } else {
-                        TerminalMode::Host
-                    };
-                    return Some(Action::AttachTerminal(id.clone(), terminal_mode));
-                }
-            }
-            KeyCode::Char('t')
-                if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                // Quick-attach to paired terminal from any view
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        if matches!(inst.status, Status::Deleting | Status::Creating) {
-                            return None;
-                        }
-                    }
-                    let terminal_mode = if let Some(inst) = self.get_instance(id) {
-                        if inst.is_sandboxed() {
-                            self.get_terminal_mode(id)
-                        } else {
-                            TerminalMode::Host
-                        }
-                    } else {
-                        TerminalMode::Host
-                    };
-                    return Some(Action::AttachTerminal(id.clone(), terminal_mode));
-                }
-            }
-            KeyCode::Char('c') if !self.strict_hotkeys && self.view_mode == ViewMode::Terminal => {
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        if inst.is_sandboxed() {
-                            let id = id.clone();
-                            self.toggle_terminal_mode(&id);
-                        } else {
-                            self.info_dialog = Some(InfoDialog::new(
-                                "Not Available",
-                                "Only sandboxed sessions support container terminals. This session runs directly on the host.",
-                            ));
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('C') if self.strict_hotkeys && self.view_mode == ViewMode::Terminal => {
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        if inst.is_sandboxed() {
-                            let id = id.clone();
-                            self.toggle_terminal_mode(&id);
-                        } else {
-                            self.info_dialog = Some(InfoDialog::new(
-                                "Not Available",
-                                "Only sandboxed sessions support container terminals. This session runs directly on the host.",
-                            ));
-                        }
-                    }
-                }
-            }
-            KeyCode::Char(';') => {
-                if matches!(self.view_mode, ViewMode::Tool(_)) {
-                    self.view_mode = ViewMode::Agent;
-                } else if !self.tool_configs.is_empty() {
-                    self.open_tool_picker();
-                }
-            }
-            KeyCode::Char('/') => {
-                self.search_active = true;
-                self.search_query = Input::default();
-            }
-            KeyCode::Char('n') if !self.search_matches.is_empty() => {
-                self.search_match_index = (self.search_match_index + 1) % self.search_matches.len();
-                self.cursor = self.search_matches[self.search_match_index];
+            _ => {}
+        }
+
+        // Registry-driven action keys.
+        let ctx = bindings::Ctx {
+            view_mode: self.view_mode.clone(),
+            sort_order: self.sort_order,
+            has_search: !self.search_matches.is_empty(),
+        };
+        if let Some(id) = bindings::resolve(&key, self.strict_hotkeys, &ctx) {
+            return self.run_action(id, update_info);
+        }
+
+        // Navigation / structural keys: identical in both modes, never relocate.
+        match key.code {
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => self.move_cursor(-10),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => self.move_cursor(10),
+            KeyCode::Char('{') => self.move_cursor(-10),
+            KeyCode::Char('}') => self.move_cursor(10),
+            KeyCode::Up | KeyCode::Char('k') => self.move_cursor(-1),
+            KeyCode::Down | KeyCode::Char('j') => self.move_cursor(1),
+            KeyCode::PageUp => self.move_cursor(-10),
+            KeyCode::PageDown => self.move_cursor(10),
+            KeyCode::Home => {
+                self.cursor = 0;
+                self.mouse_pos = None;
                 self.update_selected();
             }
-            KeyCode::Char('n') if !self.strict_hotkeys => {
-                self.open_new_session_dialog();
-            }
-            KeyCode::Char('N') if self.strict_hotkeys && self.search_matches.is_empty() => {
-                if self.creating_stub_id.is_some() {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Please Wait",
-                        "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
-                    ));
-                } else {
-                    let existing_groups: Vec<String> =
-                        self.all_groups().iter().map(|g| g.path.clone()).collect();
-                    let current_profile = self.config_profile();
-                    let profiles =
-                        list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                    self.new_dialog = Some(NewSessionDialog::new(
-                        self.available_tools.clone(),
-                        existing_groups,
-                        &current_profile,
-                        profiles,
-                    ));
-                }
-            }
-            KeyCode::Char('N') if !self.search_matches.is_empty() => {
-                self.search_match_index = if self.search_match_index == 0 {
-                    self.search_matches.len() - 1
-                } else {
-                    self.search_match_index - 1
-                };
-                self.cursor = self.search_matches[self.search_match_index];
+            KeyCode::End | KeyCode::Char('G') if !self.flat_items.is_empty() => {
+                self.cursor = self.flat_items.len() - 1;
+                self.mouse_pos = None;
                 self.update_selected();
             }
-            KeyCode::Char('N') if !self.strict_hotkeys => {
-                if !self.search_matches.is_empty() {
-                    self.search_match_index = if self.search_match_index == 0 {
-                        self.search_matches.len() - 1
-                    } else {
-                        self.search_match_index - 1
-                    };
-                    self.cursor = self.search_matches[self.search_match_index];
-                    self.update_selected();
-                } else if self.creating_stub_id.is_some() {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Please Wait",
-                        "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
-                    ));
-                } else {
-                    // Pre-filled new session from selection
-                    let prefill_path = self
-                        .selected_session
-                        .as_ref()
-                        .and_then(|id| self.get_instance(id))
-                        .map(|inst| {
-                            inst.worktree_info
-                                .as_ref()
-                                .map(|wt| wt.main_repo_path.clone())
-                                .unwrap_or_else(|| inst.project_path.clone())
-                        });
-                    let prefill_group = self
-                        .selected_session
-                        .as_ref()
-                        .and_then(|id| self.get_instance(id))
-                        .and_then(|inst| {
-                            if inst.group_path.is_empty() {
-                                None
-                            } else {
-                                Some(inst.group_path.clone())
-                            }
-                        })
-                        .or_else(|| self.selected_group.clone());
-
-                    if prefill_path.is_some() || prefill_group.is_some() {
-                        let existing_groups: Vec<String> =
-                            self.all_groups().iter().map(|g| g.path.clone()).collect();
-                        let current_profile = self
-                            .profile_for_cursor(self.cursor)
-                            .unwrap_or_else(|| self.config_profile());
-                        let profiles =
-                            list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                        let mut dialog = NewSessionDialog::new(
-                            self.available_tools.clone(),
-                            existing_groups,
-                            &current_profile,
-                            profiles,
-                        );
-                        if let Some(path) = prefill_path {
-                            dialog.set_path(path);
-                        }
-                        if let Some(group) = prefill_group {
-                            dialog.set_group(group);
-                        }
-                        self.new_dialog = Some(dialog);
-                    }
+            KeyCode::Char('<') => self.shrink_list(),
+            KeyCode::Char('>') => self.grow_list(),
+            KeyCode::Enter => {
+                if self.selected_session.is_some() {
+                    return self.activate_selected_session();
+                } else if let Some(Item::Group { path, .. }) = self.flat_items.get(self.cursor) {
+                    let path = path.clone();
+                    self.toggle_group_collapsed(&path);
                 }
             }
-            KeyCode::Char('n')
-                if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                // Strict mode: Ctrl+N = prefill-new (legacy Shift+N relocation)
-                if self.creating_stub_id.is_some() {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Please Wait",
-                        "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
-                    ));
-                } else {
-                    let prefill_path = self
-                        .selected_session
-                        .as_ref()
-                        .and_then(|id| self.get_instance(id))
-                        .map(|inst| {
-                            inst.worktree_info
-                                .as_ref()
-                                .map(|wt| wt.main_repo_path.clone())
-                                .unwrap_or_else(|| inst.project_path.clone())
-                        });
-                    let prefill_group = self
-                        .selected_session
-                        .as_ref()
-                        .and_then(|id| self.get_instance(id))
-                        .and_then(|inst| {
-                            if inst.group_path.is_empty() {
-                                None
-                            } else {
-                                Some(inst.group_path.clone())
-                            }
-                        })
-                        .or_else(|| self.selected_group.clone());
-
-                    if prefill_path.is_some() || prefill_group.is_some() {
-                        let existing_groups: Vec<String> =
-                            self.all_groups().iter().map(|g| g.path.clone()).collect();
-                        let current_profile = self
-                            .profile_for_cursor(self.cursor)
-                            .unwrap_or_else(|| self.config_profile());
-                        let profiles =
-                            list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
-                        let mut dialog = NewSessionDialog::new(
-                            self.available_tools.clone(),
-                            existing_groups,
-                            &current_profile,
-                            profiles,
-                        );
-                        if let Some(path) = prefill_path {
-                            dialog.set_path(path);
-                        }
-                        if let Some(group) = prefill_group {
-                            dialog.set_group(group);
-                        }
-                        self.new_dialog = Some(dialog);
-                    }
-                }
-            }
-            KeyCode::Char('s') if !self.strict_hotkeys => {
-                let project_path = self
-                    .selected_session
-                    .as_ref()
-                    .and_then(|id| self.get_instance(id))
-                    .map(|inst| inst.project_path.clone());
-                match SettingsView::new(&self.config_profile(), project_path) {
-                    Ok(view) => self.settings_view = Some(view),
-                    Err(e) => {
-                        tracing::error!("Failed to open settings: {}", e);
-                        self.info_dialog = Some(InfoDialog::new(
-                            "Error",
-                            &format!("Failed to open settings: {}", e),
-                        ));
-                    }
-                }
-            }
-            KeyCode::Char('S') if self.strict_hotkeys => {
-                let project_path = self
-                    .selected_session
-                    .as_ref()
-                    .and_then(|id| self.get_instance(id))
-                    .map(|inst| inst.project_path.clone());
-                match SettingsView::new(&self.config_profile(), project_path) {
-                    Ok(view) => self.settings_view = Some(view),
-                    Err(e) => {
-                        tracing::error!(target: "tui.input", "Failed to open settings: {}", e);
-                        self.info_dialog = Some(InfoDialog::new(
-                            "Error",
-                            &format!("Failed to open settings: {}", e),
-                        ));
-                    }
-                }
-            }
-            KeyCode::Char('u') => {
-                if let Some(info) = update_info {
-                    if info.available && self.update_confirm_dialog.is_none() {
-                        let method = match crate::update::install::detect_install_method() {
-                            Ok(m) => m,
-                            Err(e) => {
-                                tracing::warn!(target: "tui.input", "update detection failed: {e}");
-                                return None;
-                            }
-                        };
-                        use crate::update::install::InstallMethod;
-                        if !matches!(
-                            &method,
-                            InstallMethod::Homebrew | InstallMethod::Tarball { .. }
-                        ) {
-                            let msg = match &method {
-                                InstallMethod::Nix => {
-                                    "Nix install: run `nix run github:agent-of-empires/agent-of-empires` to update".to_string()
-                                }
-                                InstallMethod::Cargo => {
-                                    "Cargo install: run `cargo install --git https://github.com/agent-of-empires/agent-of-empires aoe`".to_string()
-                                }
-                                InstallMethod::Unknown { .. } => {
-                                    "Unknown install method: run `aoe update` in a terminal for instructions".to_string()
-                                }
-                                _ => unreachable!(),
-                            };
-                            return Some(Action::SetTransientStatus(msg));
-                        }
-                        let needs_sudo = matches!(
-                            &method,
-                            InstallMethod::Tarball { binary_path }
-                                if !crate::update::install::parent_is_writable(binary_path)
-                        );
-                        self.update_confirm_dialog =
-                            Some(crate::tui::dialogs::UpdateConfirmDialog::new(
-                                info.current_version.clone(),
-                                info.latest_version.clone(),
-                                method,
-                                needs_sudo,
-                            ));
-                    }
-                }
-            }
-            KeyCode::Char('D') if !self.strict_hotkeys => {
-                // Open diff view - requires a selected session
-                let Some(session_id) = &self.selected_session else {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "No Session Selected",
-                        "Select a session to view its diff.",
-                    ));
-                    return None;
-                };
-
-                let Some(inst) = self.get_instance(session_id) else {
-                    self.info_dialog =
-                        Some(InfoDialog::new("Error", "Could not find session data."));
-                    return None;
-                };
-
-                let repo_path = std::path::PathBuf::from(&inst.project_path);
-                let session_id_owned = inst.id.clone();
-                let profile = inst.source_profile.clone();
-                let base_override = inst.base_branch_override.clone();
-                match DiffView::new_for_session(
-                    repo_path,
-                    Some(session_id_owned),
-                    profile,
-                    base_override,
-                ) {
-                    Ok(view) => self.diff_view = Some(view),
-                    Err(e) => {
-                        tracing::error!(target: "tui.input", "Failed to open diff view: {}", e);
-                        self.info_dialog = Some(InfoDialog::new(
-                            "Error",
-                            &format!("Failed to open diff view: {}", e),
-                        ));
-                    }
-                }
-            }
-            KeyCode::Char('d')
-                if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                // Strict mode: Ctrl+D = diff (legacy Shift+D relocation)
-                let Some(session_id) = &self.selected_session else {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "No Session Selected",
-                        "Select a session to view its diff.",
-                    ));
-                    return None;
-                };
-
-                let Some(inst) = self.get_instance(session_id) else {
-                    self.info_dialog =
-                        Some(InfoDialog::new("Error", "Could not find session data."));
-                    return None;
-                };
-
-                let repo_path = std::path::PathBuf::from(&inst.project_path);
-                match DiffView::new(repo_path) {
-                    Ok(view) => self.diff_view = Some(view),
-                    Err(e) => {
-                        tracing::error!("Failed to open diff view: {}", e);
-                        self.info_dialog = Some(InfoDialog::new(
-                            "Error",
-                            &format!("Failed to open diff view: {}", e),
-                        ));
-                    }
-                }
-            }
-            KeyCode::Char('x') if !self.strict_hotkeys => {
-                if let Some(session_id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(session_id) {
-                        if matches!(
-                            inst.status,
-                            Status::Stopped | Status::Deleting | Status::Creating
-                        ) {
-                            return None;
-                        }
-                        let message = format!("Are you sure you want to stop '{}'?", inst.title);
-                        self.pending_stop_session = Some(session_id.clone());
-                        self.confirm_dialog =
-                            Some(ConfirmDialog::new("Stop Session", &message, "stop_session"));
-                    }
-                }
-            }
-            KeyCode::Char('X') if self.strict_hotkeys => {
-                if let Some(session_id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(session_id) {
-                        if matches!(
-                            inst.status,
-                            Status::Stopped | Status::Deleting | Status::Creating
-                        ) {
-                            return None;
-                        }
-                        let message = format!("Are you sure you want to stop '{}'?", inst.title);
-                        self.pending_stop_session = Some(session_id.clone());
-                        self.confirm_dialog =
-                            Some(ConfirmDialog::new("Stop Session", &message, "stop_session"));
-                    }
-                }
-            }
-            KeyCode::Char('d') if !self.strict_hotkeys => {
-                self.open_delete_for_selected();
-            }
-            KeyCode::Char('D') if self.strict_hotkeys => {
-                self.open_delete_for_selected();
-            }
-            KeyCode::Char('r') if !self.strict_hotkeys => {
-                self.open_rename_for_selected();
-            }
-            KeyCode::Char('R') if self.strict_hotkeys => {
-                self.open_rename_for_selected();
-            }
-            KeyCode::Char('m') if !self.strict_hotkeys => {
-                self.open_send_message_dialog();
-            }
-            KeyCode::Char('M') if self.strict_hotkeys => {
-                self.open_send_message_dialog();
-            }
-            // Tab is the activation key's complement: it does whichever
-            // of (live-send, tmux attach) `Enter` doesn't. When
-            // `default_attach_mode = LiveSend`, Enter activates live
-            // mode, so Tab swaps to a full tmux attach (the escape
-            // hatch). When `default_attach_mode = Tmux` (the default),
-            // Enter still attaches and Tab keeps its historical
-            // live-send role.
-            //
-            // Free at the home-view top level (settings/cockpit/dialogs
-            // own their own Tab handlers), and the entry-vs-send
-            // distinction is unambiguous: this branch only fires when
-            // `live_send` is None, because the live-send capture at the
-            // top of `handle_key` short-circuits otherwise. While in
-            // live mode Tab is sent verbatim to the agent.
+            // Tab is the activation key's complement: it does whichever of
+            // (live-send, tmux attach) `Enter` doesn't. Only fires when
+            // `live_send` is None (the live-send capture short-circuits above).
             KeyCode::Tab => {
                 let swap_to_attach = self
                     .selected_session
@@ -2398,103 +1847,6 @@ impl HomeView {
                     return Some(action);
                 }
             }
-            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.show_sort_picker();
-            }
-            // Plain lowercase 'o' opens the sort picker only OUTSIDE strict mode.
-            // In strict mode, bare 'o' falls through to the typing-guard catch-all
-            // (compose dialog), per the no-destructive-lowercase contract.
-            KeyCode::Char('o') if !self.strict_hotkeys => {
-                self.show_sort_picker();
-            }
-            // Shift+O in strict mode arrives here as Char('O') (normalize_strict_key
-            // no longer lowercases 'O') so it's the one bare-letter sort hotkey in
-            // strict mode. Also matches Shift+O in non-strict mode.
-            KeyCode::Char('O') => {
-                self.show_sort_picker();
-            }
-            // ±10 navigation: Shift+Up/Down, PageUp/PageDown, OR { / }.
-            // iPad-friendly ±10 aliases for PageUp/PageDown. iPads have no
-            // PageUp/PageDown keys, and Cmd combos are typically stripped by
-            // SSH/Mosh before reaching the TTY. Shift+Up/Down arrives intact
-            // on every terminal we test, and `{` / `}` (Shift+`[` / Shift+`]`)
-            // pass through as plain chars so Cmd+Shift+`[` / `]` works whether
-            // or not the terminal forwards Cmd. Both bind to the same step
-            // size as PageUp/PageDown to keep the mental model simple.
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.move_cursor(-10);
-            }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.move_cursor(10);
-            }
-            KeyCode::Char('{') => {
-                self.move_cursor(-10);
-            }
-            KeyCode::Char('}') => {
-                self.move_cursor(10);
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.move_cursor(-1);
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.move_cursor(1);
-            }
-            KeyCode::PageUp => {
-                self.move_cursor(-10);
-            }
-            KeyCode::PageDown => {
-                self.move_cursor(10);
-            }
-            KeyCode::Home => {
-                self.cursor = 0;
-                self.mouse_pos = None;
-                self.update_selected();
-            }
-            KeyCode::Char('g')
-                if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                self.show_group_picker();
-            }
-            KeyCode::Char('g') if !self.strict_hotkeys => {
-                self.show_group_picker();
-            }
-            KeyCode::End | KeyCode::Char('G') if !self.flat_items.is_empty() => {
-                self.cursor = self.flat_items.len() - 1;
-                self.mouse_pos = None;
-                self.update_selected();
-            }
-            KeyCode::Enter => {
-                if self.selected_session.is_some() {
-                    return self.activate_selected_session();
-                } else if let Some(Item::Group { path, .. }) = self.flat_items.get(self.cursor) {
-                    let path = path.clone();
-                    self.toggle_group_collapsed(&path);
-                }
-            }
-            // `<` shrinks the list pane width; `>` grows it. Capital
-            // H/L used to be aliases here but H is now the advertised
-            // snooze key (mnemonic: Hide), so width controls live on
-            // the angle-bracket characters only.
-            KeyCode::Char('<') => {
-                self.shrink_list();
-            }
-            KeyCode::Char('>') => {
-                self.grow_list();
-            }
-            // `i`/`I`: toggle the preview info header (profile/tool/path/
-            // status/sandbox/worktree). Persisted across runs. The hint
-            // rendered on the outer Preview block title advertises this.
-            KeyCode::Char('i') if !self.strict_hotkeys => {
-                self.toggle_preview_info();
-            }
-            KeyCode::Char('I') if self.strict_hotkeys => {
-                self.toggle_preview_info();
-            }
-            // Bare `h` collapses only in strict mode; in non-strict the
-            // earlier `Char('h') if !self.strict_hotkeys` arm catches it
-            // for Snooze, so we'd never reach here. Pairing it with Left
-            // keeps the help overlay's "h/←" claim honest and mirrors the
-            // unconditional `l`/Right binding below.
             KeyCode::Left | KeyCode::Char('h') => {
                 if let Some(Item::Group {
                     path, collapsed, ..
@@ -2517,18 +1869,9 @@ impl HomeView {
                     }
                 }
             }
-            // Jump to the next waiting/idle session (PR #796). Snooze moved off
-            // `w`/`W` onto `h`/`H` (#1524), so in Attention sort `w` is no
-            // longer shadowed by a snooze arm and this finally fires across
-            // every sort mode. Strict mode keeps bare lowercase `w` for the
-            // typing-guard below.
-            KeyCode::Char('w') if !self.strict_hotkeys => {
-                self.jump_to_next_waiting();
-            }
-            // Strict-mode typing guard: any bare lowercase letter that isn't a
-            // navigation key (j/k/h/l) is treated as inadvertent typing; open
-            // the compose dialog pre-filled with that character instead of
-            // firing an action or swallowing the keypress.
+            // Strict-mode typing guard: any bare lowercase letter not bound to
+            // an action or navigation key opens the compose dialog pre-filled
+            // with that character (the no-destructive-lowercase contract).
             KeyCode::Char(c)
                 if self.strict_hotkeys
                     && key.modifiers == KeyModifiers::NONE
@@ -2538,28 +1881,335 @@ impl HomeView {
             }
             _ => {}
         }
-
         None
     }
 
-    /// Build and show the command palette. Combines the static `builtin_commands`
-    /// with dynamic jump-to-session and jump-to-group entries built from the
-    /// current `flat_items`.
+    /// Execute a resolved [`ActionId`]. The single home for each action's
+    /// behavior: the keyboard dispatcher and the command palette both route
+    /// here, so they can't diverge on what an action does.
+    fn run_action(
+        &mut self,
+        id: ActionId,
+        update_info: Option<&crate::update::UpdateInfo>,
+    ) -> Option<Action> {
+        match id {
+            ActionId::Quit => return Some(Action::Quit),
+            ActionId::Help => {
+                self.show_help = true;
+                self.help_scroll = 0;
+            }
+            ActionId::ToolPicker => {
+                if matches!(self.view_mode, ViewMode::Tool(_)) {
+                    self.view_mode = ViewMode::Agent;
+                } else if !self.tool_configs.is_empty() {
+                    self.open_tool_picker();
+                }
+            }
+            ActionId::SearchStart => {
+                self.search_active = true;
+                self.search_query = Input::default();
+            }
+            ActionId::SearchNext => {
+                self.search_match_index = (self.search_match_index + 1) % self.search_matches.len();
+                self.cursor = self.search_matches[self.search_match_index];
+                self.update_selected();
+            }
+            ActionId::SearchPrev => {
+                self.search_match_index = if self.search_match_index == 0 {
+                    self.search_matches.len() - 1
+                } else {
+                    self.search_match_index - 1
+                };
+                self.cursor = self.search_matches[self.search_match_index];
+                self.update_selected();
+            }
+            ActionId::NewSession => self.open_new_session_dialog(),
+            ActionId::NewFromSelection => self.open_new_from_selection(),
+            ActionId::NewFromProject => self.open_project_session_picker(),
+            ActionId::AttachTerminal => return self.attach_terminal_for_selected(),
+            ActionId::ToggleView => {
+                self.view_mode = match self.view_mode {
+                    ViewMode::Agent => ViewMode::Terminal,
+                    ViewMode::Terminal | ViewMode::Tool(_) => ViewMode::Agent,
+                };
+            }
+            ActionId::SendMessage => self.open_send_message_dialog(),
+            ActionId::Stop => self.stop_selected(),
+            ActionId::Delete => self.open_delete_for_selected(),
+            ActionId::Rename => self.open_rename_for_selected(),
+            ActionId::Diff => self.open_diff_for_selected(),
+            ActionId::Serve => self.open_serve(),
+            ActionId::Settings => self.open_settings(),
+            ActionId::Profiles => self.show_profile_picker(),
+            ActionId::Projects => {
+                let profile = self.config_profile();
+                self.projects_dialog = Some(ProjectsDialog::new(&profile));
+            }
+            ActionId::Restart => self.open_restart_dialog(),
+            ActionId::Update => return self.run_update(update_info),
+            ActionId::ToggleArchive => {
+                if let Err(e) = self.toggle_archive_at_cursor() {
+                    tracing::error!("toggle_archive_at_cursor failed: {}", e);
+                }
+            }
+            ActionId::ToggleFavorite => {
+                if let Err(e) = self.toggle_favorite_at_cursor() {
+                    tracing::error!("toggle_favorite_at_cursor failed: {}", e);
+                }
+            }
+            ActionId::ToggleSnooze => {
+                if let Err(e) = self.toggle_snooze_at_cursor() {
+                    tracing::error!("toggle_snooze_at_cursor failed: {}", e);
+                }
+            }
+            ActionId::ToggleContainer => self.toggle_container_for_selected(),
+            ActionId::TogglePreviewInfo => self.toggle_preview_info(),
+            ActionId::SortPicker => self.show_sort_picker(),
+            ActionId::GroupBy => self.show_group_picker(),
+            ActionId::NextWaiting => self.jump_to_next_waiting(),
+        }
+        None
+    }
+
+    fn open_new_from_selection(&mut self) {
+        if self.creating_stub_id.is_some() {
+            self.info_dialog = Some(InfoDialog::new(
+                "Please Wait",
+                "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
+            ));
+            return;
+        }
+        let prefill_path = self
+            .selected_session
+            .as_ref()
+            .and_then(|id| self.get_instance(id))
+            .map(|inst| {
+                inst.worktree_info
+                    .as_ref()
+                    .map(|wt| wt.main_repo_path.clone())
+                    .unwrap_or_else(|| inst.project_path.clone())
+            });
+        let prefill_group = self
+            .selected_session
+            .as_ref()
+            .and_then(|id| self.get_instance(id))
+            .and_then(|inst| {
+                if inst.group_path.is_empty() {
+                    None
+                } else {
+                    Some(inst.group_path.clone())
+                }
+            })
+            .or_else(|| self.selected_group.clone());
+
+        if prefill_path.is_some() || prefill_group.is_some() {
+            let existing_groups: Vec<String> =
+                self.all_groups().iter().map(|g| g.path.clone()).collect();
+            let current_profile = self
+                .profile_for_cursor(self.cursor)
+                .unwrap_or_else(|| self.config_profile());
+            let profiles = list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+            let mut dialog = NewSessionDialog::new(
+                self.available_tools.clone(),
+                existing_groups,
+                &current_profile,
+                profiles,
+            );
+            if let Some(path) = prefill_path {
+                dialog.set_path(path);
+            }
+            if let Some(group) = prefill_group {
+                dialog.set_group(group);
+            }
+            self.new_dialog = Some(dialog);
+        }
+    }
+
+    fn attach_terminal_for_selected(&mut self) -> Option<Action> {
+        // Quick-attach to paired terminal from any view.
+        if let Some(id) = &self.selected_session {
+            if let Some(inst) = self.get_instance(id) {
+                if matches!(inst.status, Status::Deleting | Status::Creating) {
+                    return None;
+                }
+            }
+            let terminal_mode = if let Some(inst) = self.get_instance(id) {
+                if inst.is_sandboxed() {
+                    self.get_terminal_mode(id)
+                } else {
+                    TerminalMode::Host
+                }
+            } else {
+                TerminalMode::Host
+            };
+            return Some(Action::AttachTerminal(id.clone(), terminal_mode));
+        }
+        None
+    }
+
+    fn stop_selected(&mut self) {
+        if let Some(session_id) = &self.selected_session {
+            if let Some(inst) = self.get_instance(session_id) {
+                if matches!(
+                    inst.status,
+                    Status::Stopped | Status::Deleting | Status::Creating
+                ) {
+                    return;
+                }
+                let message = format!("Are you sure you want to stop '{}'?", inst.title);
+                self.pending_stop_session = Some(session_id.clone());
+                self.confirm_dialog =
+                    Some(ConfirmDialog::new("Stop Session", &message, "stop_session"));
+            }
+        }
+    }
+
+    fn open_diff_for_selected(&mut self) {
+        // Open diff view - requires a selected session.
+        let Some(session_id) = &self.selected_session else {
+            self.info_dialog = Some(InfoDialog::new(
+                "No Session Selected",
+                "Select a session to view its diff.",
+            ));
+            return;
+        };
+
+        let Some(inst) = self.get_instance(session_id) else {
+            self.info_dialog = Some(InfoDialog::new("Error", "Could not find session data."));
+            return;
+        };
+
+        let repo_path = std::path::PathBuf::from(&inst.project_path);
+        let session_id_owned = inst.id.clone();
+        let profile = inst.source_profile.clone();
+        let base_override = inst.base_branch_override.clone();
+        match DiffView::new_for_session(repo_path, Some(session_id_owned), profile, base_override) {
+            Ok(view) => self.diff_view = Some(view),
+            Err(e) => {
+                tracing::error!(target: "tui.input", "Failed to open diff view: {}", e);
+                self.info_dialog = Some(InfoDialog::new(
+                    "Error",
+                    &format!("Failed to open diff view: {}", e),
+                ));
+            }
+        }
+    }
+
+    fn open_serve(&mut self) {
+        #[cfg(feature = "serve")]
+        {
+            self.serve_view = Some(crate::tui::dialogs::ServeView::new());
+        }
+        #[cfg(not(feature = "serve"))]
+        {
+            self.info_dialog = Some(InfoDialog::new(
+                "Serve unavailable",
+                "This `aoe` binary was built without the `serve` feature, \
+                 so the web dashboard, local network serving, and \
+                 Cloudflare Tunnel integration are not included.\n\n\
+                 To serve to your phone (LAN / Tailscale / tunnel):\n\
+                   \u{2022} Install a release build from GitHub Releases, or\n\
+                   \u{2022} Build from source with:\n\
+                     cargo build --release --features serve\n\n\
+                 Once you have a `serve`-enabled binary, press R again to \
+                 open the serve dialog.",
+            ));
+        }
+    }
+
+    fn open_settings(&mut self) {
+        let project_path = self
+            .selected_session
+            .as_ref()
+            .and_then(|id| self.get_instance(id))
+            .map(|inst| inst.project_path.clone());
+        match SettingsView::new(&self.config_profile(), project_path) {
+            Ok(view) => self.settings_view = Some(view),
+            Err(e) => {
+                tracing::error!(target: "tui.input", "Failed to open settings: {}", e);
+                self.info_dialog = Some(InfoDialog::new(
+                    "Error",
+                    &format!("Failed to open settings: {}", e),
+                ));
+            }
+        }
+    }
+
+    fn run_update(&mut self, update_info: Option<&crate::update::UpdateInfo>) -> Option<Action> {
+        if let Some(info) = update_info {
+            if info.available && self.update_confirm_dialog.is_none() {
+                let method = match crate::update::install::detect_install_method() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        tracing::warn!(target: "tui.input", "update detection failed: {e}");
+                        return None;
+                    }
+                };
+                use crate::update::install::InstallMethod;
+                if !matches!(
+                    &method,
+                    InstallMethod::Homebrew | InstallMethod::Tarball { .. }
+                ) {
+                    let msg = match &method {
+                        InstallMethod::Nix => {
+                            "Nix install: run `nix run github:agent-of-empires/agent-of-empires` to update".to_string()
+                        }
+                        InstallMethod::Cargo => {
+                            "Cargo install: run `cargo install --git https://github.com/agent-of-empires/agent-of-empires aoe`".to_string()
+                        }
+                        InstallMethod::Unknown { .. } => {
+                            "Unknown install method: run `aoe update` in a terminal for instructions".to_string()
+                        }
+                        _ => unreachable!(),
+                    };
+                    return Some(Action::SetTransientStatus(msg));
+                }
+                let needs_sudo = matches!(
+                    &method,
+                    InstallMethod::Tarball { binary_path }
+                        if !crate::update::install::parent_is_writable(binary_path)
+                );
+                self.update_confirm_dialog = Some(crate::tui::dialogs::UpdateConfirmDialog::new(
+                    info.current_version.clone(),
+                    info.latest_version.clone(),
+                    method,
+                    needs_sudo,
+                ));
+            }
+        }
+        None
+    }
+
+    fn toggle_container_for_selected(&mut self) {
+        if let Some(id) = &self.selected_session {
+            if let Some(inst) = self.get_instance(id) {
+                if inst.is_sandboxed() {
+                    let id = id.clone();
+                    self.toggle_terminal_mode(&id);
+                } else {
+                    self.info_dialog = Some(InfoDialog::new(
+                        "Not Available",
+                        "Only sandboxed sessions support container terminals. This session runs directly on the host.",
+                    ));
+                }
+            }
+        }
+    }
+
     fn open_command_palette(&mut self) {
         let serve_enabled = cfg!(feature = "serve");
         let mut entries: Vec<PaletteCommand> = builtin_commands(serve_enabled, self.strict_hotkeys);
 
-        // Quit command (separate so the lifetime mapping is clear and we
-        // can keep it out of `builtin_commands` to avoid pulling KeyCode
-        // imports into the palette module).
-        let quit_hotkey = if self.strict_hotkeys { "Q" } else { "q" };
+        // Quit lives in the registry but is excluded from `builtin_commands`
+        // (no palette metadata) so it can sit in the Settings group at the end;
+        // add it here, still routed through the shared action dispatch.
         entries.push(PaletteCommand {
-            id: "quit",
+            id: bindings::palette_id(ActionId::Quit),
             title: "Quit Agent of Empires".to_string(),
             group: PaletteGroup::Settings,
             keywords: vec!["exit", "close"],
-            hotkey: quit_hotkey,
-            payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            hotkey: bindings::label(ActionId::Quit, self.strict_hotkeys),
+            payload: PaletteAction::Invoke(ActionId::Quit),
         });
 
         // Dynamic session/group entries: one per flat_items row, so the user
@@ -2591,7 +2241,7 @@ impl HomeView {
                         title,
                         group: PaletteGroup::Sessions,
                         keywords: vec!["session", "jump", "select"],
-                        hotkey: "",
+                        hotkey: String::new(),
                         payload: PaletteAction::JumpToCursor(idx),
                     });
                 }
@@ -2615,7 +2265,7 @@ impl HomeView {
                         title: label,
                         group: PaletteGroup::Groups,
                         keywords: vec!["group", "jump"],
-                        hotkey: "",
+                        hotkey: String::new(),
                         payload: PaletteAction::JumpToCursor(idx),
                     });
                 }
@@ -2637,7 +2287,7 @@ impl HomeView {
                 title: format!("Open tool: {}{}", name, hotkey_label),
                 group: PaletteGroup::Actions,
                 keywords: vec!["tool", "session"],
-                hotkey: "",
+                hotkey: String::new(),
                 payload: PaletteAction::ToolSession(name.clone()),
             });
         }
@@ -2654,19 +2304,19 @@ impl HomeView {
         update_info: Option<&crate::update::UpdateInfo>,
     ) -> Option<Action> {
         match action {
-            PaletteAction::Key(synth) => {
-                // Clear leftover search-cycle state before dispatching. Some
-                // action keys (`n`, `N`) are dual-purpose: they cycle search
-                // matches when matches are active, otherwise open new-session
-                // dialogs. The palette's mental model is "run the named
-                // action," so we drop search state here to make sure a pick
-                // of "New session" never silently turns into a search-cycle.
+            PaletteAction::Invoke(id) => {
+                // The palette's mental model is "run the named action," so clear
+                // any leftover search-cycle state first: otherwise picking "New
+                // session" while a search is active would route the dual-purpose
+                // `n`/`N` actions into a search-cycle instead.
                 if !self.search_matches.is_empty() {
                     self.search_matches.clear();
                     self.search_match_index = 0;
                 }
-                self.dispatch_action_key(synth, update_info)
+                self.run_action(id, update_info)
             }
+            PaletteAction::Activate => self.activate_selected_session(),
+            PaletteAction::LiveSend => self.start_live_send(),
             PaletteAction::JumpToCursor(idx) => {
                 if !self.flat_items.is_empty() {
                     self.cursor = idx.min(self.flat_items.len() - 1);
@@ -2678,19 +2328,6 @@ impl HomeView {
                 self.view_mode = ViewMode::Tool(tool_name);
                 self.preview_scroll_offset = 0;
                 self.tool_preview_cache = super::PreviewCache::default();
-                None
-            }
-            PaletteAction::EnterLiveSend => self.start_live_send(),
-            PaletteAction::OpenSortPicker => {
-                self.show_sort_picker();
-                None
-            }
-            PaletteAction::OpenGroupPicker => {
-                self.show_group_picker();
-                None
-            }
-            PaletteAction::OpenProjectSessionPicker => {
-                self.open_project_session_picker();
                 None
             }
         }
@@ -4289,65 +3926,6 @@ impl HomeView {
                 }
                 None
             }
-        }
-    }
-
-    /// In strict_hotkeys mode, normalize key events so the main match block
-    /// doesn't need per-key duplication. Returns `None` to swallow bare
-    /// lowercase action letters that would otherwise fire destructive actions.
-    fn normalize_strict_key(&self, key: KeyEvent) -> Option<KeyEvent> {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let bare = key.modifiers == KeyModifiers::NONE;
-        let shift_only = key.modifiers == KeyModifiers::SHIFT;
-        let has_search = !self.search_matches.is_empty();
-
-        // n/N are dual-purpose: search next/prev AND new session/new-from-selection.
-        // When search matches exist, let them through unchanged for vi-style navigation.
-        if has_search {
-            match key.code {
-                KeyCode::Char('n') if bare => return Some(key),
-                KeyCode::Char('N') if bare || shift_only => return Some(key),
-                _ => {}
-            }
-        }
-
-        match key.code {
-            // Ctrl+letter relocations whose secondary action shares an
-            // UPPERCASE arm with nothing else: fold to the uppercase letter.
-            // Ctrl+D -> D (diff view), Ctrl+R -> R (serve), Ctrl+P -> P (profiles).
-            KeyCode::Char(c @ ('d' | 'r' | 'p')) if ctrl => Some(KeyEvent::new(
-                KeyCode::Char(c.to_ascii_uppercase()),
-                KeyModifiers::NONE,
-            )),
-            // Ctrl+T and Ctrl+N must KEEP their CTRL modifier. Their bare
-            // uppercase forms (Shift+T, Shift+N) already drive distinct
-            // primary actions (toggle view, plain new session), so folding
-            // Ctrl+T/Ctrl+N to T/N collides with those and orphans the
-            // secondary arms (quick-attach terminal, new-from-selection) as
-            // dead code. Passing through with CTRL intact lets the
-            // `Char('t'|'n') if strict && CONTROL` arms fire.
-            KeyCode::Char('t' | 'n') if ctrl => Some(key),
-            // Ctrl+G and Ctrl+O stay as-is. The dispatch table already has
-            // strict-mode arms that match `Char('g')`/`Char('o')` *with*
-            // the CTRL modifier; stripping CTRL here would make the
-            // post-normalize key indistinguishable from bare lowercase
-            // input and route Ctrl+G into the typing-guard catch-all.
-            KeyCode::Char('g') if ctrl => Some(key),
-            KeyCode::Char('o') if ctrl => Some(key),
-            // Shifted action letters pass through unchanged. Each letter has its
-            // own `Char('UPPER') if self.strict_hotkeys` arm in the main match.
-            // Lowercasing here would route the chord into a dead arm guarded
-            // `if !self.strict_hotkeys`, so the action would silently no-op.
-            // Affects D (delete), R (rename), N, X, S, M, T, C, Q, O.
-            //
-            // Side benefit: passing through unchanged also makes the chords work
-            // on iOS Mosh, where Shift+letter is delivered as the bare uppercase
-            // keycode without a Shift modifier.
-            // Bare lowercase letters pass through; the main match falls through
-            // to a catch-all that opens the compose dialog pre-filled with the
-            // letter (strict-mode typing-guard). Navigation keys j/k/h/l are
-            // handled by their own arms before the catch-all fires.
-            _ => Some(key),
         }
     }
 }

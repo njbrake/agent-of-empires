@@ -1,5 +1,6 @@
 //! Home view - main session list and navigation
 
+pub(crate) mod bindings;
 mod input;
 mod live_send;
 mod operations;
