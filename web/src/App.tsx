@@ -18,6 +18,7 @@ import { SendCommentsDialog } from "./components/diff/comments/SendCommentsDialo
 import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
+import { useIsCoarsePointer } from "./hooks/useIsCoarsePointer";
 import {
   loginStatus,
   logout,
@@ -346,14 +347,34 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     }
   };
 
+  // Selecting a session in the sidebar should land focus on its canonical
+  // "type here" target so the user can start typing without a second click:
+  // the cockpit composer in cockpit mode, the xterm textarea otherwise. The
+  // dispatch handles the already-mounted case (re-selecting the active
+  // session, re-showing a persistent terminal); the latch covers a first
+  // open where the target is still resolving (Suspense / xterm round-trip).
+  // Skipped on coarse pointers (#1178): auto-focusing pops the soft keyboard
+  // on every session swap, the wrong default for read-heavy mobile use.
+  const isCoarse = useIsCoarsePointer();
+  const focusAgentInput = useCallback(
+    (session: SessionResponse | undefined) => {
+      if (!session || isCoarse) return;
+      const target = session.cockpit_mode ? "composer" : "agent";
+      setPendingTerminalFocus(target);
+      dispatchFocusTerminal(target);
+    },
+    [isCoarse],
+  );
+
   const handleSelectSession = useCallback((sessionId: string) => {
     const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
     if (ws) {
       navigate(`/session/${encodeURIComponent(sessionId)}`);
       focusKeyboardProxy();
+      focusAgentInput(ws.sessions.find((s) => s.id === sessionId));
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
-  }, [navigate, workspaces]);
+  }, [navigate, workspaces, focusAgentInput]);
 
   const handleSelectWorkspace = (workspaceId: string) => {
     const ws = workspaces.find((w) => w.id === workspaceId);
@@ -361,9 +382,10 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       const running = ws.sessions.find((s) =>
         isSessionActive(s, idleDecayWindowMs),
       );
-      const picked = running?.id ?? ws.sessions[0]?.id ?? null;
+      const picked = running ?? ws.sessions[0] ?? null;
       if (picked) {
-        navigate(`/session/${encodeURIComponent(picked)}`);
+        navigate(`/session/${encodeURIComponent(picked.id)}`);
+        focusAgentInput(picked);
       } else {
         navigate("/");
       }

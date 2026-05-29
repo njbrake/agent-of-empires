@@ -32,6 +32,12 @@ import type { CockpitState } from "../../lib/cockpitTypes";
 import { getDraft, setDraft } from "../../lib/cockpitDrafts";
 import { useMobileKeyboard } from "../../hooks/useMobileKeyboard";
 import { useAgentProfile } from "../../lib/agentProfileContext";
+import {
+  FOCUS_TERMINAL_EVENT,
+  consumePendingTerminalFocus,
+  setPendingTerminalFocus,
+  type FocusTerminalDetail,
+} from "../../lib/terminalFocus";
 import { useDictationBurstGuard } from "./useDictationBurstGuard";
 
 export {
@@ -440,6 +446,29 @@ export function Composer({
       window.clearTimeout(t2);
     };
   }, [isMobile]);
+
+  // Explicit focus from sidebar session selection (#1454). Mirrors
+  // TerminalView's "agent" listener for the "composer" target so a click
+  // lands focus on the input even when the composer is already mounted
+  // (re-selecting the active session, where the keyed remount above never
+  // fires). App only dispatches this on desktop, so no coarse-pointer gate
+  // is needed here. The latch covers the first-open race where this
+  // component mounts after the dispatch.
+  useEffect(() => {
+    const onFocusEvent = (e: Event) => {
+      const detail = (e as CustomEvent<FocusTerminalDetail>).detail;
+      if (detail?.target !== "composer") return;
+      const el = taRef.current;
+      if (el) el.focus();
+      else setPendingTerminalFocus("composer");
+    };
+    window.addEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
+    return () => window.removeEventListener(FOCUS_TERMINAL_EVENT, onFocusEvent);
+  }, []);
+
+  useEffect(() => {
+    if (consumePendingTerminalFocus("composer")) taRef.current?.focus();
+  }, []);
 
   const wrapperLayout = composerWrapperLayout({ keyboardOpen });
   return (
