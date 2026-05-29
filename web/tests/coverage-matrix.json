@@ -708,6 +708,20 @@
       ]
     },
     {
+      "id": "right-panel.mobile-picker",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/mobile-right-panel-picker.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileRightPanelPicker.tsx",
+        "web/src/components/PairedTerminal.tsx",
+        "web/src/components/ContentSplit.tsx",
+        "web/src/components/RightPanel.tsx"
+      ]
+    },
+    {
       "id": "right-panel.diff-line-visibility",
       "kind": "vitest",
       "risk": "high",

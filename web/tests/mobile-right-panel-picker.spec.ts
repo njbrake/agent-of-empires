@@ -1,0 +1,131 @@
+// Regression for #1452: on mobile the right panel used to be an 85vw
+// slide-in overlay pinned to bottom-0. When the soft keyboard opened
+// against the paired terminal inside it, the live keyboardHeight padding
+// collapsed the terminal to near-zero height. The fix replaces the overlay
+// with a picker that promotes the chosen view into the single full-viewport
+// main pane, so the paired terminal owns the viewport and stays tall under
+// the keyboard (the same posture the agent terminal already uses).
+
+import { test, expect } from "./helpers/mockedTest";
+import { devices, type Page } from "@playwright/test";
+import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
+import { mockTerminalApis, seedSettings } from "./helpers/terminal-mocks";
+
+// iPhone 13: width 390 (< md), pointer:coarse, hasTouch, WebKit UA.
+test.use({ ...devices["iPhone 13"] });
+
+// Override visualViewport to model the iOS soft keyboard occluding the
+// bottom of the layout viewport.
+async function simulateKeyboardOpen(page: Page, keyboardPx: number) {
+  await page.evaluate((keyboardPx) => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const newVvH = window.innerHeight - keyboardPx;
+    Object.defineProperty(vv, "height", {
+      get: () => newVvH,
+      configurable: true,
+    });
+    Object.defineProperty(vv, "offsetTop", { get: () => 0, configurable: true });
+    vv.dispatchEvent(new Event("resize"));
+  }, keyboardPx);
+}
+
+async function setupAndOpenSession(page: Page) {
+  await mockTerminalApis(page);
+  await page.goto("/");
+  await seedSettings(page, { mobileFontSize: 10 });
+  await page.reload();
+  await page.waitForTimeout(300);
+  await openMobileSidebar(page);
+  await clickSidebarSession(page, "pinch-test");
+  await page.locator(".xterm").first().waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function openPicker(page: Page) {
+  await page.getByRole("button", { name: "Toggle diff panel" }).click();
+  await page.getByTestId("mobile-right-panel-picker").waitFor({
+    state: "visible",
+    timeout: 5_000,
+  });
+}
+
+test.describe("Mobile right panel picker (#1452)", () => {
+  test("picker promotes the paired terminal and it survives the keyboard", async ({
+    page,
+  }) => {
+    await setupAndOpenSession(page);
+    await openPicker(page);
+
+    await page.getByTestId("mobile-right-panel-pick-paired").click();
+    // Picker closes; the paired shell mounts at full viewport.
+    await expect(page.getByTestId("mobile-right-panel-picker")).toHaveCount(0);
+    const paired = page.locator('[data-term="paired"]');
+    await paired.waitFor({ state: "visible", timeout: 10_000 });
+
+    // The bug: keyboard padding collapsed the paired terminal to ~0px.
+    // Now it owns the viewport, so it stays comfortably tall.
+    await simulateKeyboardOpen(page, 300);
+    await page.waitForTimeout(400);
+    const box = await paired.boundingBox();
+    expect(box, "paired terminal should have a bounding box").not.toBeNull();
+    expect(
+      box!.height,
+      `paired terminal collapsed to ${box!.height}px under the keyboard`,
+    ).toBeGreaterThan(150);
+  });
+
+  test("picker promotes the diff view and the back chip returns to the agent", async ({
+    page,
+  }) => {
+    await setupAndOpenSession(page);
+    await openPicker(page);
+
+    await page.getByTestId("mobile-right-panel-pick-diff").click();
+    await expect(page.getByTestId("mobile-right-panel-picker")).toHaveCount(0);
+    // The non-agent views carry a persistent back affordance.
+    const back = page.getByTestId("mobile-back-to-agent");
+    await expect(back).toBeVisible();
+
+    await back.click();
+    await expect(page.getByTestId("mobile-back-to-agent")).toHaveCount(0);
+    await expect(page.locator(".xterm").first()).toBeVisible();
+  });
+
+  test("agent and paired terminals stay mounted across view switches", async ({
+    page,
+  }) => {
+    await setupAndOpenSession(page);
+
+    await openPicker(page);
+    await page.getByTestId("mobile-right-panel-pick-paired").click();
+    await page.locator('[data-term="paired"]').waitFor({
+      state: "visible",
+      timeout: 10_000,
+    });
+
+    // Back to the agent: the paired shell is kept alive (hidden), not
+    // unmounted, so its PTY and scrollback survive the switch.
+    await page.getByTestId("mobile-back-to-agent").click();
+    await expect(page.locator('[data-term="paired"]')).toHaveCount(1);
+    await expect(page.locator(".xterm").first()).toBeVisible();
+  });
+});
+
+test.describe("Desktop right panel split is unchanged (#1452)", () => {
+  test.use({ viewport: { width: 1400, height: 900 }, hasTouch: false });
+
+  test("renders the side-by-side split, not the mobile picker", async ({
+    page,
+  }) => {
+    await mockTerminalApis(page);
+    await page.goto("/");
+    await page.waitForTimeout(300);
+    await clickSidebarSession(page, "pinch-test");
+    await page.locator(".xterm").first().waitFor({ state: "visible", timeout: 10_000 });
+
+    // The desktop split renders the resize handle and never the picker.
+    await expect(page.getByTestId("content-split-resize-handle")).toBeVisible();
+    await page.getByRole("button", { name: "Toggle diff panel" }).click();
+    await expect(page.getByTestId("mobile-right-panel-picker")).toHaveCount(0);
+  });
+});
