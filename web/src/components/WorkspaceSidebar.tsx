@@ -970,8 +970,12 @@ export const SessionRow = memo(function SessionRow({
         <div
           ref={menuRef}
           data-testid="sidebar-context-menu"
-          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[180px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[180px] overflow-y-auto"
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+            maxHeight: "calc(100vh - 16px)",
+          }}
         >
           <button
             onClick={startRename}
@@ -1541,8 +1545,12 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
         <div
           ref={menuRef}
           data-testid="sidebar-group-context-menu"
-          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[190px]"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
+          className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[190px] overflow-y-auto"
+          style={{
+            left: contextMenu.x,
+            top: contextMenu.y,
+            maxHeight: "calc(100vh - 16px)",
+          }}
         >
           <button
             onClick={() => {
