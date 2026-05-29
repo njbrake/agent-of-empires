@@ -28,7 +28,11 @@ vi.mock("../diff/comments/CommentsBanner", () => ({
   CommentsBanner: () => <div data-testid="comments-banner" />,
 }));
 vi.mock("../diff/comments/SendCommentsDialog", () => ({
-  SendCommentsDialog: () => <div data-testid="send-dialog" />,
+  SendCommentsDialog: ({ onSent }: { onSent: () => void }) => (
+    <button data-testid="send-dialog" onClick={onSent}>
+      send
+    </button>
+  ),
 }));
 vi.mock("../cockpit/CockpitView", () => ({
   CockpitView: () => <div data-testid="cockpit-view" />,
@@ -58,17 +62,24 @@ function session(overrides: Partial<SessionResponse> = {}): SessionResponse {
   } as SessionResponse;
 }
 
-const diffComments = {
-  count: 0,
-  comments: [],
-  introDraft: "",
-  outroDraft: "",
-  clearAfterSend: true,
-  setIntroDraft: vi.fn(),
-  setOutroDraft: vi.fn(),
-  setClearAfterSend: vi.fn(),
-  clearComments: vi.fn(),
-} as unknown as ReturnType<typeof useDiffComments>;
+function makeStore(
+  overrides: Partial<ReturnType<typeof useDiffComments>> = {},
+): ReturnType<typeof useDiffComments> {
+  return {
+    count: 0,
+    comments: [],
+    introDraft: "",
+    outroDraft: "",
+    clearAfterSend: true,
+    setIntroDraft: vi.fn(),
+    setOutroDraft: vi.fn(),
+    setClearAfterSend: vi.fn(),
+    clearComments: vi.fn(),
+    ...overrides,
+  } as unknown as ReturnType<typeof useDiffComments>;
+}
+
+const diffComments = makeStore();
 
 function setup(overrides: Partial<Parameters<typeof MobileMainPane>[0]> = {}) {
   const onBackToAgent = vi.fn();
@@ -165,5 +176,39 @@ describe("MobileMainPane", () => {
       sendDialogOpen: true,
     });
     expect(screen.getByTestId("send-dialog")).toBeDefined();
+  });
+
+  it("on send: clears comments + drafts, closes the dialog and the open file", () => {
+    const onCloseSendDialog = vi.fn();
+    const onClearSelectedFile = vi.fn();
+    const store = makeStore({ clearAfterSend: true });
+    setup({
+      view: "diff",
+      commentsEnabled: true,
+      sendDialogOpen: true,
+      diffComments: store,
+      onCloseSendDialog,
+      onClearSelectedFile,
+    });
+    fireEvent.click(screen.getByTestId("send-dialog"));
+    expect(store.clearComments).toHaveBeenCalled();
+    expect(store.setIntroDraft).toHaveBeenCalledWith("");
+    expect(onCloseSendDialog).toHaveBeenCalled();
+    expect(onClearSelectedFile).toHaveBeenCalled();
+  });
+
+  it("on send with clearAfterSend off: keeps comments but still closes", () => {
+    const onCloseSendDialog = vi.fn();
+    const store = makeStore({ clearAfterSend: false });
+    setup({
+      view: "diff",
+      commentsEnabled: true,
+      sendDialogOpen: true,
+      diffComments: store,
+      onCloseSendDialog,
+    });
+    fireEvent.click(screen.getByTestId("send-dialog"));
+    expect(store.clearComments).not.toHaveBeenCalled();
+    expect(onCloseSendDialog).toHaveBeenCalled();
   });
 });
