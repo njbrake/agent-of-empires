@@ -810,7 +810,7 @@ export const SessionRow = memo(function SessionRow({
         onTouchEnd={handleTouchEnd}
         onTouchMove={clearLongPress}
         onTouchCancel={clearLongPress}
-        className={`block w-full text-left py-2 cursor-pointer select-none transition-colors duration-75 ${
+        className={`block w-full text-left py-2 cursor-pointer select-none [-webkit-touch-callout:none] transition-colors duration-75 ${
           indented ? "pl-6 pr-3" : "px-3"
         } ${
           isActive
