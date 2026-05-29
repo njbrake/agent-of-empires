@@ -74,16 +74,44 @@ test.describe("Mobile right panel picker (#1452)", () => {
     ).toBeGreaterThan(150);
   });
 
-  test("picker promotes the diff view and the back chip returns to the agent", async ({
+  test("picker promotes the diff view, opens a file, and the back chip returns to the agent", async ({
     page,
   }) => {
-    await setupAndOpenSession(page);
-    await openPicker(page);
+    await mockTerminalApis(page);
+    // Seed one changed file so the diff list has a row to tap; tapping it
+    // promotes the full-screen file viewer into the same pane.
+    await page.route("**/api/sessions/*/diff/files", (r) =>
+      r.fulfill({
+        json: {
+          files: [
+            {
+              path: "src/foo.ts",
+              old_path: null,
+              status: "modified",
+              additions: 2,
+              deletions: 1,
+            },
+          ],
+          per_repo_bases: [{ base_branch: "main" }],
+          warning: null,
+        },
+      }),
+    );
+    await page.goto("/");
+    await page.waitForTimeout(300);
+    await openMobileSidebar(page);
+    await clickSidebarSession(page, "pinch-test");
+    await page.locator(".xterm").first().waitFor({ state: "visible", timeout: 10_000 });
 
+    await openPicker(page);
     await page.getByTestId("mobile-right-panel-pick-diff").click();
     await expect(page.getByTestId("mobile-right-panel-picker")).toHaveCount(0);
     // The non-agent views carry a persistent back affordance.
     const back = page.getByTestId("mobile-back-to-agent");
+    await expect(back).toBeVisible();
+
+    // Tap the file row to promote the diff viewer in place.
+    await page.locator('button:has-text("foo.ts")').first().click();
     await expect(back).toBeVisible();
 
     await back.click();
