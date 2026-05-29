@@ -16,6 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/react";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
 vi.mock("../../hooks/useShikiTheme", () => ({
@@ -90,6 +91,16 @@ describe("Markdown wrapper config", () => {
   it("registers remark-gfm in the plugin list", () => {
     render(<Markdown text="x" />);
     expect(primitiveCalls[0]!.remarkPlugins).toContain(remarkGfm);
+  });
+
+  // #1472: user prompts opt into hard line breaks so the sent bubble
+  // matches the plain-textarea composer; assistant text leaves it off.
+  it("adds remark-breaks only when breaks is enabled", () => {
+    render(<Markdown text="x" breaks />);
+    render(<Markdown text="y" />);
+    expect(primitiveCalls[0]!.remarkPlugins).toContain(remarkBreaks);
+    expect(primitiveCalls[0]!.remarkPlugins).toContain(remarkGfm);
+    expect(primitiveCalls[1]!.remarkPlugins).not.toContain(remarkBreaks);
   });
 
   it("registers cockpit-specific component overrides", () => {
