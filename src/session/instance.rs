@@ -1760,7 +1760,7 @@ impl Instance {
             }) {
             Ok(_handle) => {}
             Err(e) => {
-                tracing::error!(target: "session.store", 
+                tracing::error!(target: "session.store",
                     session = %instance_id_for_log,
                     error = %e,
                     "Failed to spawn finalize-tmux thread"
@@ -2780,17 +2780,16 @@ fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
 ///
 /// Some terminal agents inherit the parent tmux env, which can carry
 /// `NO_COLOR=1` and silently disable their terminal palettes even though the
-/// web renderer handles ANSI fine. Unsetting `NO_COLOR` and forcing
-/// `TERM=xterm-256color`, `FORCE_COLOR=1`, and
-/// `COLORTERM=truecolor` at launch keeps color on without leaking the override
-/// to other agents.
+/// web renderer handles ANSI fine. Unsetting `NO_COLOR` and advertising
+/// `TERM=xterm-256color` plus `COLORTERM=truecolor` at launch keeps color on
+/// without pinning tools to a specific `FORCE_COLOR` depth.
 fn apply_agent_launch_env(cmd: &mut String, agent: Option<&'static crate::agents::AgentDef>) {
     if !matches!(agent.map(|a| a.name), Some("antigravity" | "codex")) {
         return;
     }
 
     *cmd = format!(
-        "env -u NO_COLOR TERM=xterm-256color FORCE_COLOR=1 COLORTERM=truecolor {}",
+        "env -u NO_COLOR TERM=xterm-256color COLORTERM=truecolor {}",
         cmd
     );
 }
@@ -4556,7 +4555,6 @@ mod tests {
 
         assert!(cmd_str.contains("env -u NO_COLOR"));
         assert!(cmd_str.contains("TERM=xterm-256color"));
-        assert!(cmd_str.contains("FORCE_COLOR=1"));
         assert!(cmd_str.contains("COLORTERM=truecolor"));
         assert!(cmd_str.contains("agy"));
     }
@@ -4571,7 +4569,6 @@ mod tests {
 
         assert!(cmd_str.contains("env -u NO_COLOR"));
         assert!(cmd_str.contains("TERM=xterm-256color"));
-        assert!(cmd_str.contains("FORCE_COLOR=1"));
         assert!(cmd_str.contains("COLORTERM=truecolor"));
         assert!(cmd_str.contains("agy --some-flag"));
     }
@@ -4585,7 +4582,6 @@ mod tests {
 
         assert!(cmd_str.contains("env -u NO_COLOR"));
         assert!(cmd_str.contains("TERM=xterm-256color"));
-        assert!(cmd_str.contains("FORCE_COLOR=1"));
         assert!(cmd_str.contains("COLORTERM=truecolor"));
         assert!(cmd_str.contains("codex"));
     }
@@ -4599,7 +4595,6 @@ mod tests {
 
         assert!(!cmd_str.contains("env -u NO_COLOR"));
         assert!(!cmd_str.contains("TERM=xterm-256color"));
-        assert!(!cmd_str.contains("FORCE_COLOR=1"));
         assert!(!cmd_str.contains("COLORTERM=truecolor"));
     }
 
