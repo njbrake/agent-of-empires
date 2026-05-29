@@ -998,7 +998,8 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/cockpit/Markdown.test.tsx"
+        "src/components/cockpit/Markdown.test.tsx",
+        "src/components/cockpit/Markdown.breaks.test.tsx"
       ],
       "components": [
         "web/src/components/cockpit/Markdown.tsx"
