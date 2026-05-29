@@ -4064,6 +4064,45 @@ fn apply_status_update_skips_terminal_states() {
 
 #[test]
 #[serial]
+fn apply_stop_results_transitions_instance_to_stopped() {
+    use crate::session::Status;
+    use crate::tui::stop_poller::StopRequest;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+
+    // Pretend the session is live, then dispatch the stop to the background
+    // poller exactly as Action::StopSession does. The fixture instance has no
+    // tmux pane or sandbox, so perform_stop returns success quickly.
+    env.view
+        .mutate_instance(&id, |inst| inst.status = Status::Running);
+    let inst = env.view.get_instance(&id).unwrap().clone();
+    env.view.stop_poller.request_stop(StopRequest {
+        session_id: id.clone(),
+        instance: inst,
+    });
+
+    // Poll the result-application path the main loop runs each frame.
+    let mut applied = false;
+    for _ in 0..50 {
+        if env.view.apply_stop_results() {
+            applied = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(applied, "apply_stop_results never observed the stop result");
+
+    let inst = env.view.get_instance(&id).unwrap();
+    assert_eq!(inst.status, Status::Stopped);
+    assert_eq!(inst.last_error, None);
+}
+
+#[test]
+#[serial]
 fn apply_status_update_runs_status_hook_on_transition() {
     use crate::session::Status;
     use crate::status_hooks::{take_recorded_launches, StatusHookConfig};

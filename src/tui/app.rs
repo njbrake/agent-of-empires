@@ -1050,6 +1050,11 @@ impl App {
                 needs_full_refresh = true;
             }
 
+            if self.home.apply_stop_results() {
+                refresh_needed = true;
+                needs_full_refresh = true;
+            }
+
             if self.home.apply_session_id_updates() {
                 refresh_needed = true;
                 needs_full_refresh = true;
@@ -1681,28 +1686,21 @@ impl App {
             }
             Action::StopSession(id) => {
                 if let Some(inst) = self.home.get_instance(&id) {
-                    let inst_clone = inst.clone();
-                    // Set Stopped immediately so the status poller won't
-                    // override to Error while stop() blocks (docker stop
-                    // can take up to 10s).
+                    // Run the stop on a background thread: `inst.stop()` calls
+                    // `docker stop` for sandboxed sessions, which can block for
+                    // the container's grace period (~10s) and would otherwise
+                    // freeze the TUI (issue #1496). Set Stopped immediately so
+                    // the status poller won't override to Error while the stop
+                    // is in flight; the result is applied in the main loop via
+                    // `apply_stop_results`.
+                    let request = crate::tui::stop_poller::StopRequest {
+                        session_id: id.clone(),
+                        instance: inst.clone(),
+                    };
                     self.home
                         .set_instance_status(&id, crate::session::Status::Stopped);
-                    match inst_clone.stop() {
-                        Ok(()) => {
-                            crate::tmux::refresh_session_cache();
-                            self.home.reload()?;
-                            self.home
-                                .set_instance_status(&id, crate::session::Status::Stopped);
-                            self.home.save()?;
-                        }
-                        Err(e) => {
-                            tracing::error!(target: "tui.input", "Failed to stop session: {}", e);
-                            self.home.set_instance_error(&id, Some(e.to_string()));
-                            self.home
-                                .set_instance_status(&id, crate::session::Status::Error);
-                            self.home.save()?;
-                        }
-                    }
+                    self.home.save()?;
+                    self.home.stop_poller.request_stop(request);
                 }
             }
             Action::SetTheme(name) => {

@@ -16,6 +16,7 @@ pub(crate) mod remote_home;
 pub(crate) mod responsive;
 pub mod settings;
 mod status_poller;
+mod stop_poller;
 pub(crate) mod styles;
 
 pub use app::*;
