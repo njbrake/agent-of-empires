@@ -63,7 +63,12 @@ test.describe("Mobile soft-keyboard Backspace autorepeat", () => {
     await page.goto("/");
     await openMobileSidebar(page);
     await clickSidebarSession(page, "pinch-test");
-    await page.locator(".xterm").waitFor({ state: "visible", timeout: 10_000 });
+    // Desktop renders two `.xterm` nodes (agent + paired); scope to the first
+    // to avoid a strict-mode locator violation.
+    await page
+      .locator(".xterm")
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
     await expect
       .poll(() => handle.wsMessages.length, { timeout: 5_000 })
       .toBeGreaterThan(0);
@@ -128,7 +133,12 @@ test.describe("Desktop Backspace path unchanged", () => {
     const handle = await mockTerminalApis(page);
     await page.goto("/");
     await clickSidebarSession(page, "pinch-test");
-    await page.locator(".xterm").waitFor({ state: "visible", timeout: 10_000 });
+    // Desktop renders two `.xterm` nodes (agent + paired); scope to the first
+    // to avoid a strict-mode locator violation.
+    await page
+      .locator(".xterm")
+      .first()
+      .waitFor({ state: "visible", timeout: 10_000 });
     await expect
       .poll(() => handle.wsMessages.length, { timeout: 5_000 })
       .toBeGreaterThan(0);
