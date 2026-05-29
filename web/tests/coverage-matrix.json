@@ -1323,6 +1323,20 @@
       ]
     },
     {
+      "id": "story.sidebar-select-focuses-input",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-select-focuses-terminal.spec.ts",
+        "tests/live/cockpit-stories/sidebar-select-focuses-composer.spec.ts"
+      ],
+      "components": [
+        "web/src/App.tsx",
+        "web/src/lib/terminalFocus.ts",
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
       "id": "cockpit.story.substrate-switch-to-cockpit",
       "kind": "live-playwright",
       "risk": "medium",

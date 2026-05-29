@@ -32,6 +32,7 @@ import type { CockpitState } from "../../lib/cockpitTypes";
 import { getDraft, setDraft } from "../../lib/cockpitDrafts";
 import { useMobileKeyboard } from "../../hooks/useMobileKeyboard";
 import { useAgentProfile } from "../../lib/agentProfileContext";
+import { useFocusTerminalTarget } from "../../hooks/useFocusTerminalTarget";
 import { useDictationBurstGuard } from "./useDictationBurstGuard";
 
 export {
@@ -440,6 +441,13 @@ export function Composer({
       window.clearTimeout(t2);
     };
   }, [isMobile]);
+
+  // Explicit focus from sidebar session selection (#1454). Lands focus on
+  // the composer even when it is already mounted (re-selecting the active
+  // session, where the keyed remount above never fires); the latch inside
+  // the hook covers the first-open race. App only dispatches "composer" on
+  // desktop, so no coarse-pointer gate is needed here.
+  useFocusTerminalTarget("composer", taRef);
 
   const wrapperLayout = composerWrapperLayout({ keyboardOpen });
   return (

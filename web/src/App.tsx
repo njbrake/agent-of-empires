@@ -18,6 +18,7 @@ import { SendCommentsDialog } from "./components/diff/comments/SendCommentsDialo
 import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
+import { useIsCoarsePointer } from "./hooks/useIsCoarsePointer";
 import {
   loginStatus,
   logout,
@@ -37,6 +38,7 @@ import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
 import {
   dispatchFocusTerminal,
+  requestSessionInputFocus,
   setPendingTerminalFocus,
 } from "./lib/terminalFocus";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
@@ -346,14 +348,29 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     }
   };
 
+  // Selecting a session in the sidebar should land focus on its canonical
+  // "type here" target so the user can start typing without a second click:
+  // the cockpit composer in cockpit mode, the xterm textarea otherwise. See
+  // requestSessionInputFocus for the dispatch/latch and coarse-pointer rules.
+  const isCoarse = useIsCoarsePointer();
+  const focusAgentInput = useCallback(
+    (session: SessionResponse | undefined) =>
+      requestSessionInputFocus(session, isCoarse),
+    [isCoarse],
+  );
+
   const handleSelectSession = useCallback((sessionId: string) => {
     const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
     if (ws) {
       navigate(`/session/${encodeURIComponent(sessionId)}`);
-      focusKeyboardProxy();
+      // The proxy is a real textarea; focusing it inside the click gesture
+      // would pop the soft keyboard on touch devices, so skip it on coarse
+      // pointers (#1178), matching the focusAgentInput suppression.
+      if (!isCoarse) focusKeyboardProxy();
+      focusAgentInput(ws.sessions.find((s) => s.id === sessionId));
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
-  }, [navigate, workspaces]);
+  }, [navigate, workspaces, focusAgentInput, isCoarse]);
 
   const handleSelectWorkspace = (workspaceId: string) => {
     const ws = workspaces.find((w) => w.id === workspaceId);
@@ -361,14 +378,15 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       const running = ws.sessions.find((s) =>
         isSessionActive(s, idleDecayWindowMs),
       );
-      const picked = running?.id ?? ws.sessions[0]?.id ?? null;
+      const picked = running ?? ws.sessions[0] ?? null;
       if (picked) {
-        navigate(`/session/${encodeURIComponent(picked)}`);
+        navigate(`/session/${encodeURIComponent(picked.id)}`);
+        focusAgentInput(picked);
       } else {
         navigate("/");
       }
     }
-    focusKeyboardProxy();
+    if (!isCoarse) focusKeyboardProxy();
     if (window.innerWidth < 768) {
       setSidebarOpen(false);
     }
