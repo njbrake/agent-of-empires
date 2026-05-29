@@ -99,7 +99,7 @@ impl ExpectedAgent {
         match self {
             Self::ClaudeAgentAcp => CompatibilityPolicy {
                 expected_name: Some("@agentclientprotocol/claude-agent-acp"),
-                min_version: Some(semver::Version::new(0, 38, 0)),
+                min_version: Some(semver::Version::new(0, 39, 0)),
                 required_protocol: ProtocolVersion::V1,
                 fail_on_missing_agent_info: true,
             },
