@@ -9,7 +9,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MobileTerminalToolbar } from "../MobileTerminalToolbar";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  // Drop the per-test isSecureContext override (set in the paste-branch test)
+  // so it falls back to the default and does not leak into other tests.
+  delete (window as { isSecureContext?: boolean }).isSecureContext;
+});
 
 interface Overrides {
   keyboardOpen?: boolean;
