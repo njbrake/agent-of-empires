@@ -6,7 +6,7 @@
 // desktop) live in `web/tests/mobile-settings-header.spec.ts`; this file
 // covers the conditional render branches and the back-button click path.
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 vi.mock("../../../lib/api", () => ({
@@ -47,16 +47,17 @@ describe("SettingsHeader", () => {
     expect(screen.getByText("Saving...")).toBeTruthy();
   });
 
-  it("does not render saveError message when saveError is null", () => {
+  it("does not render saveError span when saveError is null", () => {
     render(<SettingsHeader {...baseProps} saveError={null} />);
-    expect(screen.queryByText(/failed/i)).toBeNull();
+    expect(screen.queryByTestId("settings-header-save-error")).toBeNull();
   });
 
   it("renders saveError message when saveError is set", () => {
     render(
       <SettingsHeader {...baseProps} saveError="Save failed: network error" />,
     );
-    expect(screen.getByText("Save failed: network error")).toBeTruthy();
+    const errorSpan = screen.getByTestId("settings-header-save-error");
+    expect(errorSpan.textContent).toBe("Save failed: network error");
   });
 
   it("renders both Saving... and saveError together when both are set", () => {
