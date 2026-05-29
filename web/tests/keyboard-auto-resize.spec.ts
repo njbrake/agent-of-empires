@@ -3,22 +3,20 @@ import { devices, type Page } from "@playwright/test";
 import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
 import { mockTerminalApis, type MockHandle } from "./helpers/terminal-mocks";
 
-// Regression for the SIGWINCH-on-every-soft-keyboard-cycle bug.
+// #1432: the mobile terminal auto-resizes as the soft keyboard opens/closes.
 //
-// useMobileKeyboard previously exposed only `keyboardHeight` (live), and
-// TerminalView padded its viewport by that. Every time the soft keyboard
-// dismissed, paddingBottom flipped back to 0, the terminal container grew,
-// ResizeObserver fired, and a fresh PTY resize landed at the server.
-// claude (and any non-fullscreen TUI) redrew on the SIGWINCH and stacked
-// banners into tmux scrollback.
+// The pane is padded by the LIVE cross-platform keyboard occlusion
+// (stableFullHeight - visualViewport.height), so opening the keyboard shrinks
+// the terminal and closing it grows it back. The previous design latched a
+// fixed reservation and required a manual fullscreen FAB to reclaim space; that
+// reservation, its localStorage seed, and the FAB are gone.
 //
-// The fix latches `reservedKeyboardHeight` (the largest occlusion seen)
-// and pads by that. The pane stays at the keyboard-reserved size whether
-// the keyboard is currently up or not, so showing/hiding it produces
-// zero new resize messages after the initial latch. iOS PWA / iOS 26
-// Safari shrink innerHeight with the keyboard, which would also shrink
-// the App root via 100dvh; App.tsx pins the root to a measured pixel
-// height so that path is also stable.
+// The occlusion commit is DEBOUNCED in useMobileKeyboard, so each open/close
+// produces a single PTY resize (a bounded couple, allowing for ResizeObserver
+// noise), not one per animation frame. iOS PWA / iOS 26 Safari shrink
+// innerHeight with the keyboard; App.tsx still pins the root to a measured
+// pixel height so occlusion padding (not a shrinking root) is the one thing
+// that moves the terminal, keeping the behavior identical across platforms.
 
 test.use({ ...devices["iPhone 13"] });
 
@@ -41,6 +39,11 @@ function extractResizes(handle: MockHandle): ResizeMsg[] {
     }
   }
   return out;
+}
+
+function lastResize(handle: MockHandle): ResizeMsg | undefined {
+  const all = extractResizes(handle);
+  return all[all.length - 1];
 }
 
 // Override visualViewport.height (and optionally innerHeight) to simulate
@@ -97,8 +100,8 @@ async function openSession(page: Page, handle: MockHandle) {
     .toBeGreaterThan(0);
 }
 
-test.describe("Keyboard cycle stickiness regression", () => {
-  test("Safari mode: kb show/hide after initial latch produces zero resizes", async ({
+test.describe("Keyboard auto-resize (#1432)", () => {
+  test("Safari mode: opening the keyboard shrinks the terminal, closing grows it back", async ({
     page,
   }) => {
     const handle = await mockTerminalApis(page);
@@ -106,30 +109,48 @@ test.describe("Keyboard cycle stickiness regression", () => {
     await openSession(page, handle);
     await page.waitForTimeout(1000);
 
-    // First kb open: latches the reservation. Allowed to produce one
-    // resize (or zero, if the seed already covered the occlusion).
-    await setKeyboard(page, { open: true, px: 320, pwa: false });
-    await page.waitForTimeout(500);
-
     const baselineCount = extractResizes(handle).length;
+    const baselineRows = lastResize(handle)?.rows ?? 0;
+    expect(baselineRows).toBeGreaterThan(0);
 
-    // Now cycle: close, open, close, open, close. Each cycle should
-    // produce ZERO new resize messages — the whole point of the fix.
-    for (const open of [false, true, false, true, false]) {
-      await setKeyboard(page, { open, px: 320, pwa: false });
-      await page.waitForTimeout(300);
-    }
+    // Open keyboard: pane is padded by the live occlusion, so the terminal
+    // shrinks. Debounce collapses the animation into a single resize (allow
+    // a couple for ResizeObserver noise).
+    await setKeyboard(page, { open: true, px: 320, pwa: false });
+    await page.waitForTimeout(800);
 
-    const afterCycles = extractResizes(handle).length;
-    const delta = afterCycles - baselineCount;
+    const afterOpenCount = extractResizes(handle).length;
+    const afterOpenRows = lastResize(handle)?.rows ?? 0;
+    const openDelta = afterOpenCount - baselineCount;
     expect(
-      delta,
-      `kb show/hide after initial latch produced ${delta} extra resize msgs ` +
-        `(expected 0). Full sequence: ${JSON.stringify(extractResizes(handle))}`,
-    ).toBe(0);
+      openDelta,
+      `opening the keyboard should emit 1 resize (<=2 tolerated), got ${openDelta}`,
+    ).toBeGreaterThanOrEqual(1);
+    expect(openDelta).toBeLessThanOrEqual(2);
+    expect(
+      afterOpenRows,
+      "terminal should have fewer rows while the keyboard occludes the viewport",
+    ).toBeLessThan(baselineRows);
+
+    // Close keyboard: occlusion releases to 0, the terminal grows back.
+    await setKeyboard(page, { open: false, pwa: false });
+    await page.waitForTimeout(800);
+
+    const afterCloseCount = extractResizes(handle).length;
+    const afterCloseRows = lastResize(handle)?.rows ?? 0;
+    const closeDelta = afterCloseCount - afterOpenCount;
+    expect(
+      closeDelta,
+      `closing the keyboard should emit 1 resize (<=2 tolerated), got ${closeDelta}`,
+    ).toBeGreaterThanOrEqual(1);
+    expect(closeDelta).toBeLessThanOrEqual(2);
+    expect(
+      afterCloseRows,
+      "terminal should grow back to roughly the no-keyboard row count",
+    ).toBeGreaterThan(afterOpenRows);
   });
 
-  test("PWA mode: innerHeight shrinks with kb but App root stays pinned, no resize", async ({
+  test("PWA mode: innerHeight shrinks with the keyboard but occlusion padding still resizes the terminal", async ({
     page,
   }) => {
     const handle = await mockTerminalApis(page);
@@ -137,28 +158,26 @@ test.describe("Keyboard cycle stickiness regression", () => {
     await openSession(page, handle);
     await page.waitForTimeout(1000);
 
-    // First kb open in PWA mode (faked innerHeight shrinks alongside vv).
-    // We don't use page.setViewportSize here: that changes the actual
-    // browser window, which has different CSS-unit and ResizeObserver
-    // behavior than the production iOS PWA case (where layout viewport
-    // shrinks but the OS-level window is unchanged).
-    await setKeyboard(page, { open: true, px: 320, pwa: true });
-    await page.waitForTimeout(500);
-
     const baselineCount = extractResizes(handle).length;
+    const baselineRows = lastResize(handle)?.rows ?? 0;
+    expect(baselineRows).toBeGreaterThan(0);
 
-    for (const open of [false, true, false, true, false]) {
-      await setKeyboard(page, { open, px: 320, pwa: true });
-      await page.waitForTimeout(300);
-    }
+    // PWA: innerHeight shrinks alongside vv.height. The old design relied on
+    // keyboardHeight here, which is 0 in this mode, so nothing resized. The
+    // occlusion signal is measured against the remembered full height, so it
+    // is non-zero and the terminal shrinks like everywhere else.
+    await setKeyboard(page, { open: true, px: 320, pwa: true });
+    await page.waitForTimeout(800);
 
-    const afterCycles = extractResizes(handle).length;
-    const delta = afterCycles - baselineCount;
+    const afterOpenCount = extractResizes(handle).length;
+    const afterOpenRows = lastResize(handle)?.rows ?? 0;
+    const openDelta = afterOpenCount - baselineCount;
     expect(
-      delta,
-      `PWA kb cycles after latch produced ${delta} extra resize msgs ` +
-        `(expected 0). Full sequence: ${JSON.stringify(extractResizes(handle))}`,
-    ).toBe(0);
+      openDelta,
+      `PWA keyboard open should emit 1 resize (<=2 tolerated), got ${openDelta}`,
+    ).toBeGreaterThanOrEqual(1);
+    expect(openDelta).toBeLessThanOrEqual(2);
+    expect(afterOpenRows).toBeLessThan(baselineRows);
   });
 
   test("App root is pinned to stableViewportHeight on mobile", async ({
@@ -188,43 +207,30 @@ test.describe("Keyboard cycle stickiness regression", () => {
     );
   });
 
-  test("fullscreen toggle FAB releases the reservation (one explicit resize)", async ({
+  test("no persisted reservation: a closed keyboard on load starts full-size", async ({
     page,
   }) => {
     const handle = await mockTerminalApis(page);
+    // Seed the now-removed reservation key. It must be ignored: the pane
+    // should not start shrunk just because a prior session latched a value.
+    await page.addInitScript(() => {
+      try {
+        localStorage.setItem("aoe-mobile-keyboard-reservation", "320");
+      } catch {
+        // ignore
+      }
+    });
     await page.goto("/");
     await openSession(page, handle);
     await page.waitForTimeout(1000);
 
-    // Latch a reservation so the FAB renders.
-    await setKeyboard(page, { open: true, px: 320, pwa: false });
-    await page.waitForTimeout(500);
-    await setKeyboard(page, { open: false, pwa: false });
-    await page.waitForTimeout(300);
-
-    const fab = page.locator(
-      '[data-term="agent"] >> button[aria-label="Expand terminal to fullscreen"]',
-    );
-    await expect(fab).toBeVisible();
-
-    const before = extractResizes(handle).length;
-    await fab.click();
-    await page.waitForTimeout(500);
-    const afterOn = extractResizes(handle).length;
-
-    // Toggling fullscreen ON releases paddingBottom -> the terminal
-    // container grows -> exactly one resize message.
-    expect(afterOn - before).toBeGreaterThanOrEqual(1);
-    expect(afterOn - before).toBeLessThanOrEqual(2);
-
-    const fabExit = page.locator(
-      '[data-term="agent"] >> button[aria-label="Exit fullscreen terminal"]',
-    );
-    await fabExit.click();
-    await page.waitForTimeout(500);
-    const afterOff = extractResizes(handle).length;
-
-    expect(afterOff - afterOn).toBeGreaterThanOrEqual(1);
-    expect(afterOff - afterOn).toBeLessThanOrEqual(2);
+    const rootPaddingBottom = await page.evaluate(() => {
+      const panel = document.querySelector('[data-term="agent"]');
+      const root = panel?.closest<HTMLElement>("div.flex-1.flex.flex-col");
+      return root ? getComputedStyle(root).paddingBottom : "";
+    });
+    // No keyboard is open, so no occlusion padding is applied regardless of
+    // the stale localStorage value.
+    expect(["0px", "", "auto"]).toContain(rootPaddingBottom);
   });
 });
