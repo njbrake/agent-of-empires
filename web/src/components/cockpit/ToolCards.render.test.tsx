@@ -29,9 +29,14 @@ vi.mock("../../hooks/useShikiTheme", () => ({
   useShikiTheme: () => ({ theme: "dark-plus", appearance: "dark" }),
 }));
 
-import { ToolCard } from "./ToolCards";
+import { ToolCard, TodoGroupCard } from "./ToolCards";
 import { AgentProfileProvider } from "../../lib/agentProfileContext";
-import { fixtures, makeCompletion, makeError } from "./__fixtures__/toolCalls";
+import {
+  fixtures,
+  makeCompletion,
+  makeError,
+  makeToolCall,
+} from "./__fixtures__/toolCalls";
 
 function Wrap({
   toolKey,
@@ -185,6 +190,56 @@ describe("ToolCards profile-gated dispatch (claude)", () => {
       </Wrap>,
     );
     expect(container.textContent).toContain("checking deploy");
+  });
+});
+
+describe("TodoGroupCard fold (#1468)", () => {
+  function snapshot(id: string, content: string, status: string) {
+    return {
+      tool: makeToolCall({
+        id,
+        name: "TodoWrite",
+        kind: "other",
+        args_preview: JSON.stringify({ todos: [{ content, status }] }),
+      }),
+      result: makeCompletion({ id: `done-${id}`, toolCallId: id }),
+    };
+  }
+
+  const items = [
+    snapshot("td1", "Step Alpha", "in_progress"),
+    snapshot("td2", "Step Bravo", "in_progress"),
+    snapshot("td3", "Step Charlie", "in_progress"),
+  ];
+
+  it("shows the latest snapshot collapsed without expanding", () => {
+    const { container } = render(
+      <Wrap toolKey="claude">
+        <TodoGroupCard items={items} />
+      </Wrap>,
+    );
+    expect(container.textContent).toContain("todos");
+    expect(container.textContent).toContain("updated 3 times");
+    // Collapsed view shows the latest list only.
+    expect(container.textContent).toContain("Step Charlie");
+    expect(container.textContent).not.toContain("Step Alpha");
+    expect(container.textContent).not.toContain("Step Bravo");
+  });
+
+  it("reveals every snapshot in order on expand", () => {
+    const { container, getByRole } = render(
+      <Wrap toolKey="claude">
+        <TodoGroupCard items={items} />
+      </Wrap>,
+    );
+    // Collapsed: only the group header carries a toggle.
+    fireEvent.click(getByRole("button"));
+    const text = container.textContent ?? "";
+    expect(text).toContain("Step Alpha");
+    expect(text).toContain("Step Bravo");
+    expect(text).toContain("Step Charlie");
+    // History renders each call in original order.
+    expect(text.indexOf("Step Alpha")).toBeLessThan(text.indexOf("Step Bravo"));
   });
 });
 
