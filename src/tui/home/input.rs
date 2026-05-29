@@ -646,9 +646,11 @@ impl HomeView {
                     DialogResult::Submit(outcome) => {
                         self.intro_dialog = None;
                         apply_intro_outcome(&outcome);
-                        if let Some(theme) = outcome.final_theme.clone() {
-                            self.pending_intro_theme = Some(theme);
-                        }
+                        // No pending_intro_theme: the live preview
+                        // already applied the chosen theme to
+                        // `app.theme`; re-applying would force a
+                        // terminal.clear() (the close-flash). Same
+                        // rationale as the keyboard Submit branch.
                     }
                 }
                 if let Some(name) = preview {
@@ -1173,9 +1175,12 @@ impl HomeView {
                 DialogResult::Submit(outcome) => {
                     self.intro_dialog = None;
                     apply_intro_outcome(&outcome);
-                    if let Some(theme) = outcome.final_theme.clone() {
-                        return Some(Action::SetTheme(theme));
-                    }
+                    // No SetTheme dispatch: the live preview already
+                    // applied the chosen theme to `app.theme` while the
+                    // user was on the picker page. Re-dispatching here
+                    // would only re-trigger `set_theme → needs_redraw`,
+                    // which forces a `terminal.clear()` on the next loop
+                    // iteration — the close-flash the user sees.
                     return None;
                 }
             }

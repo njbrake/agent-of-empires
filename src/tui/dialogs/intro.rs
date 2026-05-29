@@ -144,14 +144,14 @@ impl IntroDialog {
         self.pending_preview.take()
     }
 
-    /// True when the current page is meant to be read and copied from rather
-    /// than clicked into. The home view uses this to turn xterm mouse
-    /// tracking off so the terminal can do native drag-to-select on the
-    /// docs and YouTube URLs. Page navigation on these pages is keyboard
-    /// only; the click-driven pages (FirstSession, AttachMode, ThemePicker)
-    /// keep capture on so buttons and rows stay clickable.
+    /// True on every page of the wizard so xterm mouse tracking stays
+    /// off and the terminal can do native drag-to-select on the docs /
+    /// YouTube / Discord URLs (and any other text). The trade is that
+    /// the footer [Skip] / [Back] / [Next →] / [Finish] buttons aren't
+    /// clickable; navigation is keyboard-only (Enter / ← / Esc), which
+    /// the hint on each page advertises.
     pub fn wants_text_selection(&self) -> bool {
-        matches!(self.current_page(), Page::Welcome | Page::Done)
+        true
     }
 
     fn current_page(&self) -> Page {
@@ -460,11 +460,11 @@ impl IntroDialog {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "→/Enter forward, ← back, Esc skip.  Drag to select URLs.",
+                "→/Enter forward, ← back, Esc skip.",
                 Style::default().fg(theme.hint).italic(),
             )),
             Line::from(Span::styled(
-                "Buttons, theme rows, and attach-mode options are clickable too.",
+                "Drag to select the URLs above; your terminal handles the copy.",
                 Style::default().fg(theme.hint).italic(),
             )),
         ];
@@ -1026,22 +1026,17 @@ mod tests {
     }
 
     #[test]
-    fn wants_text_selection_on_url_pages_only() {
+    fn wants_text_selection_stays_on_so_urls_drag_copy_anywhere() {
+        // The whole walkthrough wants mouse capture off so the docs /
+        // YouTube / Discord URLs (and any other text) drag-copy
+        // natively. Lock that in for every page; a future maintainer
+        // who flips this for "clickable buttons" should make a
+        // conscious choice rather than regressing the copy flow.
         let mut dialog = IntroDialog::new("default");
-        // Welcome
-        assert!(dialog.wants_text_selection());
-        // -> FirstSession
-        dialog.handle_key(key(KeyCode::Enter));
-        assert!(!dialog.wants_text_selection());
-        // -> AttachMode
-        dialog.handle_key(key(KeyCode::Enter));
-        assert!(!dialog.wants_text_selection());
-        // -> ThemePicker
-        dialog.handle_key(key(KeyCode::Enter));
-        assert!(!dialog.wants_text_selection());
-        // -> Done
-        dialog.handle_key(key(KeyCode::Enter));
-        assert!(dialog.wants_text_selection());
+        for _ in 0..5 {
+            assert!(dialog.wants_text_selection());
+            dialog.handle_key(key(KeyCode::Right));
+        }
     }
 
     #[test]
