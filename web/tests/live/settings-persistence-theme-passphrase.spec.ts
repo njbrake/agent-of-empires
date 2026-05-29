@@ -110,14 +110,20 @@ async function bootDashboardAndNavigate(
   path: string,
 ): Promise<void> {
   await seedAuth(page, handle);
-  await page.goto(handle.baseUrl);
-  // Wait until at least one authenticated API call lands successfully.
-  // /api/about is served unconditionally once auth passes, so once it
-  // resolves the SPA's cookie+binding pair is known good.
-  await page.waitForResponse(
-    (res) => res.url().endsWith("/api/about") && res.status() === 200,
-    { timeout: 10_000 },
-  );
+  // Register the response listener BEFORE navigating: the SPA fires
+  // /api/about during bootstrap, which can resolve before `page.goto`
+  // settles. Attaching the wait afterwards races that and would miss the
+  // response, then time out. `Promise.all` attaches the listener first,
+  // then triggers the navigation. /api/about is served unconditionally
+  // once auth passes, so once it resolves the SPA's cookie+binding pair is
+  // known good.
+  await Promise.all([
+    page.waitForResponse(
+      (res) => res.url().endsWith("/api/about") && res.status() === 200,
+      { timeout: 10_000 },
+    ),
+    page.goto(handle.baseUrl),
+  ]);
   if (path !== "/") {
     await page.evaluate((target) => {
       window.history.pushState({}, "", target);
@@ -193,11 +199,16 @@ test("theme picker persists across reload + restart without passphrase prompt", 
     )
     .toBe("#282a36");
 
-  await page.reload();
-  await page.waitForResponse(
-    (res) => res.url().endsWith("/api/about") && res.status() === 200,
-    { timeout: 10_000 },
-  );
+  // Same register-before-navigate guard as the initial boot: the post-reload
+  // /api/about can resolve before `page.reload()` settles, so attach the
+  // listener first via `Promise.all`.
+  await Promise.all([
+    page.waitForResponse(
+      (res) => res.url().endsWith("/api/about") && res.status() === 200,
+      { timeout: 10_000 },
+    ),
+    page.reload(),
+  ]);
   const afterReload = await fetch(profileUrl, { headers: authHeaders(servePreauthed) }).then(
     (r) => r.json(),
   );
