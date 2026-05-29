@@ -38,6 +38,15 @@ enum Page {
     Done,
 }
 
+/// Which footer button the mouse is currently over. Drives a hover-tint
+/// background on the button text without moving keyboard focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoverButton {
+    Skip,
+    Back,
+    Next,
+}
+
 impl Page {
     fn all() -> &'static [Page] {
         &[
@@ -86,6 +95,18 @@ pub struct IntroDialog {
     /// Hit-test rects for the two attach-mode options on the AttachMode
     /// page (LiveSend, Tmux). Empty before the first render.
     attach_mode_areas: [Rect; 2],
+
+    /// Which footer button (if any) the mouse is hovering. Hover paints a
+    /// background tint on the button text but never moves the keyboard
+    /// cursor; click drives the actual action.
+    hovered_button: Option<HoverButton>,
+    /// Index into `theme_row_areas` for the row the mouse is currently
+    /// hovering on the ThemePicker page. `None` when not on that page or
+    /// when the mouse isn't over a row.
+    hovered_theme_row: Option<usize>,
+    /// Index into `attach_mode_areas` (0 = LiveSend, 1 = Tmux) for the
+    /// option the mouse is currently hovering on the AttachMode page.
+    hovered_attach_idx: Option<usize>,
 }
 
 impl IntroDialog {
@@ -110,6 +131,9 @@ impl IntroDialog {
             attach_mode_cursor: NewSessionAttachMode::LiveSend,
             attach_mode_visited: false,
             attach_mode_areas: [Rect::default(), Rect::default()],
+            hovered_button: None,
+            hovered_theme_row: None,
+            hovered_attach_idx: None,
         }
     }
 
@@ -143,6 +167,7 @@ impl IntroDialog {
             return Some(DialogResult::Submit(self.outcome()));
         }
         self.page_idx += 1;
+        self.clear_page_hover();
         match self.current_page() {
             Page::ThemePicker => {
                 self.theme_visited = true;
@@ -159,6 +184,7 @@ impl IntroDialog {
     fn go_back(&mut self) {
         if self.page_idx > 0 {
             self.page_idx -= 1;
+            self.clear_page_hover();
         }
     }
 
@@ -258,6 +284,54 @@ impl IntroDialog {
             }
             _ => DialogResult::Continue,
         }
+    }
+
+    /// Update the hover state from a `MouseEventKind::Moved` event.
+    /// Mirrors the pattern in `SnoozeDurationDialog` / `SortPickerDialog`:
+    /// the hover indicator tracks the cursor but never moves the keyboard
+    /// focus, so a stray mouse drift while reading the page can't silently
+    /// switch the user's pick. Returns true only when the hover target
+    /// resolves to a different rect, so the caller can skip a redraw on
+    /// every pixel-level mouse twitch.
+    pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
+        let pos = Position::from((col, row));
+        let new_button = if self.skip_button_area.contains(pos) {
+            Some(HoverButton::Skip)
+        } else if self.page_idx > 0 && self.back_button_area.contains(pos) {
+            Some(HoverButton::Back)
+        } else if self.next_button_area.contains(pos) {
+            Some(HoverButton::Next)
+        } else {
+            None
+        };
+        let new_theme = if self.current_page() == Page::ThemePicker {
+            self.theme_row_areas
+                .iter()
+                .position(|a| a.contains(pos) && a.width > 0)
+        } else {
+            None
+        };
+        let new_attach = if self.current_page() == Page::AttachMode {
+            self.attach_mode_areas.iter().position(|a| a.contains(pos))
+        } else {
+            None
+        };
+        let changed = self.hovered_button != new_button
+            || self.hovered_theme_row != new_theme
+            || self.hovered_attach_idx != new_attach;
+        self.hovered_button = new_button;
+        self.hovered_theme_row = new_theme;
+        self.hovered_attach_idx = new_attach;
+        changed
+    }
+
+    /// Drop per-page hover state when the page changes; the rects baked
+    /// during the prior render no longer correspond to anything visible,
+    /// so a stale hover would paint at the wrong coords until the next
+    /// mouse-move event recomputes things.
+    fn clear_page_hover(&mut self) {
+        self.hovered_theme_row = None;
+        self.hovered_attach_idx = None;
     }
 
     /// Route a left-click. Returns `Some(result)` when the click hit a known
@@ -386,7 +460,11 @@ impl IntroDialog {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "→/Enter forward, ← back, Esc skip.  Drag to select the URLs above.",
+                "→/Enter forward, ← back, Esc skip.  Drag to select URLs.",
+                Style::default().fg(theme.hint).italic(),
+            )),
+            Line::from(Span::styled(
+                "Buttons, theme rows, and attach-mode options are clickable too.",
                 Style::default().fg(theme.hint).italic(),
             )),
         ];
@@ -491,24 +569,28 @@ impl IntroDialog {
         // lines explaining what the mode feels like, when to pick it, and
         // how to come back out. Title indent is 2 columns (marker + space);
         // body indent is 6 columns so the body reads as nested under the
-        // title.
+        // title. Tmux's detach key uses the user's actual prefix
+        // (`tmux_prefix_display()`), so the hint is correct on a
+        // remapped-prefix setup.
+        let prefix = crate::tmux::tmux_prefix_display();
+        let tmux_back = format!("      tmux pane. {prefix} then d comes back to aoe.");
         let options = [
             (
                 NewSessionAttachMode::LiveSend,
                 "Live mode  (recommended; works for most workflows)",
                 vec![
-                    "      aoe stays open with the agent's terminal shown next to",
-                    "      the session list. Type to send keys to the highlighted",
-                    "      agent. Ctrl+Q stops typing. Tab attaches into tmux.",
+                    "      aoe stays open with the agent's terminal shown next to".to_string(),
+                    "      the session list. Type to send keys to the highlighted".to_string(),
+                    "      agent. Ctrl+Q stops typing. Tab attaches into tmux.".to_string(),
                 ],
             ),
             (
                 NewSessionAttachMode::Tmux,
                 "Tmux mode  (advanced; for tmux power users)",
                 vec![
-                    "      Activation drops you straight into the agent's full-",
-                    "      screen tmux pane. tmux prefix then d comes back to aoe.",
-                    "      Tab takes you into live mode instead.",
+                    "      Activation drops you into the agent's full-screen".to_string(),
+                    tmux_back,
+                    "      Tab takes you into live mode instead.".to_string(),
                 ],
             ),
         ];
@@ -516,18 +598,26 @@ impl IntroDialog {
         for (slot_idx, slot) in [layout[1], layout[2]].iter().enumerate() {
             let (mode, label, body) = &options[slot_idx];
             let is_selected = self.attach_mode_cursor == *mode;
+            let is_hovered = self.hovered_attach_idx == Some(slot_idx);
             self.attach_mode_areas[slot_idx] = *slot;
             let marker = if is_selected { "▶ " } else { "  " };
-            let title_style = if is_selected {
+            let mut title_style = if is_selected {
                 Style::default().fg(theme.accent).bold()
             } else {
                 Style::default().fg(theme.text)
             };
-            let body_style = if is_selected {
+            let mut body_style = if is_selected {
                 Style::default().fg(theme.text)
             } else {
                 Style::default().fg(theme.dimmed)
             };
+            // Hover paints a subtle background tint across the whole option
+            // block so the click target is obvious without overwriting the
+            // selection marker / accent color.
+            if is_hovered {
+                title_style = title_style.bg(theme.selection);
+                body_style = body_style.bg(theme.selection);
+            }
             let mut lines = vec![Line::from(vec![
                 Span::styled(marker.to_string(), title_style),
                 Span::styled(label.to_string(), title_style),
@@ -535,7 +625,13 @@ impl IntroDialog {
             for body_line in body {
                 lines.push(Line::from(Span::styled(body_line.to_string(), body_style)));
             }
-            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), *slot);
+            let para = Paragraph::new(lines).wrap(Wrap { trim: false });
+            let para = if is_hovered {
+                para.style(Style::default().bg(theme.selection))
+            } else {
+                para
+            };
+            frame.render_widget(para, *slot);
         }
 
         let hint = Paragraph::new(Span::styled(
@@ -607,17 +703,27 @@ impl IntroDialog {
 
             let name = &self.themes[idx];
             let is_selected = idx == self.theme_cursor;
+            let is_hovered = self.hovered_theme_row == Some(idx);
             let marker = if is_selected { " ▶ " } else { "   " };
-            let style = if is_selected {
+            let mut style = if is_selected {
                 Style::default().fg(theme.accent).bold()
             } else {
                 Style::default().fg(theme.text)
             };
+            if is_hovered {
+                style = style.bg(theme.selection);
+            }
             let line = Line::from(vec![
                 Span::styled(marker.to_string(), style),
                 Span::styled(name.clone(), style),
             ]);
-            frame.render_widget(Paragraph::new(line), row_area);
+            let para = Paragraph::new(line);
+            let para = if is_hovered {
+                para.style(Style::default().bg(theme.selection))
+            } else {
+                para
+            };
+            frame.render_widget(para, row_area);
         }
     }
 
@@ -696,8 +802,11 @@ impl IntroDialog {
             .split(area);
 
         let skip_label = "[Skip]";
-        let skip = Paragraph::new(Span::styled(skip_label, Style::default().fg(theme.dimmed)))
-            .alignment(Alignment::Left);
+        let mut skip_style = Style::default().fg(theme.dimmed);
+        if self.hovered_button == Some(HoverButton::Skip) {
+            skip_style = skip_style.bg(theme.selection);
+        }
+        let skip = Paragraph::new(Span::styled(skip_label, skip_style)).alignment(Alignment::Left);
         frame.render_widget(skip, layout[0]);
         self.skip_button_area = Rect {
             x: layout[0].x,
@@ -708,8 +817,12 @@ impl IntroDialog {
 
         let back_label = "[← Back]";
         if self.page_idx > 0 {
-            let back = Paragraph::new(Span::styled(back_label, Style::default().fg(theme.accent)))
-                .alignment(Alignment::Right);
+            let mut back_style = Style::default().fg(theme.accent);
+            if self.hovered_button == Some(HoverButton::Back) {
+                back_style = back_style.bg(theme.selection);
+            }
+            let back =
+                Paragraph::new(Span::styled(back_label, back_style)).alignment(Alignment::Right);
             frame.render_widget(back, layout[2]);
             self.back_button_area = Rect {
                 x: layout[2]
@@ -728,11 +841,11 @@ impl IntroDialog {
         } else {
             "[Next →]"
         };
-        let next = Paragraph::new(Span::styled(
-            next_label,
-            Style::default().fg(theme.accent).bold(),
-        ))
-        .alignment(Alignment::Right);
+        let mut next_style = Style::default().fg(theme.accent).bold();
+        if self.hovered_button == Some(HoverButton::Next) {
+            next_style = next_style.bg(theme.selection);
+        }
+        let next = Paragraph::new(Span::styled(next_label, next_style)).alignment(Alignment::Right);
         frame.render_widget(next, layout[4]);
         self.next_button_area = Rect {
             x: layout[4]
@@ -929,6 +1042,82 @@ mod tests {
         // -> Done
         dialog.handle_key(key(KeyCode::Enter));
         assert!(dialog.wants_text_selection());
+    }
+
+    #[test]
+    fn handle_hover_picks_up_attach_option_rects() {
+        let mut dialog = IntroDialog::new("default");
+        // Stub a rect on the second attach option so the hit-test has
+        // something to find; the render path normally populates these.
+        dialog.attach_mode_areas[1] = Rect {
+            x: 5,
+            y: 5,
+            width: 10,
+            height: 4,
+        };
+        dialog.handle_key(key(KeyCode::Enter));
+        dialog.handle_key(key(KeyCode::Enter));
+        assert_eq!(dialog.current_page(), Page::AttachMode);
+        // Inside the second option rect.
+        let changed = dialog.handle_hover(8, 6);
+        assert!(changed);
+        assert_eq!(dialog.hovered_attach_idx, Some(1));
+        // Same position again is a no-op.
+        assert!(!dialog.handle_hover(8, 6));
+        // Mouse leaves the rect: hover clears.
+        assert!(dialog.handle_hover(0, 0));
+        assert_eq!(dialog.hovered_attach_idx, None);
+    }
+
+    #[test]
+    fn handle_hover_only_acts_on_theme_page_for_theme_rows() {
+        let mut dialog = IntroDialog::new("default");
+        // Stub a row rect, then check that hover is ignored off the theme
+        // page (page check guards stale rects).
+        dialog.theme_row_areas = vec![
+            Rect {
+                x: 0,
+                y: 0,
+                width: 20,
+                height: 1,
+            };
+            dialog.themes.len()
+        ];
+        // Welcome page: hover over a theme rect must not register.
+        assert!(!dialog.handle_hover(5, 0));
+        assert_eq!(dialog.hovered_theme_row, None);
+        // Advance to ThemePicker; same hover should now register on row 0.
+        dialog.handle_key(key(KeyCode::Enter));
+        dialog.handle_key(key(KeyCode::Enter));
+        dialog.handle_key(key(KeyCode::Enter));
+        assert_eq!(dialog.current_page(), Page::ThemePicker);
+        assert!(dialog.handle_hover(5, 0));
+        assert_eq!(dialog.hovered_theme_row, Some(0));
+    }
+
+    #[test]
+    fn page_change_clears_per_page_hover_state() {
+        let mut dialog = IntroDialog::new("default");
+        dialog.theme_row_areas = vec![
+            Rect {
+                x: 0,
+                y: 0,
+                width: 20,
+                height: 1,
+            };
+            dialog.themes.len()
+        ];
+        // Walk to ThemePicker and seed a hover.
+        dialog.handle_key(key(KeyCode::Enter));
+        dialog.handle_key(key(KeyCode::Enter));
+        dialog.handle_key(key(KeyCode::Enter));
+        let _ = dialog.handle_hover(5, 0);
+        assert!(dialog.hovered_theme_row.is_some());
+        // Advancing to Done clears the per-page hover; if it leaked, the
+        // dialog would paint a hover background on whatever cell those
+        // coords map to under the new page.
+        dialog.handle_key(key(KeyCode::Enter));
+        assert_eq!(dialog.hovered_theme_row, None);
     }
 
     #[test]
