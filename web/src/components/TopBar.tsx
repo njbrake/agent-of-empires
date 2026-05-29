@@ -40,9 +40,6 @@ export function TopBar({
   isDevBuild,
   onGoDashboard,
 }: Props) {
-  const repoName =
-    activeWorkspace?.projectPath.split("/").filter(Boolean).pop() ?? null;
-
   const overflowItems = useMemo<OverflowItem[]>(() => {
     const items: OverflowItem[] = [
       { label: "Help", onClick: onOpenHelp },
@@ -85,25 +82,6 @@ export function TopBar({
           <img src="/icon-192.png" alt="" width="18" height="18" className="rounded-sm" />
           <span className="font-mono text-xs leading-none">aoe</span>
         </button>
-
-        {/* Breadcrumb (hidden on mobile). Suppress the workspace crumb when it
-            equals the repo name to avoid "/ foo / foo" duplication. */}
-        {(repoName || activeWorkspace) && (
-          <div className="hidden sm:flex items-center gap-1.5 min-w-0 text-xs font-mono">
-            <span className="text-text-dim">/</span>
-            {repoName && (
-              <span className="text-text-muted truncate max-w-[140px]">{repoName}</span>
-            )}
-            {activeWorkspace && activeWorkspace.displayName !== repoName && (
-              <>
-                <span className="text-text-dim">/</span>
-                <span className="text-accent-600 truncate max-w-[200px]">
-                  {activeWorkspace.displayName}
-                </span>
-              </>
-            )}
-          </div>
-        )}
       </div>
 
       {/* CENTER ZONE — palette trigger */}
