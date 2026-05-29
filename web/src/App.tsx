@@ -59,10 +59,8 @@ const CockpitView = lazy(() =>
   })),
 );
 import { RightPanel } from "./components/RightPanel";
-import { PairedShellPane } from "./components/PairedTerminal";
 import { MobileRightPanelPicker } from "./components/MobileRightPanelPicker";
-import { DiffFileList } from "./components/diff/DiffFileList";
-import { CommentsBanner } from "./components/diff/comments/CommentsBanner";
+import { MobileMainPane } from "./components/MobileMainPane";
 import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
 import { ProjectsView } from "./components/ProjectsView";
@@ -811,158 +809,45 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       );
     }
 
-    const agentPane = activeSession?.cockpit_mode ? (
-      <Suspense fallback={<CockpitLoadingFallback />}>
-        <CockpitView
-          key={activeSessionId}
-          sessionId={activeSessionId!}
-          cockpitWorkerState={activeSession.cockpit_worker_state ?? "absent"}
-          tool={activeSession.tool}
-          archivedAt={activeSession.archived_at ?? null}
-          snoozedUntil={activeSession.snoozed_until ?? null}
-        />
-      </Suspense>
-    ) : (
-      <TerminalSessionStack
-        activeSessionId={activeSessionId!}
-        sessions={sessions.filter((session) => !session.cockpit_mode)}
-        cockpitMasterEnabled={!!serverAbout?.cockpit_master_enabled}
-        persistent={webSettings.persistentTerminals}
-        maxPersistentTerminals={webSettings.maxPersistentTerminals}
-      />
-    );
-
-    const diffViewerNode =
-      selectedFilePath && activeSessionId ? (
-        <DiffFileViewer
-          sessionId={activeSessionId}
-          filePath={selectedFilePath}
-          repoName={selectedRepoName}
-          revision={revision}
-          onClose={handleCloseFile}
-          commentsEnabled={commentsEnabled}
-          commentsStore={diffComments}
-        />
-      ) : null;
-
-    const diffListNode = (
-      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-        {commentsEnabled && diffComments.count > 0 && (
-          <CommentsBanner
-            count={diffComments.count}
-            sendEnabled={commentSendEnabled}
-            sendDisabledReason={commentSendDisabledReason}
-            onSend={() => setSendDialogOpen(true)}
-            onDiscardAll={diffComments.clearComments}
-          />
-        )}
-        <DiffFileList
-          files={diffFiles}
-          perRepoBases={perRepoBases}
-          warning={warning}
-          selectedPath={selectedFilePath}
-          selectedRepoName={selectedRepoName}
-          loading={diffFilesLoading}
-          onSelectFile={handleSelectFile}
-          sessionId={activeSessionId}
-          repoPath={
-            activeSession?.main_repo_path ??
-            activeSession?.project_path ??
-            null
-          }
-          baseBranchOverride={activeSession?.base_branch_override ?? null}
-          onBaseBranchChanged={refreshDiffFiles}
-        />
-      </div>
-    );
-
-    const sendDialogNode = sendDialogOpen &&
-      commentsEnabled &&
-      activeSessionId && (
-        <SendCommentsDialog
-          sessionId={activeSessionId}
-          comments={diffComments.comments}
-          isMultiRepo={commentsIsMultiRepo}
-          sendEnabled={commentSendEnabled}
-          sendDisabledReason={commentSendDisabledReason}
-          introDraft={diffComments.introDraft}
-          outroDraft={diffComments.outroDraft}
-          clearAfterSend={diffComments.clearAfterSend}
-          onChangeIntro={diffComments.setIntroDraft}
-          onChangeOutro={diffComments.setOutroDraft}
-          onChangeClearAfterSend={diffComments.setClearAfterSend}
-          onClose={() => setSendDialogOpen(false)}
-          onSent={() => {
-            if (diffComments.clearAfterSend) {
-              diffComments.clearComments();
-              diffComments.setIntroDraft("");
-              diffComments.setOutroDraft("");
-            }
-            setSendDialogOpen(false);
-            // Close the diff viewer so the cockpit transcript is in
-            // view: the user just dispatched feedback and wants to
-            // see the agent's response. They can re-open any file
-            // from the right-panel list afterwards.
-            setSelectedFile(null);
-            toastBus.handler?.info("Comments sent to agent");
-          }}
-        />
-      );
-
     // Below the md breakpoint there is no room for the side-by-side split.
     // Render one full-viewport pane and let the picker choose which view
     // occupies it (#1452). The agent terminal (and the paired shell, once
     // first opened) stay mounted but hidden so their PTY, scrollback, and
     // focus survive view switches; the diff view has no xterm so it mounts
     // on demand. Inactive layers use visibility, never display:none, which
-    // would collapse xterm's measured geometry to zero.
+    // would collapse xterm's measured geometry to zero. The desktop branch
+    // below is left exactly as it was; only this mobile branch is new.
     if (singlePane) {
-      const layerClass = (active: boolean) =>
-        active
-          ? "absolute inset-0 flex flex-col min-h-0 overflow-hidden"
-          : "absolute inset-0 flex flex-col min-h-0 overflow-hidden invisible pointer-events-none";
-      const viewLabel = rightPanelView === "diff" ? "Diff" : "Paired terminal";
       return (
-        <div className="flex-1 flex flex-col min-h-0">
-          {rightPanelView !== "agent" && (
-            <div className="flex items-center gap-2 h-9 px-2 border-b border-surface-700/20 bg-surface-900 shrink-0">
-              <button
-                onClick={() => setRightPanelView("agent")}
-                data-testid="mobile-back-to-agent"
-                className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-text-secondary hover:text-text-primary hover:bg-surface-800 cursor-pointer transition-colors"
-              >
-                <span aria-hidden>&larr;</span> Agent
-              </button>
-              <span className="text-xs text-text-dim">{viewLabel}</span>
-            </div>
-          )}
-          <div className="relative flex-1 flex flex-col min-h-0 overflow-hidden">
-            <div
-              className={layerClass(rightPanelView === "agent")}
-              inert={rightPanelView !== "agent"}
-            >
-              {agentPane}
-            </div>
-            {pairedMounted && (
-              <div
-                className={layerClass(rightPanelView === "paired")}
-                inert={rightPanelView !== "paired"}
-              >
-                <PairedShellPane
-                  session={activeSession ?? null}
-                  sessionId={activeSessionId}
-                  fullViewport
-                />
-              </div>
-            )}
-            {rightPanelView === "diff" && (
-              <div className="absolute inset-0 z-10 flex flex-col min-h-0 overflow-hidden bg-surface-900">
-                {diffViewerNode ?? diffListNode}
-              </div>
-            )}
-          </div>
-          {sendDialogNode}
-        </div>
+        <MobileMainPane
+          view={rightPanelView}
+          onBackToAgent={() => setRightPanelView("agent")}
+          pairedMounted={pairedMounted}
+          activeSession={activeSession ?? null}
+          activeSessionId={activeSessionId}
+          sessions={sessions}
+          serverAbout={serverAbout}
+          webSettings={webSettings}
+          selectedFilePath={selectedFilePath}
+          selectedRepoName={selectedRepoName}
+          revision={revision}
+          diffFiles={diffFiles}
+          perRepoBases={perRepoBases}
+          warning={warning}
+          diffFilesLoading={diffFilesLoading}
+          onSelectFile={handleSelectFile}
+          onCloseFile={handleCloseFile}
+          onDiffRefresh={refreshDiffFiles}
+          commentsEnabled={commentsEnabled}
+          commentSendEnabled={commentSendEnabled}
+          commentSendDisabledReason={commentSendDisabledReason}
+          diffComments={diffComments}
+          commentsIsMultiRepo={commentsIsMultiRepo}
+          sendDialogOpen={sendDialogOpen}
+          onOpenSendDialog={() => setSendDialogOpen(true)}
+          onCloseSendDialog={() => setSendDialogOpen(false)}
+          onClearSelectedFile={() => setSelectedFile(null)}
+        />
       );
     }
 
@@ -980,10 +865,43 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                     : "flex-1 flex flex-col min-h-0 overflow-hidden"
                 }
               >
-                {agentPane}
+                {activeSession?.cockpit_mode ? (
+                  <Suspense fallback={<CockpitLoadingFallback />}>
+                    <CockpitView
+                      key={activeSessionId}
+                      sessionId={activeSessionId!}
+                      cockpitWorkerState={activeSession.cockpit_worker_state ?? "absent"}
+                      tool={activeSession.tool}
+                      archivedAt={activeSession.archived_at ?? null}
+                      snoozedUntil={activeSession.snoozed_until ?? null}
+                    />
+                  </Suspense>
+                ) : (
+                  <TerminalSessionStack
+                    activeSessionId={activeSessionId!}
+                    sessions={sessions.filter((session) => !session.cockpit_mode)}
+                    cockpitMasterEnabled={
+                      !!serverAbout?.cockpit_master_enabled
+                    }
+                    persistent={webSettings.persistentTerminals}
+                    maxPersistentTerminals={
+                      webSettings.maxPersistentTerminals
+                    }
+                  />
+                )}
               </div>
 
-              {diffViewerNode}
+              {selectedFilePath && activeSessionId && (
+                <DiffFileViewer
+                  sessionId={activeSessionId}
+                  filePath={selectedFilePath}
+                  repoName={selectedRepoName}
+                  revision={revision}
+                  onClose={handleCloseFile}
+                  commentsEnabled={commentsEnabled}
+                  commentsStore={diffComments}
+                />
+              )}
             </div>
           }
           right={
@@ -1007,7 +925,36 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             />
           }
         />
-        {sendDialogNode}
+        {sendDialogOpen && commentsEnabled && activeSessionId && (
+          <SendCommentsDialog
+            sessionId={activeSessionId}
+            comments={diffComments.comments}
+            isMultiRepo={commentsIsMultiRepo}
+            sendEnabled={commentSendEnabled}
+            sendDisabledReason={commentSendDisabledReason}
+            introDraft={diffComments.introDraft}
+            outroDraft={diffComments.outroDraft}
+            clearAfterSend={diffComments.clearAfterSend}
+            onChangeIntro={diffComments.setIntroDraft}
+            onChangeOutro={diffComments.setOutroDraft}
+            onChangeClearAfterSend={diffComments.setClearAfterSend}
+            onClose={() => setSendDialogOpen(false)}
+            onSent={() => {
+              if (diffComments.clearAfterSend) {
+                diffComments.clearComments();
+                diffComments.setIntroDraft("");
+                diffComments.setOutroDraft("");
+              }
+              setSendDialogOpen(false);
+              // Close the diff viewer so the cockpit transcript is in
+              // view: the user just dispatched feedback and wants to
+              // see the agent's response. They can re-open any file
+              // from the right-panel list afterwards.
+              setSelectedFile(null);
+              toastBus.handler?.info("Comments sent to agent");
+            }}
+          />
+        )}
       </div>
     );
   };

@@ -22,10 +22,9 @@ type ShellMode = "host" | "container";
  *  split this terminal owns only half of an already-capped panel, so it
  *  pads by the live `keyboardHeight` (and on desktop that is always 0).
  *  When promoted to the single full-viewport mobile pane it owns the
- *  whole viewport, so it pads by the latched `reservedKeyboardHeight`,
- *  the same sticky reservation the agent `TerminalView` uses; padding by
- *  the live height there would collapse the grid on every keyboard
- *  show/hide. See #1452. */
+ *  whole viewport, so it pads by `keyboardOcclusion`, the same value the
+ *  agent `TerminalView` uses; padding by the live height there would
+ *  collapse the grid on every keyboard show/hide. See #1452. */
 function PairedTerminal({
   sessionId,
   mode,
@@ -50,7 +49,7 @@ function PairedTerminal({
     clearCtrlRef,
     maxRetries,
   } = useTerminal(ready ? sessionId : null, wsPath, false);
-  const { isMobile, keyboardOpen, keyboardHeight, reservedKeyboardHeight } =
+  const { isMobile, keyboardOpen, keyboardHeight, keyboardOcclusion } =
     useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
   const [termFocused, setTermFocused] = useState(false);
@@ -138,7 +137,7 @@ function PairedTerminal({
   }
 
   const appliedKeyboardPadding = fullViewport
-    ? reservedKeyboardHeight
+    ? keyboardOcclusion
     : keyboardHeight;
   const rootStyle = {
     paddingBottom:
