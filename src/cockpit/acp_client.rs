@@ -1531,9 +1531,9 @@ impl AcpClient {
     ///
     /// All outcomes are non-fatal. Adapters that don't implement the
     /// method return `-32601 method_not_found` and surface as
-    /// `Unsupported`; the supervisor proceeds to the existing kill
-    /// path either way. Bounded by `ACP_SESSION_DELETE_TIMEOUT` so a
-    /// wedged adapter cannot stall delete. See #1404.
+    /// `UnsupportedMethod`; the supervisor proceeds to the existing
+    /// kill path either way. Bounded by `ACP_SESSION_DELETE_TIMEOUT`
+    /// so a wedged adapter cannot stall delete. See #1404.
     pub async fn delete_session(&self, acp_session_id: String) -> DeleteSessionOutcome {
         let Some(cmd_tx) = self.cmd_tx.as_ref() else {
             return DeleteSessionOutcome::Failed("client not running".into());
