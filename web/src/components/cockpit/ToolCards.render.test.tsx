@@ -313,3 +313,98 @@ describe("ToolCards MCP", () => {
     expect(container.textContent?.toLowerCase()).toContain("send message");
   });
 });
+
+// #1467: failed tool cards auto-open on failure but must stay foldable.
+// Before the fix the card was hard-wired `expanded={open || status ===
+// "err"}`, so the chevron rotated but never collapsed the body.
+describe("ToolCards failed-card folding (#1467)", () => {
+  it("renders the error body on first paint for a failed card", () => {
+    const { container } = render(
+      <Wrap>
+        <ToolCard
+          tool={fixtures.bash}
+          result={makeError({ text: "boom: command failed" })}
+        />
+      </Wrap>,
+    );
+    expect(container.textContent).toContain("tool failed");
+    expect(container.textContent).toContain("boom: command failed");
+  });
+
+  it("folds the error body when the chevron is clicked", () => {
+    const { container, getByRole } = render(
+      <Wrap>
+        <ToolCard
+          tool={fixtures.bash}
+          result={makeError({ text: "boom: command failed" })}
+        />
+      </Wrap>,
+    );
+    expect(container.textContent).toContain("tool failed");
+    fireEvent.click(getByRole("button"));
+    expect(container.textContent).not.toContain("tool failed");
+    expect(container.textContent).not.toContain("boom: command failed");
+    // Clicking again re-expands.
+    fireEvent.click(getByRole("button"));
+    expect(container.textContent).toContain("tool failed");
+  });
+
+  it("keeps a successful card collapsed by default", () => {
+    const { container } = render(
+      <Wrap>
+        <ToolCard
+          tool={fixtures.bash}
+          result={makeCompletion({ text: "hello world\n" })}
+        />
+      </Wrap>,
+    );
+    // Header is present, body output is hidden until the user expands.
+    expect(container.textContent).toContain("bash");
+    expect(container.textContent).not.toContain("hello world");
+  });
+
+  it("auto-opens a card that fails mid-stream (running -> err)", () => {
+    const { container, rerender } = render(
+      <Wrap>
+        <ToolCard tool={fixtures.bash} result={undefined} />
+      </Wrap>,
+    );
+    // Running: no error body yet.
+    expect(container.textContent).not.toContain("tool failed");
+    rerender(
+      <Wrap>
+        <ToolCard
+          tool={fixtures.bash}
+          result={makeError({ text: "boom: command failed" })}
+        />
+      </Wrap>,
+    );
+    // The error row arrives and the card opens with no user click.
+    expect(container.textContent).toContain("tool failed");
+    expect(container.textContent).toContain("boom: command failed");
+  });
+
+  it("respects the user's fold once set, even if the card re-enters err", () => {
+    const { container, getByRole, rerender } = render(
+      <Wrap>
+        <ToolCard
+          tool={fixtures.bash}
+          result={makeError({ text: "boom: command failed" })}
+        />
+      </Wrap>,
+    );
+    // User folds the failed card.
+    fireEvent.click(getByRole("button"));
+    expect(container.textContent).not.toContain("tool failed");
+    // A later render still reports err: the card stays folded.
+    rerender(
+      <Wrap>
+        <ToolCard
+          tool={fixtures.bash}
+          result={makeError({ text: "boom again" })}
+        />
+      </Wrap>,
+    );
+    expect(container.textContent).not.toContain("tool failed");
+  });
+});
