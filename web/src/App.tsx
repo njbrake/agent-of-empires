@@ -660,8 +660,11 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       // Below md there is one full-viewport pane. Promote the target view,
       // then dispatch focus on the next frame: the inactive layer is inert
       // until React commits the switch, and focus() on an inert subtree is
-      // a no-op.
+      // a no-op. The paired shell mounts lazily on first activation, so its
+      // PTY may not be ready when the dispatch fires; latch the intent too,
+      // and PairedTerminal grabs focus once ready.
       setRightPanelView(target);
+      if (target === "paired") setPendingTerminalFocus("paired");
       requestAnimationFrame(() => dispatchFocusTerminal(target));
       return;
     }
