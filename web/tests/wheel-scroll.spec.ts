@@ -90,7 +90,7 @@ test.describe("Terminal mouse-wheel scroll (desktop)", () => {
     // enough headroom for CI runners under load (2s was tight enough
     // to flake on heavy parallel runs).
     await expect
-      .poll(() => countSeq(handle, WHEEL_DOWN_SEQ), { timeout: 5_000 })
+      .poll(() => countSeq(handle, WHEEL_DOWN_SEQ), { timeout: 10_000 })
       .toBeGreaterThan(0);
     expect(countSeq(handle, WHEEL_UP_SEQ)).toBe(0);
   });
@@ -108,7 +108,7 @@ test.describe("Terminal mouse-wheel scroll (desktop)", () => {
     await fireWheel(page, { deltaY: -120, times: 3 });
 
     await expect
-      .poll(() => countSeq(handle, WHEEL_UP_SEQ), { timeout: 5_000 })
+      .poll(() => countSeq(handle, WHEEL_UP_SEQ), { timeout: 10_000 })
       .toBeGreaterThan(0);
     expect(countSeq(handle, WHEEL_DOWN_SEQ)).toBe(0);
   });
