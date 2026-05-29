@@ -608,8 +608,6 @@ pub async fn cockpit_files(
     }
 }
 
-/* ── Worker log tail ──────────────────────────────────────────── */
-
 const WORKER_LOG_DEFAULT_TAIL: usize = 200;
 const WORKER_LOG_MAX_TAIL: usize = 2000;
 /// Cap the read size so a runaway log file can't pin the daemon. A 4 MiB
@@ -723,8 +721,12 @@ pub(crate) fn read_log_tail(
     };
 
     file.seek(SeekFrom::Start(read_from))?;
-    let mut raw = Vec::with_capacity((len - read_from) as usize);
-    file.read_to_end(&mut raw)?;
+    let window_len = len - read_from;
+    let mut raw = Vec::with_capacity(window_len as usize);
+    // Bound the read with `take` so a concurrent append between
+    // `metadata()` and now cannot grow `raw` beyond the precomputed
+    // window. Keeps the 4 MiB cap a hard ceiling, not a target.
+    (&mut file).take(window_len).read_to_end(&mut raw)?;
     // Lossy decode so a partial UTF-8 boundary at the window edge cannot
     // 500 the endpoint; the tail is for human eyeballs, exact bytes are
     // not required.
