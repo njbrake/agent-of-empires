@@ -150,6 +150,121 @@ fn test_initial_cursor_position() {
 
 #[test]
 #[serial]
+fn preview_info_follows_flag_and_never_auto_shows_in_live() {
+    // Info-header visibility is purely the persisted `show_preview_info` toggle
+    // (driven by `i` in the TUI). Live mode must NOT change it: if the user
+    // hid the header, it stays hidden when they go live, and a shown header
+    // stays shown. Nothing magically re-shows it.
+    use super::live_send::{LiveSendState, LiveSendTarget};
+    use crate::tui::styles::load_theme;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances()[0].id.clone();
+    env.view.select_session_by_id(&id);
+    env.view.view_mode = ViewMode::Agent;
+    let theme = load_theme("empire");
+
+    let render_to_string = |view: &mut HomeView| {
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                view.render(f, area, &theme, None, None);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    };
+
+    let live_state = || LiveSendState {
+        session_id: id.clone(),
+        title: "session0".to_string(),
+        tmux_name: "aoe_test_live".to_string(),
+        target: LiveSendTarget::Agent,
+        exit_chords: Vec::new(),
+    };
+
+    // Hidden via the toggle: gone outside live...
+    env.view.show_preview_info = false;
+    let hidden_not_live = render_to_string(&mut env.view);
+    assert!(
+        !hidden_not_live.contains("Profile:"),
+        "header must be hidden when the flag is off.\n{hidden_not_live}"
+    );
+    // ...and STILL gone after going live (the regression the user reported:
+    // it must never magically re-show).
+    env.view.live_send = Some(live_state());
+    let hidden_live = render_to_string(&mut env.view);
+    assert!(
+        !hidden_live.contains("Profile:"),
+        "a hidden header must not re-appear in live mode.\n{hidden_live}"
+    );
+
+    // Shown via the toggle: present both outside and inside live mode.
+    env.view.live_send = None;
+    env.view.show_preview_info = true;
+    let shown_not_live = render_to_string(&mut env.view);
+    assert!(
+        shown_not_live.contains("Profile:"),
+        "header must render when the flag is on.\n{shown_not_live}"
+    );
+    env.view.live_send = Some(live_state());
+    let shown_live = render_to_string(&mut env.view);
+    assert!(
+        shown_live.contains("Profile:"),
+        "a shown header stays shown in live mode (flag, not mode, governs it).\n{shown_live}"
+    );
+}
+
+#[test]
+#[serial]
+fn preview_visible_rows_equal_output_area_with_info_shown() {
+    // With the info header shown, the Agent branch sizes the pane to
+    // `PreviewLayout::compute(..).output` (header + banner removed once) and the
+    // renderer paints into the same rect. `preview_visible_rows` must equal
+    // `preview_pane_area.height`; the historical bugs all came from a second,
+    // drifting derivation of this number, now consolidated into one layout.
+    use crate::tui::styles::load_theme;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances()[0].id.clone();
+    env.view.select_session_by_id(&id);
+    env.view.view_mode = ViewMode::Agent;
+    env.view.show_preview_info = true;
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let theme = load_theme("empire");
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            env.view.render(f, area, &theme, None, None);
+        })
+        .unwrap();
+
+    assert!(
+        env.view.preview_pane_area.height > 0,
+        "expected a non-empty output sub-rect at 120x40 (non-compact)"
+    );
+    assert_eq!(
+        env.view.preview_visible_rows, env.view.preview_pane_area.height as usize,
+        "visible rows must match the output area height, not be a row short"
+    );
+}
+
+#[test]
+#[serial]
 fn test_q_returns_quit_action() {
     let mut env = create_test_env_empty();
     let action = env.view.handle_key(key(KeyCode::Char('q')), None);

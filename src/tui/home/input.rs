@@ -3914,6 +3914,10 @@ impl HomeView {
         self.live_send = None;
         self.live_send_worker = None;
         self.live_send_last_resize = None;
+        // Live mode just owned the pane's size; the non-live preview must
+        // re-assert its geometry on the next render now that the header is
+        // visible again (and so the agent reflows back to the previewed size).
+        self.preview_pane_synced = None;
         // Preview selections also work outside live mode now, but a
         // live-mode highlight pins to the live-resized pane coords,
         // and exiting reflows the preview back to its normal size.

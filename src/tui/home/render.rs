@@ -62,33 +62,6 @@ fn compose_list_title(
 /// requested scroll.
 const CAPTURE_BUFFER: u16 = 20;
 
-/// Shrink `inner` to the OUTPUT sub-rect that sits below the info
-/// header AND below the inner ` Output ` / ` Terminal Output ` banner.
-///
-/// `info_height` is the row count of the rendered info header
-/// (computed by `preview::agent_info_height` for Agent view or
-/// `preview::terminal_info_height` for Terminal/Tool view). The
-/// banner is a single `Borders::TOP` row above the agent's actual
-/// output, so the OUTPUT pane is `info_height + 1` rows shorter than
-/// `inner`, not `info_height` as a naive split would suggest.
-///
-/// This matches what `render_with_cache` / `render_terminal_preview`
-/// actually paint into; live-send sizes the tmux pane to the returned
-/// rect so the agent's content lands pixel-aligned with the visible
-/// Paragraph instead of bleeding off the bottom row.
-fn split_off_info_section(inner: Rect, info_height: u16) -> Rect {
-    // `+ 1` for the inner banner row. Clamp so a tiny pane (smaller
-    // than the chrome it would draw) returns a zero-height rect rather
-    // than wrapping past zero.
-    let chrome = info_height.saturating_add(1).min(inner.height);
-    Rect {
-        x: inner.x,
-        y: inner.y + chrome,
-        width: inner.width,
-        height: inner.height - chrome,
-    }
-}
-
 /// Trim `text` to fit within `max_width` display cells, appending '…'
 /// if anything was dropped. Used by the live-send banners so a long
 /// session title never pushes the exit-chord hint off-screen on a
@@ -143,10 +116,11 @@ fn scroll_exceeds_cache(cache_captured_lines: usize, height: u16, scroll_offset:
 /// `MAX_PREVIEW_SCROLL`.
 ///
 /// `visible_height` is the rendered output-body height the caller already
-/// computed (via `preview::output_visible_height`), NOT the raw pane height.
-/// Re-deriving it here with a fixed `- 1` would over-count the max offset by a
-/// row whenever the inner banner is hidden, leaving a phantom offset that
-/// stalls live-follow one row early.
+/// computed (`PreviewLayout::compute(..).output.height`, shared via
+/// `preview_visible_rows`), NOT the raw pane height. Re-deriving it here with a
+/// fixed `- 1` would over-count the max offset by a row whenever the inner
+/// banner is hidden, leaving a phantom offset that stalls live-follow one row
+/// early.
 fn clamp_scroll_to_capture(
     scroll_offset: u16,
     captured_lines: usize,
@@ -1264,6 +1238,35 @@ impl HomeView {
     // pub(super) so unit tests in `super::tests` can exercise the
     // cache-preservation behavior added with the kill-switch fix
     // without standing up a full render pipeline.
+    /// Keep the live-send tmux pane sized to the preview's visible output area.
+    ///
+    /// No-op unless live-send is currently targeting `target`: without that gate,
+    /// viewing the Agent pane while live-on-Terminal would resize the *terminal*
+    /// pane (the worker is bound to it) to Agent-view dimensions, mis-fitting the
+    /// shell the user is typing into. Deduped against `live_send_last_resize`
+    /// (shared, since only one target is live at a time) so we only fire when the
+    /// user enters live mode or the preview pane is resized (terminal resize,
+    /// divider drag, layout flip). Each `refresh_*_cache_if_needed` calls this
+    /// with its own target so the three copies stay in lockstep.
+    fn resize_live_pane_if_target(
+        &mut self,
+        target: live_send::LiveSendTarget,
+        width: u16,
+        height: u16,
+    ) {
+        let targets_this_pane = self.live_send.as_ref().is_some_and(|s| s.target == target);
+        if !targets_this_pane || width == 0 || height == 0 {
+            return;
+        }
+        let next = (width, height);
+        if self.live_send_last_resize != Some(next) {
+            if let Some(worker) = &self.live_send_worker {
+                worker.resize(width, height);
+            }
+            self.live_send_last_resize = Some(next);
+        }
+    }
+
     pub(super) fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         // Outside live-send, captures fork a fresh `tmux capture-pane`
         // so we throttle to 250ms (4 Hz). Inside live-send, captures
@@ -1278,30 +1281,41 @@ impl HomeView {
         // vs. tmux writing bytes straight into your terminal.
         const PREVIEW_REFRESH_MS_IDLE: u128 = 250;
         let in_live = self.live_send.is_some();
-        // The per-frame resize only fires when live-send's target IS
-        // the agent pane this refresh is named after. Without the
-        // target gate, viewing Agent view while live-on-Terminal would
-        // resize the *terminal* pane (the worker is bound to it) to
-        // Agent-view dimensions, mis-fitting the shell that the user
-        // is actually typing into.
-        let resize_target_matches = self
-            .live_send
-            .as_ref()
-            .is_some_and(|s| matches!(s.target, live_send::LiveSendTarget::Agent));
+        // While in live-send mode, keep the agent's tmux pane sized to the
+        // preview's visible output area so it renders directly into view.
+        self.resize_live_pane_if_target(live_send::LiveSendTarget::Agent, width, height);
 
-        // While in live-send mode, keep the tmux pane geometry in sync
-        // with the preview's actual cell dimensions so the agent
-        // renders directly into the visible area (no wrap, no cropped
-        // UI). Deduped against live_send_last_resize so we only fire
-        // when the user first enters live mode or the preview pane is
-        // resized (terminal resize, divider drag, layout flip).
-        if resize_target_matches && width > 0 && height > 0 {
-            let next = (width, height);
-            if self.live_send_last_resize != Some(next) {
-                if let Some(worker) = &self.live_send_worker {
-                    worker.resize(width, height);
+        // Outside live-send nothing keeps the agent's pane sized to the
+        // preview's output area. A full-screen agent is sized to whatever
+        // terminal it was last attached from (usually the full window), so it
+        // renders taller than the preview and the bottom-anchored capture
+        // clips the top rows; opening the info header shrinks the area and
+        // clips even more. Resize the detached pane to the output geometry so
+        // the preview is WYSIWYG. Deduped per (session, w, h) so the 250ms poll
+        // doesn't SIGWINCH-storm the agent; the dedup is invalidated on attach
+        // and on live enter/exit, where the real window size changes under us.
+        // Live-send owns its own resize through the worker above, so skip there.
+        if !in_live && width > 0 && height > 0 {
+            if let Some(id) = self.selected_session.clone() {
+                let want = (id, width, height);
+                if self.preview_pane_synced.as_ref() != Some(&want) {
+                    // Only record the dedup once the pane actually exists and was
+                    // resized. If a Stopped session we're viewing is started later
+                    // without an attach in this instance to clear the dedup (e.g.
+                    // a peer or the web cockpit launches it), marking it synced now
+                    // would pin the preview to the pre-start size and keep clipping
+                    // until the next geometry change. Leaving it unset retries on
+                    // the next refresh; `exists()` is cache-backed, so the retry is
+                    // cheap.
+                    if let Some(session) = self
+                        .get_instance(&want.0)
+                        .and_then(|inst| inst.tmux_session().ok())
+                        .filter(|s| s.exists())
+                    {
+                        session.resize_window(width, height);
+                        self.preview_pane_synced = Some(want);
+                    }
                 }
-                self.live_send_last_resize = Some(next);
             }
         }
 
@@ -1407,23 +1421,10 @@ impl HomeView {
         const PREVIEW_REFRESH_MS: u128 = 250;
 
         // Symmetric with `refresh_preview_cache_if_needed`: when live-send
-        // is pointed at the host-terminal pane, keep the tmux pane sized
-        // to the visible output area on every render so a window resize
-        // or info-header toggle reflows the shell instead of waiting for
-        // the user to re-enter live mode.
-        let resize_target_matches = self
-            .live_send
-            .as_ref()
-            .is_some_and(|s| matches!(s.target, live_send::LiveSendTarget::Terminal));
-        if resize_target_matches && width > 0 && height > 0 {
-            let next = (width, height);
-            if self.live_send_last_resize != Some(next) {
-                if let Some(worker) = &self.live_send_worker {
-                    worker.resize(width, height);
-                }
-                self.live_send_last_resize = Some(next);
-            }
-        }
+        // is pointed at the host-terminal pane, keep its tmux pane sized to
+        // the visible output area so a window resize or info-header toggle
+        // reflows the shell instead of waiting for a live-mode re-enter.
+        self.resize_live_pane_if_target(live_send::LiveSendTarget::Terminal, width, height);
 
         let scroll_offset = self.preview_scroll_offset;
         let needs_refresh = match &self.selected_session {
@@ -1473,23 +1474,15 @@ impl HomeView {
     fn refresh_container_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         const PREVIEW_REFRESH_MS: u128 = 250;
 
-        // Symmetric with `refresh_preview_cache_if_needed`: when
-        // live-send is pointed at the in-container shell, keep the
-        // tmux pane sized to the visible output area so a window
-        // resize or info-header toggle reflows immediately.
-        let resize_target_matches = self
-            .live_send
-            .as_ref()
-            .is_some_and(|s| matches!(s.target, live_send::LiveSendTarget::ContainerTerminal));
-        if resize_target_matches && width > 0 && height > 0 {
-            let next = (width, height);
-            if self.live_send_last_resize != Some(next) {
-                if let Some(worker) = &self.live_send_worker {
-                    worker.resize(width, height);
-                }
-                self.live_send_last_resize = Some(next);
-            }
-        }
+        // Symmetric with `refresh_preview_cache_if_needed`: when live-send
+        // is pointed at the in-container shell, keep its tmux pane sized to
+        // the visible output area so a window resize or info-header toggle
+        // reflows immediately.
+        self.resize_live_pane_if_target(
+            live_send::LiveSendTarget::ContainerTerminal,
+            width,
+            height,
+        );
 
         let scroll_offset = self.preview_scroll_offset;
         let needs_refresh = match &self.selected_session {
@@ -1708,9 +1701,9 @@ impl HomeView {
             // here so users still see how far back they've scrolled.
             // With borders::ALL the inner is area - 2; with the banner
             // hidden the output paragraph claims that full inner, so the
-            // visible height is `inner_height` (no extra row dropped). This
-            // mirrors `output_visible_height(.., has_banner = false)` in the
-            // preview renderers so the indicator count stays in lockstep.
+            // visible height is `inner_height` (no extra row dropped). That
+            // equals `PreviewLayout::compute(..).output.height` for the
+            // hidden-header case, which is what the renderers paint into.
             let scroll_indicator = if !self.show_preview_info {
                 let inner_height = area.height.saturating_sub(2);
                 let visible_height = inner_height as usize;
@@ -1745,9 +1738,10 @@ impl HomeView {
         self.preview_pane_area = inner;
         // Track the rows the output body actually paints into, shared with the
         // scroll clamp and the live banner so their math matches the renderer.
-        // Each view branch refines this after it resolves its real pane rect.
-        self.preview_visible_rows =
-            preview::output_visible_height(inner.height, !compact && self.show_preview_info);
+        // Each view branch refines this after it resolves its real pane rect to
+        // exactly `pane_area.height` (see below); the seed here is only used by
+        // the no-output paths (creating / no selection).
+        self.preview_visible_rows = inner.height as usize;
         frame.render_widget(block, area);
 
         match self.view_mode {
@@ -1762,37 +1756,29 @@ impl HomeView {
                 if is_creating {
                     self.render_creating_preview(frame, inner, theme);
                 } else {
-                    // Mirror the info-vs-output split in
-                    // `Preview::render_with_cache` so the cache + tmux pane
-                    // match the visible output area. Sizing to the full
-                    // `inner` while the user has the info header expanded
-                    // leaves the top `info_height` rows of the agent's
-                    // pane outside the displayed window, where they get
-                    // tail-clipped on every frame.
-                    //
-                    // After the info header, `render_output_cached` wraps
-                    // the output in a `Borders::TOP` block (the ` Output `
-                    // banner) which consumes one more row from the top.
-                    // The pane therefore shrinks by `info_h + 1` rows so
-                    // the tmux pane matches the visible Paragraph area
-                    // exactly; off by one and the agent's content scrolls
-                    // up by a row on every frame.
-                    let pane_area = if compact || !self.show_preview_info {
-                        inner
-                    } else {
-                        self.selected_session
-                            .as_ref()
-                            .and_then(|id| self.get_instance(id))
-                            .map(|inst| {
-                                split_off_info_section(inner, preview::agent_info_height(inst))
-                            })
-                            .unwrap_or(inner)
-                    };
+                    // Size the tmux pane + cache to the SAME output rect the
+                    // renderer paints into, via the one `PreviewLayout::compute`
+                    // that `render_with_cache` also uses. `layout.output` already
+                    // accounts for the info header and the ` Output ` banner row
+                    // (or claims the full `inner` when the header is hidden /
+                    // compact), so `output.height` is the exact visible body. No
+                    // second banner subtraction here, no parallel split to drift.
+                    let pane_area = self
+                        .selected_session
+                        .as_ref()
+                        .and_then(|id| self.get_instance(id))
+                        .map(|inst| {
+                            preview::PreviewLayout::compute(
+                                inner,
+                                compact,
+                                self.show_preview_info,
+                                preview::agent_info_height(inst),
+                            )
+                            .output
+                        })
+                        .unwrap_or(inner);
                     self.preview_pane_area = pane_area;
-                    self.preview_visible_rows = preview::output_visible_height(
-                        pane_area.height,
-                        !compact && self.show_preview_info,
-                    );
+                    self.preview_visible_rows = pane_area.height as usize;
                     // Refresh the raw `content` cache, then ensure the
                     // parsed `Text<'static>` cache reflects it. Doing
                     // the parse here (under `&mut self.preview_cache`)
@@ -1849,20 +1835,23 @@ impl HomeView {
                     // `inner.height - info_h - 1` rows are visible, and
                     // the top of the shell output gets clipped on every
                     // frame.
-                    let pane_area = if compact || !self.show_preview_info {
-                        inner
-                    } else {
-                        self.get_instance(&id)
-                            .map(|inst| {
-                                split_off_info_section(inner, preview::terminal_info_height(inst))
-                            })
-                            .unwrap_or(inner)
-                    };
+                    // Same single-source split as the Agent branch: the tmux
+                    // pane is sized to `PreviewLayout::compute(..).output`, which
+                    // `render_terminal_preview` also paints into.
+                    let pane_area = self
+                        .get_instance(&id)
+                        .map(|inst| {
+                            preview::PreviewLayout::compute(
+                                inner,
+                                compact,
+                                self.show_preview_info,
+                                preview::terminal_info_height(inst),
+                            )
+                            .output
+                        })
+                        .unwrap_or(inner);
                     self.preview_pane_area = pane_area;
-                    self.preview_visible_rows = preview::output_visible_height(
-                        pane_area.height,
-                        !compact && self.show_preview_info,
-                    );
+                    self.preview_visible_rows = pane_area.height as usize;
 
                     // Refresh the appropriate cache, then warm the
                     // matching `parsed_text` so the render call below
@@ -1931,20 +1920,23 @@ impl HomeView {
                 let selected_id = self.selected_session.clone();
 
                 if let Some(id) = selected_id {
-                    let pane_area = if compact || !self.show_preview_info {
-                        inner
-                    } else {
-                        self.get_instance(&id)
-                            .map(|inst| {
-                                split_off_info_section(inner, preview::terminal_info_height(inst))
-                            })
-                            .unwrap_or(inner)
-                    };
+                    // Same single-source split as the Agent branch: the tmux
+                    // pane is sized to `PreviewLayout::compute(..).output`, which
+                    // `render_terminal_preview` also paints into.
+                    let pane_area = self
+                        .get_instance(&id)
+                        .map(|inst| {
+                            preview::PreviewLayout::compute(
+                                inner,
+                                compact,
+                                self.show_preview_info,
+                                preview::terminal_info_height(inst),
+                            )
+                            .output
+                        })
+                        .unwrap_or(inner);
                     self.preview_pane_area = pane_area;
-                    self.preview_visible_rows = preview::output_visible_height(
-                        pane_area.height,
-                        !compact && self.show_preview_info,
-                    );
+                    self.preview_visible_rows = pane_area.height as usize;
 
                     self.refresh_tool_preview_cache_if_needed(
                         pane_area.width,
@@ -2449,45 +2441,12 @@ impl HomeView {
 mod tests {
     use super::*;
 
-    #[test]
-    fn split_off_info_section_subtracts_header_plus_banner() {
-        // The split must drop info_h ROWS for the info section AND one
-        // more row for the inner ` Output ` / ` Terminal Output ` banner
-        // that the renderer draws on top of the output area. Off by one
-        // here resurrects the "agent output scrolled up by a row" bug
-        // that lived before this helper existed.
-        let inner = Rect {
-            x: 2,
-            y: 3,
-            width: 80,
-            height: 30,
-        };
-        let out = split_off_info_section(inner, 4);
-        assert_eq!(out.x, 2);
-        assert_eq!(out.width, 80);
-        // y shifts down past 4 header rows + 1 banner row.
-        assert_eq!(out.y, 3 + 5);
-        // height shrinks by the same 5 rows.
-        assert_eq!(out.height, 30 - 5);
-    }
-
-    #[test]
-    fn split_off_info_section_clamps_when_pane_smaller_than_chrome() {
-        // A pane shorter than the chrome it would draw must return a
-        // zero-height rect rather than wrapping past zero. Without the
-        // clamp, a very narrow vertical layout (split panes, popped
-        // toasts) would panic on subtraction overflow during live mode.
-        let inner = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 3,
-        };
-        // Info header alone is 4 rows; combined chrome (5) exceeds
-        // inner.height (3). The helper should clamp to height 0.
-        let out = split_off_info_section(inner, 4);
-        assert_eq!(out.height, 0);
-    }
+    // The preview split geometry (header / banner / output rows) is now owned
+    // by `preview::PreviewLayout`; its tests live alongside it in
+    // `components/preview.rs`. The render-side regression is covered end to end
+    // by `preview_visible_rows_equal_output_area_with_info_shown` in
+    // `home/tests.rs`, which renders a real frame and asserts
+    // `preview_visible_rows == preview_pane_area.height`.
 
     #[test]
     fn truncate_to_width_passthrough_when_fits() {

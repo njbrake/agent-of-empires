@@ -419,6 +419,37 @@ impl Session {
             .output();
     }
 
+    /// Resize the (detached) window to `cols`x`rows`. Best-effort: a missing
+    /// session or a tmux ENOENT is swallowed so a transient failure never
+    /// blocks a render.
+    ///
+    /// Used to keep a detached agent's pane sized to the visible preview area:
+    /// a full-screen agent is sized to whatever terminal it was last attached
+    /// from, so without this it renders taller than the preview window and the
+    /// bottom-anchored capture clips the top rows (worse when the info header
+    /// steals rows). Mirrors what live-send does through its worker.
+    ///
+    /// NOTE: tmux's `resize-window -x -y` silently flips the window-size option
+    /// to `manual`, so any later `attach-session` must call
+    /// [`reset_size_to_latest_client`](Self::reset_size_to_latest_client) first
+    /// or the window stays pinned at these preview dimensions.
+    pub fn resize_window(&self, cols: u16, rows: u16) {
+        if cols == 0 || rows == 0 || !self.exists() {
+            return;
+        }
+        let _ = Command::new("tmux")
+            .args([
+                "resize-window",
+                "-t",
+                &self.name,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
+            ])
+            .output();
+    }
+
     /// Deliver `text` to `target` via tmux's load-buffer + paste-buffer.
     /// Buffer names are scoped by pid + a per-call counter so concurrent
     /// senders (and retries) cannot clobber each other. `-p` enables

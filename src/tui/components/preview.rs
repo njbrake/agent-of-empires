@@ -74,6 +74,78 @@ pub fn terminal_info_height(instance: &Instance) -> u16 {
     base + sandbox_lines
 }
 
+/// The geometry of the preview body, computed once so every consumer agrees on
+/// where the output goes and how many rows it spans.
+///
+/// Historically the info-header / banner / output split was re-derived
+/// independently in the renderers (`Layout` + `Borders`), in `render_preview`
+/// (for the tmux pane size and the scroll clamp), and in the live `[offset/max]`
+/// footer. Each derivation drifted by a row at some point, which is the bug
+/// #1521, #1570, and #1604 each chased in turn. `PreviewLayout::compute` is the
+/// single definition; `output.height` is THE visible-row count. Anyone needing
+/// preview geometry calls this rather than re-counting rows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PreviewLayout {
+    /// The info-header rect, present iff the header is shown (header toggle on
+    /// and the viewport is not compact).
+    pub info: Option<Rect>,
+    /// The inner ` Output ` / ` Terminal Output ` banner row, present exactly
+    /// when `info` is (it visually separates the header from the body).
+    pub banner: Option<Rect>,
+    /// Where captured agent/terminal output paints. `output.height` is the
+    /// authoritative visible-row count for scrolling and pane sizing.
+    pub output: Rect,
+}
+
+impl PreviewLayout {
+    /// Split `area` (the preview block's inner rect) into header / banner /
+    /// output. With the header hidden (toggle off) or the viewport compact, the
+    /// output claims the whole `area` and there is no banner. Otherwise the
+    /// header takes the top `info_height` rows, a one-row banner follows, and
+    /// the output gets the rest, clamped so a pane shorter than that chrome
+    /// yields a zero-height output instead of underflowing.
+    pub(crate) fn compute(area: Rect, compact: bool, show_info: bool, info_height: u16) -> Self {
+        if compact || !show_info {
+            return Self {
+                info: None,
+                banner: None,
+                output: area,
+            };
+        }
+        let chrome = info_height.saturating_add(1).min(area.height);
+        let info_h = info_height.min(area.height);
+        let info = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width,
+            height: info_h,
+        };
+        // The banner row only exists when the pane had room for it on top of
+        // the header (i.e. `chrome` reached `info_height + 1`).
+        let banner = if chrome > info_h {
+            Some(Rect {
+                x: area.x,
+                y: area.y + info_h,
+                width: area.width,
+                height: 1,
+            })
+        } else {
+            None
+        };
+        let output = Rect {
+            x: area.x,
+            y: area.y + chrome,
+            width: area.width,
+            height: area.height - chrome,
+        };
+        Self {
+            info: Some(info),
+            banner,
+            output,
+        }
+    }
+}
+
 pub struct Preview;
 
 impl Preview {
@@ -89,24 +161,15 @@ impl Preview {
         compact: bool,
         show_info: bool,
     ) {
-        // Compact mode (narrow viewports) skips the info header entirely:
-        // the outer block title already carries the session name + status,
-        // and on a phone every row of vertical space matters. The user
-        // toggle `show_info` collapses the same chrome on a normal-width
-        // viewport so the output area can claim the rows the header would
-        // have taken. Symmetric with `render_with_cache` in the Agent view.
-        let render_info_section = !compact && show_info;
-        let output_area = if render_info_section {
-            let info_height = terminal_info_height(instance);
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(info_height), // Minimal info section
-                    Constraint::Min(1),              // Output section
-                ])
-                .split(area);
+        // One source of truth for the header / banner / output split. Compact
+        // viewports and the hidden-header toggle both collapse to "output owns
+        // the whole area" inside `PreviewLayout::compute`, symmetric with the
+        // Agent view's `render_with_cache`.
+        let layout =
+            PreviewLayout::compute(area, compact, show_info, terminal_info_height(instance));
 
-            // Minimal info for terminal view
+        if let Some(info_area) = layout.info {
+            // Minimal info for terminal view.
             let mut info_lines = vec![
                 Line::from(vec![
                     Span::styled("Title:   ", Style::default().fg(theme.dimmed)),
@@ -143,18 +206,12 @@ impl Preview {
                     ]));
                 }
             }
-            let paragraph = Paragraph::new(info_lines);
-            frame.render_widget(paragraph, chunks[0]);
-            chunks[1]
-        } else {
-            area
-        };
+            frame.render_widget(Paragraph::new(info_lines), info_area);
+        }
 
-        // Output section. With the info section hidden there's no inner
-        // ` Terminal Output ` banner, so the paragraph gets the full
-        // `output_area`; the visible height must match or `compute_scroll`
-        // clips the top row (and a fresh shell's cursor) in live mode.
-        let visible_height = output_visible_height(output_area.height, render_info_section);
+        // `output.height` is the authoritative visible-row count; no separate
+        // banner subtraction (that lives entirely in `PreviewLayout::compute`).
+        let visible_height = layout.output.height as usize;
         // Use the pre-parsed cache when the terminal is up; suppress
         // it otherwise so the "press Enter to start terminal" hint
         // can take the inner area instead of a stale capture.
@@ -165,13 +222,11 @@ impl Preview {
         };
         let line_count = parsed_output.map_or(0, |t| t.lines.len());
 
-        // Inner ` Terminal Output ` banner is paired with the info
-        // section: when the info section is hidden (compact or the user
-        // toggled it off), the outer block title already names the view
-        // and the scroll indicator is hoisted to that outer title by the
-        // caller, so we drop the inner banner here too. Drops one row of
-        // chrome and frees it for output.
-        let inner = if render_info_section {
+        // The inner ` Terminal Output ` banner is present exactly when the info
+        // section is (see `PreviewLayout`): with it hidden the outer block title
+        // already names the view and the scroll indicator is hoisted there by
+        // the caller, so the body claims the freed row.
+        if let Some(banner) = layout.banner {
             let mut block = Block::default()
                 .borders(Borders::TOP)
                 .border_style(Style::default().fg(theme.border))
@@ -186,13 +241,10 @@ impl Preview {
                         .style(Style::default().fg(theme.dimmed)),
                 );
             }
-            let inner = block.inner(output_area);
-            frame.render_widget(block, output_area);
-            inner
-        } else {
-            output_area
-        };
+            frame.render_widget(block, banner_block_area(layout.output, banner));
+        }
 
+        let inner = layout.output;
         if !terminal_running {
             let hint = Paragraph::new("Press Enter to start terminal")
                 .style(Style::default().fg(theme.dimmed))
@@ -232,42 +284,22 @@ impl Preview {
         compact: bool,
         show_info: bool,
     ) {
-        // When the user has hidden the info header (or the viewport is too
-        // narrow for it), the output gets the whole pane and skips the inner
-        // " Output " banner. The outer block already says "Preview", so an
-        // inner banner would just be redundant chrome.
-        if compact || !show_info {
-            Self::render_output_cached(
-                frame,
-                area,
-                instance,
-                cached_output,
-                scroll_offset,
-                theme,
-                true,
-            );
-            return;
+        // One source of truth for the split. With the header hidden or the
+        // viewport compact, `PreviewLayout::compute` returns `info: None` /
+        // `banner: None` and the output claims the whole pane (the outer block
+        // already says "Preview", so an inner banner would be redundant chrome).
+        let layout = PreviewLayout::compute(area, compact, show_info, agent_info_height(instance));
+        if let Some(info_area) = layout.info {
+            Self::render_info(frame, info_area, instance, theme, idle_decay_window);
         }
-
-        let info_height = agent_info_height(instance);
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(info_height), // Info section
-                Constraint::Min(1),              // Output section
-            ])
-            .split(area);
-
-        Self::render_info(frame, chunks[0], instance, theme, idle_decay_window);
         Self::render_output_cached(
             frame,
-            chunks[1],
+            layout.output,
+            layout.banner,
             instance,
             cached_output,
             scroll_offset,
             theme,
-            false,
         );
     }
 
@@ -369,18 +401,17 @@ impl Preview {
 
     fn render_output_cached(
         frame: &mut Frame,
-        area: Rect,
+        output: Rect,
+        banner: Option<Rect>,
         instance: &Instance,
         cached_output: CachedPreview<'_>,
         scroll_offset: u16,
         theme: &Theme,
-        compact: bool,
     ) {
-        // `compact` here doubles as the "skip the inner ` Output ` banner"
-        // flag (see the `inner` split below), so the banner is present
-        // exactly when `!compact`. Match the visible height to the actual
-        // paragraph area or the top row gets clipped when the banner is gone.
-        let visible_height = output_visible_height(area.height, !compact);
+        // `output.height` is the visible-row count straight from `PreviewLayout`;
+        // there is no banner subtraction here (the banner, when present, sits in
+        // its own row above `output`).
+        let visible_height = output.height as usize;
         // The error path below returns early, so by the time we use
         // `parsed_output` for the output Paragraph the error case has
         // been handled. Until then `parsed_output` is just the cached
@@ -388,12 +419,10 @@ impl Preview {
         let parsed_output = cached_output.text;
         let line_count = parsed_output.map_or(0, |t| t.lines.len());
 
-        // Compact mode skips the inner separator/title; the outer block
-        // already names the session and scroll indicator is omitted to
-        // free a row.
-        let inner = if compact {
-            area
-        } else {
+        // The inner ` Output ` banner is drawn only when `PreviewLayout` gave us
+        // a banner row (info header shown, non-compact). The outer block already
+        // names the session when it's hidden, so the body claims the freed row.
+        if let Some(banner) = banner {
             let mut block = Block::default()
                 .borders(Borders::TOP)
                 .border_style(Style::default().fg(theme.border))
@@ -408,10 +437,9 @@ impl Preview {
                         .style(Style::default().fg(theme.dimmed)),
                 );
             }
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            inner
-        };
+            frame.render_widget(block, banner_block_area(output, banner));
+        }
+        let inner = output;
 
         if let Some(error) = &instance.last_error {
             let mut error_lines: Vec<Line> = vec![
@@ -458,21 +486,17 @@ impl Preview {
     }
 }
 
-/// Rows of captured output actually visible in the preview body.
-///
-/// The body drops one row for the inner ` Output ` / ` Terminal Output `
-/// banner ONLY when that banner is rendered (info section shown, non-compact).
-/// When the banner is hidden (compact viewport or the user toggled the info
-/// header off) the output paragraph claims the full area, so the visible
-/// height must equal the full area height. Subtracting one unconditionally
-/// makes `compute_scroll` walk one row too far past the bottom, clipping the
-/// top line of the capture, where a freshly started shell's prompt and cursor
-/// sit. That is the "first row is invisible in live mode" bug.
-pub(crate) fn output_visible_height(area_height: u16, has_banner: bool) -> usize {
-    if has_banner {
-        area_height.saturating_sub(1) as usize
-    } else {
-        area_height as usize
+/// The `Borders::TOP` block that draws the ` Output ` / ` Terminal Output `
+/// banner. It spans the banner row plus the whole output body so its single top
+/// border lands on the banner row and `block.inner()` coincides exactly with
+/// `output`. Built from `PreviewLayout`'s `output` + `banner` rects so the
+/// banner can never be sized independently of the body it caps.
+fn banner_block_area(output: Rect, banner: Rect) -> Rect {
+    Rect {
+        x: output.x,
+        y: banner.y,
+        width: output.width,
+        height: output.height.saturating_add(1),
     }
 }
 
@@ -604,36 +628,66 @@ mod tests {
         }
     }
 
-    // Regression for the "first row hidden in live mode" bug: with the info
-    // header toggled off there's no inner banner, so the output paragraph
-    // claims the full area and the visible height must equal the area height.
-    // Subtracting one (the pre-fix behavior) made `compute_scroll` walk one
-    // row past the bottom, clipping the top line where a fresh shell's cursor
-    // sits.
-    #[test]
-    fn output_visible_height_matches_area_when_banner_hidden() {
-        assert_eq!(output_visible_height(40, false), 40);
+    // Single source of truth for the preview split. These pin down the row
+    // arithmetic that #1521 / #1570 / #1604 each got wrong in a different
+    // derivation; now there is only one.
+    fn rect(x: u16, y: u16, w: u16, h: u16) -> Rect {
+        Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        }
     }
 
     #[test]
-    fn output_visible_height_drops_banner_row_when_shown() {
-        assert_eq!(output_visible_height(40, true), 39);
+    fn layout_hidden_info_gives_output_the_whole_area() {
+        // Header toggled off (or compact): no header, no banner, output == area.
+        let area = rect(0, 0, 80, 40);
+        let l = PreviewLayout::compute(area, false, false, 7);
+        assert_eq!(l.info, None);
+        assert_eq!(l.banner, None);
+        assert_eq!(l.output, area);
+        // Compact forces the same regardless of the toggle.
+        assert_eq!(PreviewLayout::compute(area, true, true, 7).output, area);
     }
 
     #[test]
-    fn output_visible_height_saturates_at_zero() {
-        assert_eq!(output_visible_height(0, true), 0);
+    fn layout_shown_info_carves_header_plus_banner_once() {
+        let area = rect(2, 3, 80, 40);
+        let l = PreviewLayout::compute(area, false, true, 7);
+        // Header: top 7 rows.
+        assert_eq!(l.info, Some(rect(2, 3, 80, 7)));
+        // Banner: the single row just below the header.
+        assert_eq!(l.banner, Some(rect(2, 3 + 7, 80, 1)));
+        // Output: the rest, shifted down by header + banner (7 + 1).
+        assert_eq!(l.output, rect(2, 3 + 8, 80, 40 - 8));
+        // The banner block spans banner + output so its inner == output.
+        let block_area = banner_block_area(l.output, l.banner.unwrap());
+        assert_eq!(block_area, rect(2, 3 + 7, 80, 40 - 8 + 1));
     }
 
-    // The bug end to end: a captured screen exactly as tall as the pane,
-    // live-following (offset 0). With the banner hidden the scroll must be 0
-    // so row 0 (the cursor row) stays on screen; the pre-fix height-1 produced
-    // a scroll of 1 and pushed that row off the top.
+    #[test]
+    fn layout_clamps_when_pane_shorter_than_chrome() {
+        // Pane shorter than header + banner: output clamps to zero height and
+        // never underflows (the old panic-on-subtraction case).
+        let area = rect(0, 0, 80, 3);
+        let l = PreviewLayout::compute(area, false, true, 4);
+        assert_eq!(l.output.height, 0);
+        assert!(l.output.y <= area.y + area.height);
+    }
+
+    // End to end: a captured screen exactly as tall as the banner-less output,
+    // live-following (offset 0). The scroll must be 0 so the top row (a fresh
+    // shell's cursor) stays on screen. This is the #1604 "first row hidden"
+    // regression, now expressed against the single layout source.
     #[test]
     fn full_height_capture_does_not_scroll_when_banner_hidden() {
-        let height = 40u16;
-        let visible = output_visible_height(height, false);
-        assert_eq!(compute_scroll(height as usize, visible, 0), 0);
+        let area = rect(0, 0, 80, 40);
+        let l = PreviewLayout::compute(area, false, false, 7);
+        let visible = l.output.height as usize;
+        assert_eq!(visible, 40);
+        assert_eq!(compute_scroll(visible, visible, 0), 0);
     }
 
     #[test]

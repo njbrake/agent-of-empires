@@ -3,7 +3,7 @@
 use anyhow::Result;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use futures_util::StreamExt;
 use ratatui::prelude::*;
@@ -548,6 +548,17 @@ impl App {
                 event = self.event_stream.as_mut().expect("event_stream missing").next() => {
                     match event {
                         Some(Ok(Event::Key(key))) => {
+                            // Only act on key-down / auto-repeat. Terminals that
+                            // report release events (Windows console always does;
+                            // kitty-protocol terminals do when enhancement flags are
+                            // on) would otherwise deliver a Release for every press
+                            // and double-fire every handler, so a toggle like `i`
+                            // (hide the info header) nets to zero and "won't hide".
+                            // The cockpit and remote-home loops already filter this;
+                            // the home loop has to as well.
+                            if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                                continue;
+                            }
                             // Paste-burst detector for VoiceInk + Mosh ergonomics.
                             // Mosh strips bracketed-paste markers, so pasted
                             // dictation arrives as a stream of individual KeyEvents
@@ -580,6 +591,15 @@ impl App {
                                         self.event_stream.as_mut().expect("event_stream missing").next(),
                                     ).await;
                                     match next {
+                                        // Ignore key-release / non-press events mid-burst, same
+                                        // gate as the arm entry. On terminals that report releases
+                                        // they would otherwise be taken as burst chars (doubling the
+                                        // pasted text) or stashed as the deferred key.
+                                        Ok(Some(Ok(Event::Key(k))))
+                                            if !matches!(
+                                                k.kind,
+                                                KeyEventKind::Press | KeyEventKind::Repeat
+                                            ) => {}
                                         Ok(Some(Ok(Event::Key(k)))) if Self::is_burst_candidate(&k) => {
                                             if let Some(c) = Self::burst_char_for(&k) {
                                                 burst_str.push(c);
@@ -1912,6 +1932,14 @@ impl App {
             Some(inst) => inst.tmux_session()?,
             None => return Ok(()),
         };
+        // The non-live preview may have left the window pinned to manual
+        // sizing at the (smaller) preview dimensions. Restore `window-size
+        // latest` so the attaching client resizes it to the full terminal,
+        // and drop the preview-resize dedup so the next render re-asserts the
+        // preview geometry against the now-grown window instead of leaving the
+        // top clipped.
+        tmux_session.reset_size_to_latest_client();
+        self.home.clear_preview_pane_sync();
         let (attach_result, attached_status_updates) =
             self.with_attached_status_hooks(terminal, || tmux_session.attach())?;
 

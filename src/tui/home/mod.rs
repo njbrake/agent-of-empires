@@ -424,6 +424,13 @@ pub struct HomeView {
     /// the current live-send session. Used to dedup the resize messages
     /// fired from the preview refresh path; cleared on live-send exit.
     pub(super) live_send_last_resize: Option<(u16, u16)>,
+    /// `(session_id, cols, rows)` of the last NON-live preview resize we sent
+    /// to the selected agent's pane, so the 250ms preview poll doesn't
+    /// SIGWINCH-storm it every tick. Invalidated (set to None) on attach and on
+    /// live-send enter/exit, where the window's real size changes out from
+    /// under us and the next render must re-assert the preview geometry. See
+    /// `refresh_preview_cache_if_needed`.
+    pub(super) preview_pane_synced: Option<(String, u16, u16)>,
     /// Pasted text captured at the home view that we couldn't immediately
     /// route (no session selected, cursor on a group header, etc.). Drained
     /// into the next compose dialog the user opens, so voice/dictation never
@@ -494,14 +501,13 @@ pub struct HomeView {
     /// every frame in info-expanded mode looked shifted up.
     pub(super) preview_pane_area: Rect,
     /// Rows of captured output the renderer actually paints into the preview
-    /// body: the pane height minus the inner ` Output ` / ` Terminal Output `
-    /// banner row when (and only when) that banner is shown. Computed in
-    /// `render_preview` via `preview::output_visible_height` and shared with
+    /// body. This is just `PreviewLayout::compute(..).output.height`: the
+    /// single split helper already accounts for the info header and the inner
+    /// ` Output ` / ` Terminal Output ` banner. Set in `render_preview` from the
+    /// same layout the renderer paints with, and shared with
     /// `clamp_scroll_to_capture` and the live-send `[offset/max]` banner so
     /// every consumer of "how many rows are visible" agrees with what's on
-    /// screen. Subtracting one unconditionally instead would let a phantom
-    /// scroll offset of 1 survive when content exactly fills a banner-less
-    /// pane, stalling live-follow one row early.
+    /// screen.
     pub(super) preview_visible_rows: usize,
     /// Outer rect of the preview pane (block + borders + content), captured
     /// during `render_preview`. The live-send preview-only fast path uses
@@ -782,6 +788,7 @@ impl HomeView {
             live_send: None,
             live_send_worker: None,
             live_send_last_resize: None,
+            preview_pane_synced: None,
             pending_paste: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
@@ -2218,6 +2225,14 @@ impl HomeView {
         }
     }
 
+    /// Forget the last non-live preview resize so the next render re-asserts the
+    /// preview geometry. Call whenever the agent window's real size changes out
+    /// from under the preview (an attach grows it to the client; entering or
+    /// leaving live mode hands the resize off and back).
+    pub(super) fn clear_preview_pane_sync(&mut self) {
+        self.preview_pane_synced = None;
+    }
+
     pub fn toggle_archived_section(&mut self) {
         self.archived_section_collapsed = !self.archived_section_collapsed;
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
@@ -2777,6 +2792,9 @@ impl HomeView {
         // issues its sync resize, even if the cached geometry from a
         // prior session happens to match the current preview_pane_area.
         self.live_send_last_resize = None;
+        // Live mode takes over the pane's size from here; drop the non-live
+        // preview dedup so exiting re-asserts the preview geometry cleanly.
+        self.preview_pane_synced = None;
         self.stamp_last_accessed(session_id);
         Ok(stale_sid)
     }
@@ -2799,8 +2817,7 @@ impl HomeView {
     /// `Paragraph` render then drop those rows on every frame, which
     /// the user perceives as content shifted up. The math is shared
     /// with the per-frame resize in `refresh_preview_cache_if_needed`
-    /// and friends; the helper that computes it lives in
-    /// `tui::home::render::split_off_info_section`.
+    /// and friends; the rect comes from `preview::PreviewLayout::compute`.
     pub fn finalize_live_send_resize(&mut self) {
         let Some(state) = self.live_send.as_ref() else {
             return;
