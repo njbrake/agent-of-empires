@@ -1742,10 +1742,12 @@ impl HomeView {
         // Mapping (strict mode only):
         //   Shift+letter actions -> pass through unchanged: each has its own
         //     `Char('UPPER') if self.strict_hotkeys` arm in the main match.
-        //   Ctrl+letter relocated bindings -> uppercase: Ctrl+T->T, Ctrl+D->D, Ctrl+R->R, Ctrl+P->P, Ctrl+N->N
-        //   Ctrl+G, Ctrl+O -> pass through with CTRL intact (the dispatch
-        //     table matches them with their modifier; stripping CTRL would
-        //     collide with the bare-lowercase typing-guard).
+        //   Ctrl+letter relocated bindings -> uppercase: Ctrl+D->D, Ctrl+R->R, Ctrl+P->P
+        //   Ctrl+T, Ctrl+N, Ctrl+G, Ctrl+O -> pass through with CTRL intact.
+        //     Ctrl+T/Ctrl+N have distinct secondary arms that would be
+        //     orphaned if folded onto Shift+T/Shift+N; Ctrl+G/Ctrl+O match
+        //     with their modifier and stripping CTRL would collide with the
+        //     bare-lowercase typing-guard.
         //   Bare lowercase action letters -> blocked (return None)
         let key = if self.strict_hotkeys {
             self.normalize_strict_key(key)
@@ -4310,13 +4312,21 @@ impl HomeView {
         }
 
         match key.code {
-            // Ctrl+letter relocations: map to the uppercase letter they replace
-            // Ctrl+T -> T (attach terminal), Ctrl+D -> D (diff view),
-            // Ctrl+R -> R (serve), Ctrl+P -> P (profiles), Ctrl+N -> N (new from selection)
-            KeyCode::Char(c @ ('t' | 'd' | 'r' | 'p' | 'n')) if ctrl => Some(KeyEvent::new(
+            // Ctrl+letter relocations whose secondary action shares an
+            // UPPERCASE arm with nothing else: fold to the uppercase letter.
+            // Ctrl+D -> D (diff view), Ctrl+R -> R (serve), Ctrl+P -> P (profiles).
+            KeyCode::Char(c @ ('d' | 'r' | 'p')) if ctrl => Some(KeyEvent::new(
                 KeyCode::Char(c.to_ascii_uppercase()),
                 KeyModifiers::NONE,
             )),
+            // Ctrl+T and Ctrl+N must KEEP their CTRL modifier. Their bare
+            // uppercase forms (Shift+T, Shift+N) already drive distinct
+            // primary actions (toggle view, plain new session), so folding
+            // Ctrl+T/Ctrl+N to T/N collides with those and orphans the
+            // secondary arms (quick-attach terminal, new-from-selection) as
+            // dead code. Passing through with CTRL intact lets the
+            // `Char('t'|'n') if strict && CONTROL` arms fire.
+            KeyCode::Char('t' | 'n') if ctrl => Some(key),
             // Ctrl+G and Ctrl+O stay as-is. The dispatch table already has
             // strict-mode arms that match `Char('g')`/`Char('o')` *with*
             // the CTRL modifier; stripping CTRL here would make the

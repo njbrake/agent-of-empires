@@ -2215,6 +2215,74 @@ fn test_strict_mode_ctrl_g_opens_group_picker() {
 
 #[test]
 #[serial]
+fn test_strict_mode_ctrl_t_and_ctrl_n_reach_secondary_actions() {
+    // Regression guard (2026-05-29): in strict_hotkeys mode, normalize_strict_key
+    // used to fold Ctrl+T -> 'T' and Ctrl+N -> 'N' (modifier stripped), which
+    // collided with the Shift+T / Shift+N primary arms (toggle view, plain new
+    // session) and left the Ctrl+T / Ctrl+N secondary arms (quick-attach
+    // terminal, new-from-selection) as unreachable dead code. Both chords must
+    // keep CTRL so the secondary arms fire.
+    let mut env = create_test_env_with_sessions(1);
+    env.view.strict_hotkeys = true;
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    // Shift+T toggles the view (primary action), no terminal attach.
+    assert_eq!(env.view.view_mode, ViewMode::Agent);
+    let shift_t = env
+        .view
+        .handle_key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT), None);
+    assert_eq!(env.view.view_mode, ViewMode::Terminal);
+    assert!(
+        !matches!(shift_t, Some(Action::AttachTerminal(_, _))),
+        "Shift+T must toggle view, not attach terminal"
+    );
+    // Reset to Agent view.
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT), None);
+    assert_eq!(env.view.view_mode, ViewMode::Agent);
+
+    // Ctrl+T quick-attaches the paired terminal (secondary action) and must
+    // NOT toggle the view.
+    let ctrl_t = env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        matches!(ctrl_t, Some(Action::AttachTerminal(_, _))),
+        "Ctrl+T in strict mode must quick-attach the paired terminal"
+    );
+    assert_eq!(
+        env.view.view_mode,
+        ViewMode::Agent,
+        "Ctrl+T must not toggle the view"
+    );
+
+    // Shift+N opens the plain new-session dialog (no prefill from selection).
+    assert!(env.view.new_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT), None);
+    assert!(
+        env.view.new_dialog.is_some(),
+        "Shift+N must open the new-session dialog"
+    );
+    env.view.new_dialog = None;
+
+    // Ctrl+N opens the new-from-selection dialog (secondary action). It also
+    // routes through open_new_session_dialog, so assert it reaches the arm by
+    // confirming the dialog opens with CTRL intact rather than being swallowed.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.new_dialog.is_some(),
+        "Ctrl+N in strict mode must open the new-from-selection dialog"
+    );
+}
+
+#[test]
+#[serial]
 fn test_f5_and_e_both_open_restart_dialog() {
     // Pin the equivalence: F5 and `e`/`E` all open the restart dialog. The
     // help overlay collapses them onto one row as "Restart session (also
