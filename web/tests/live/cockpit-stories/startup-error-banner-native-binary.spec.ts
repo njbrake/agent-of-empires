@@ -108,20 +108,19 @@ base("startup banner: native-binary branch + agent-log disclosure", async ({ pag
 
     // Disclosure can terminate in any of: populated <pre>, "No log
     // output yet", "Log file exists but is empty", or an error
-    // message. All confirm the endpoint round-tripped. Assert against
-    // the body container so the test does not couple to one specific
-    // copy variant.
-    const pre = page.getByTestId("cockpit-agent-log-pre");
+    // message. All confirm the endpoint round-tripped. The <pre> is
+    // nested inside <div cockpit-agent-log-body>, so asserting on the
+    // body alone covers every terminal state without strict-mode
+    // multi-match ambiguity.
     const body = page.getByTestId("cockpit-agent-log-body");
-    await expect(pre.or(body)).toBeVisible({ timeout: 10_000 });
+    await expect(body).toBeVisible({ timeout: 10_000 });
     await expect(body).toHaveText(
       /Loading log|Could not load log|No log output yet|Log file exists but is empty|.+/,
     );
 
-    // Refresh re-issues the GET. Visible state should still resolve to
-    // pre or one of the recognized body states.
+    // Refresh re-issues the GET. Body remains the canonical container.
     await page.getByTestId("cockpit-agent-log-refresh").click();
-    await expect(pre.or(body)).toBeVisible({ timeout: 5_000 });
+    await expect(body).toBeVisible({ timeout: 5_000 });
   } finally {
     try {
       if (serve) await serve.stop();
