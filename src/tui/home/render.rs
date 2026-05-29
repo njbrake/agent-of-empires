@@ -1573,6 +1573,36 @@ impl HomeView {
         }
     }
 
+    /// `captured_lines` from whichever preview cache is currently on screen.
+    /// Both the preview's own scroll indicator and the live-send footer need
+    /// the active view's line count; reading `preview_cache` (the Agent cache)
+    /// unconditionally shows a stale or empty `[offset/max]` in Terminal or
+    /// Tool live mode, where a different cache backs the visible output.
+    fn active_captured_lines(&self) -> usize {
+        match &self.view_mode {
+            ViewMode::Agent => self.preview_cache.captured_lines,
+            ViewMode::Tool(_) => self.tool_preview_cache.captured_lines,
+            ViewMode::Terminal => {
+                let mode = self
+                    .selected_session
+                    .as_ref()
+                    .and_then(|id| self.get_instance(id).map(|inst| (id, inst)))
+                    .map(|(id, inst)| {
+                        if inst.is_sandboxed() {
+                            self.get_terminal_mode(id)
+                        } else {
+                            TerminalMode::Host
+                        }
+                    })
+                    .unwrap_or(TerminalMode::Host);
+                match mode {
+                    TerminalMode::Container => self.container_terminal_preview_cache.captured_lines,
+                    TerminalMode::Host => self.terminal_preview_cache.captured_lines,
+                }
+            }
+        }
+    }
+
     fn render_preview(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let compact = area.width < responsive::STACKED_BREAKPOINT;
         let (border_color, title_color) = match self.view_mode {
@@ -1680,30 +1710,7 @@ impl HomeView {
             let scroll_indicator = if !self.show_preview_info {
                 let inner_height = area.height.saturating_sub(2);
                 let visible_height = inner_height as usize;
-                let captured_lines = match &self.view_mode {
-                    ViewMode::Agent => self.preview_cache.captured_lines,
-                    ViewMode::Tool(_) => self.tool_preview_cache.captured_lines,
-                    ViewMode::Terminal => {
-                        let mode = self
-                            .selected_session
-                            .as_ref()
-                            .and_then(|id| self.get_instance(id).map(|inst| (id, inst)))
-                            .map(|(id, inst)| {
-                                if inst.is_sandboxed() {
-                                    self.get_terminal_mode(id)
-                                } else {
-                                    TerminalMode::Host
-                                }
-                            })
-                            .unwrap_or(TerminalMode::Host);
-                        match mode {
-                            TerminalMode::Container => {
-                                self.container_terminal_preview_cache.captured_lines
-                            }
-                            TerminalMode::Host => self.terminal_preview_cache.captured_lines,
-                        }
-                    }
-                };
+                let captured_lines = self.active_captured_lines();
                 format_scroll_indicator(captured_lines, visible_height, self.preview_scroll_offset)
             } else {
                 None
@@ -2185,8 +2192,11 @@ impl HomeView {
             // `dimensions` with a fixed `- 1` would over-count the max by a
             // row whenever the info header is hidden.
             let visible_height = self.preview_visible_rows;
+            // Pull `captured_lines` from whichever cache is on screen, not the
+            // Agent cache unconditionally: in Terminal/Tool live mode the
+            // wrong cache would show a stale or empty `[offset/max]`.
             let scroll = format_scroll_indicator(
-                self.preview_cache.captured_lines,
+                self.active_captured_lines(),
                 visible_height,
                 self.preview_scroll_offset,
             )
