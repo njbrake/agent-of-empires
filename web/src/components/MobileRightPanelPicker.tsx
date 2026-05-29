@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { RightPanelView } from "../lib/rightPanelView";
 
 interface Entry {
@@ -29,6 +30,16 @@ export function MobileRightPanelPicker({
   onSelect,
   onClose,
 }: Props) {
+  // Close on Escape, matching the other dismissible overlays.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   if (!open) return null;
   return (
     <div className="md:hidden fixed inset-0 z-50 flex flex-col justify-end">
@@ -40,6 +51,7 @@ export function MobileRightPanelPicker({
       <div
         className="relative bg-surface-900 border-t border-surface-700/20 rounded-t-xl pb-[env(safe-area-inset-bottom)]"
         role="dialog"
+        aria-modal="true"
         aria-label="Select view"
         data-testid="mobile-right-panel-picker"
       >
