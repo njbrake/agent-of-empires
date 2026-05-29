@@ -49,7 +49,7 @@ export function MobileRightPanelPicker({
         data-testid="mobile-right-panel-picker-backdrop"
       />
       <div
-        className="relative bg-surface-900 border-t border-surface-700/20 rounded-t-xl pb-[env(safe-area-inset-bottom)]"
+        className="relative bg-surface-900 border-t border-surface-700/20 rounded-t-lg pb-[env(safe-area-inset-bottom)]"
         role="dialog"
         aria-modal="true"
         aria-label="Select view"
@@ -67,7 +67,7 @@ export function MobileRightPanelPicker({
                   onClick={() => onSelect(entry.view)}
                   aria-current={isActive ? "true" : undefined}
                   data-testid={`mobile-right-panel-pick-${entry.view}`}
-                  className={`w-full flex flex-col items-start gap-0.5 px-3 py-3 rounded-lg text-left cursor-pointer transition-colors ${
+                  className={`w-full flex flex-col items-start gap-0.5 px-3 py-2 rounded-lg text-left cursor-pointer transition-colors ${
                     isActive
                       ? "bg-brand-600/10 text-brand-500"
                       : "text-text-secondary hover:bg-surface-800"
