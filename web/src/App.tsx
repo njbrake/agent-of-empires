@@ -36,10 +36,7 @@ import {
 } from "./lib/idleDecay";
 import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
-import {
-  dispatchFocusTerminal,
-  setPendingTerminalFocus,
-} from "./lib/terminalFocus";
+import { requestSessionInputFocus } from "./lib/terminalFocus";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
@@ -349,19 +346,13 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   // Selecting a session in the sidebar should land focus on its canonical
   // "type here" target so the user can start typing without a second click:
-  // the cockpit composer in cockpit mode, the xterm textarea otherwise. The
-  // dispatch handles the already-mounted case (re-selecting the active
-  // session, re-showing a persistent terminal); the latch covers a first
-  // open where the target is still resolving (Suspense / xterm round-trip).
-  // Skipped on coarse pointers (#1178): auto-focusing pops the soft keyboard
-  // on every session swap, the wrong default for read-heavy mobile use.
+  // the cockpit composer in cockpit mode, the xterm textarea otherwise. See
+  // requestSessionInputFocus for the dispatch/latch and coarse-pointer rules.
   const isCoarse = useIsCoarsePointer();
   const focusAgentInput = useCallback(
     (session: SessionResponse | undefined) => {
-      if (!session || isCoarse) return;
-      const target = session.cockpit_mode ? "composer" : "agent";
-      setPendingTerminalFocus(target);
-      dispatchFocusTerminal(target);
+      if (!session) return;
+      requestSessionInputFocus(!!session.cockpit_mode, isCoarse);
     },
     [isCoarse],
   );
@@ -370,11 +361,14 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
     if (ws) {
       navigate(`/session/${encodeURIComponent(sessionId)}`);
-      focusKeyboardProxy();
+      // The proxy is a real textarea; focusing it inside the click gesture
+      // would pop the soft keyboard on touch devices, so skip it on coarse
+      // pointers (#1178), matching the focusAgentInput suppression.
+      if (!isCoarse) focusKeyboardProxy();
       focusAgentInput(ws.sessions.find((s) => s.id === sessionId));
       if (window.innerWidth < 768) setSidebarOpen(false);
     }
-  }, [navigate, workspaces, focusAgentInput]);
+  }, [navigate, workspaces, focusAgentInput, isCoarse]);
 
   const handleSelectWorkspace = (workspaceId: string) => {
     const ws = workspaces.find((w) => w.id === workspaceId);
@@ -390,7 +384,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         navigate("/");
       }
     }
-    focusKeyboardProxy();
+    if (!isCoarse) focusKeyboardProxy();
     if (window.innerWidth < 768) {
       setSidebarOpen(false);
     }
