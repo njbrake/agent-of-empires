@@ -167,6 +167,27 @@ pub struct SettingsView {
     /// Cursor inside `search_hits`, bounded by `search_hits.len()`
     /// so it stays valid as the query narrows.
     pub(super) search_selected: usize,
+
+    /// Hit rect per scope tab in the header. Captured during render
+    /// so a click on `[ Global ]` / `[ Profile ]` / `[ Repo ]` can
+    /// switch scope without going through the keyboard. Cleared and
+    /// repopulated each frame.
+    pub(super) scope_tab_rects: Vec<(SettingsScope, ratatui::layout::Rect)>,
+    /// Hit rect per row in the categories panel, indexed into
+    /// `self.categories`. Only Tab rows are pushed; Section dividers
+    /// are skipped so a click on a heading is a no-op.
+    pub(super) category_rects: Vec<(usize, ratatui::layout::Rect)>,
+    /// Hit rect per visible field row, indexed into `self.fields`.
+    /// Skipped while a field is being edited or a list is being
+    /// edited so a stray click during composition doesn't reset focus.
+    pub(super) field_rects: Vec<(usize, ratatui::layout::Rect)>,
+    /// Last `(col, row)` reported by a `MouseEventKind::Moved` event
+    /// while a non-editing settings surface is in view. Drives the
+    /// hover highlight on scope chips, categories, and fields, kept
+    /// separate from `selected_*` / `focus` so the mouse never
+    /// disturbs the keyboard cursor. Cleared on every keypress so
+    /// hover doesn't linger after the user switches modalities.
+    pub(super) mouse_pos: Option<(u16, u16)>,
 }
 
 impl SettingsView {
@@ -228,6 +249,10 @@ impl SettingsView {
             search_input: None,
             search_hits: Vec::new(),
             search_selected: 0,
+            scope_tab_rects: Vec::new(),
+            category_rects: Vec::new(),
+            field_rects: Vec::new(),
+            mouse_pos: None,
         };
 
         // The constructor parks `selected_category` at 0, which is the
@@ -281,6 +306,39 @@ impl SettingsView {
         push_tab(&mut rows, SettingsCategory::Logging);
 
         rows
+    }
+
+    /// Scope chip currently under the mouse cursor, if any. Resolved
+    /// each call against the rects captured by the last render. Used
+    /// for the hover highlight only; click + keyboard own the actual
+    /// selection.
+    pub(super) fn hovered_scope(&self) -> Option<SettingsScope> {
+        let (col, row) = self.mouse_pos?;
+        let pos = ratatui::layout::Position::from((col, row));
+        self.scope_tab_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .map(|(scope, _)| *scope)
+    }
+
+    /// Category-row index under the mouse cursor, if any.
+    pub(super) fn hovered_category(&self) -> Option<usize> {
+        let (col, row) = self.mouse_pos?;
+        let pos = ratatui::layout::Position::from((col, row));
+        self.category_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .map(|(idx, _)| *idx)
+    }
+
+    /// Field-row index under the mouse cursor, if any.
+    pub(super) fn hovered_field(&self) -> Option<usize> {
+        let (col, row) = self.mouse_pos?;
+        let pos = ratatui::layout::Position::from((col, row));
+        self.field_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .map(|(idx, _)| *idx)
     }
 
     /// The category at `selected_category`, by invariant always a

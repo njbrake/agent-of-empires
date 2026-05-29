@@ -293,6 +293,40 @@ last_seen_version = "{}"
         std::thread::sleep(Duration::from_millis(50));
     }
 
+    /// Send a synthetic mouse event into the inner pane as an SGR
+    /// escape sequence. crossterm's mouse capture (enabled by aoe at
+    /// startup) parses the bytes the same way it would parse them
+    /// from a real terminal, so click / scroll routing in the TUI
+    /// runs the production code path. `button` is the SGR button code:
+    /// 0 = left, 1 = middle, 2 = right; +32 = drag (rarely needed for
+    /// click tests). `col` / `row` are 1-indexed terminal cells. Sends
+    /// both the press (M) and release (m) so listeners that only fire
+    /// on `Down(...)` (the click handlers) see a complete cycle.
+    pub fn send_mouse_click(&self, button: u8, col: u16, row: u16) {
+        assert!(self.spawned, "must call spawn_tui() or spawn() first");
+        // XTerm SGR 1006 format: `CSI < Pb ; Px ; Py M` for press,
+        // `... m` for release. No semicolon between Py and the final
+        // M/m byte; crossterm parses the trailing-semicolon variant
+        // leniently but spec-compliant terminals don't.
+        let seq = format!("\x1b[<{button};{col};{row}M\x1b[<{button};{col};{row}m");
+        let output = Command::new("tmux")
+            .arg("-S")
+            .arg(&self.socket_path)
+            .arg("send-keys")
+            .arg("-t")
+            .arg(&self.session_name)
+            .arg("-l")
+            .arg(&seq)
+            .output()
+            .expect("failed to send mouse click");
+        assert!(
+            output.status.success(),
+            "send_mouse_click failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
     /// Send literal text (prevents "Enter" in text from being interpreted as
     /// the Enter key).
     pub fn type_text(&self, text: &str) {

@@ -8422,3 +8422,362 @@ mod save_field_merge {
         );
     }
 }
+
+#[cfg(test)]
+mod right_click_context_menu {
+    //! Right-click on a sidebar row opens a small popup menu (Rename /
+    //! Delete) anchored to the click. Picking Rename routes through the
+    //! same helper as the `r` key, Delete through the same helper as
+    //! `d`. Click-outside dismisses the menu.
+
+    use super::*;
+    use crate::session::Item;
+    use crate::tui::dialogs::ContextMenuAction;
+    use ratatui::layout::Rect;
+
+    fn setup_inner(env: &mut TestEnv) {
+        env.view.list_inner_area = Rect::new(1, 1, 28, 10);
+        env.view.list_area = Rect::new(0, 0, 30, 12);
+    }
+
+    #[test]
+    #[serial]
+    fn right_click_on_session_opens_session_menu_and_moves_cursor() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        // Click the third visible row (inner.y + 2 == 3) -> flat_items[2].
+        assert!(env.view.handle_right_click(5, 3));
+        assert_eq!(env.view.cursor, 2, "cursor should move to clicked row");
+        let menu = env
+            .view
+            .context_menu
+            .as_ref()
+            .expect("context_menu should be open");
+        assert_eq!(menu.selected_action(), ContextMenuAction::Rename);
+        // The selected item is a session, not a group.
+        assert!(matches!(
+            env.view.flat_items[env.view.cursor],
+            Item::Session { .. }
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn right_click_off_list_is_noop() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        // Row 50 is well past list_inner_area.bottom.
+        assert!(!env.view.handle_right_click(5, 50));
+        assert!(env.view.context_menu.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn right_click_on_group_uses_group_menu() {
+        let mut env = create_test_env_with_groups();
+        setup_inner(&mut env);
+        // Find a group row index in flat_items.
+        let group_idx = env
+            .view
+            .flat_items
+            .iter()
+            .position(|item| matches!(item, Item::Group { .. }))
+            .expect("manual-mode test env should have a group row");
+        let click_row = env.view.list_inner_area.y + group_idx as u16;
+
+        assert!(env.view.handle_right_click(5, click_row));
+        assert_eq!(env.view.cursor, group_idx);
+        assert!(env.view.context_menu.is_some());
+        assert!(matches!(
+            env.view.flat_items[env.view.cursor],
+            Item::Group { .. }
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn enter_rename_in_menu_opens_rename_dialog() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 1);
+        assert!(env.view.context_menu.is_some());
+        // First item is Rename; Enter submits it.
+        env.view.handle_key(key(KeyCode::Enter), None);
+        assert!(
+            env.view.context_menu.is_none(),
+            "menu should close on submit"
+        );
+        assert!(
+            env.view.rename_dialog.is_some(),
+            "Rename should route to rename_dialog like the 'r' key"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn down_then_enter_in_menu_opens_delete_dialog() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 1);
+        env.view.handle_key(key(KeyCode::Down), None);
+        env.view.handle_key(key(KeyCode::Enter), None);
+        assert!(env.view.context_menu.is_none());
+        assert!(
+            env.view.unified_delete_dialog.is_some(),
+            "Delete should route to unified_delete_dialog like the 'd' key"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn esc_in_menu_cancels_without_dialog() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 1);
+        env.view.handle_key(key(KeyCode::Esc), None);
+        assert!(env.view.context_menu.is_none());
+        assert!(env.view.rename_dialog.is_none());
+        assert!(env.view.unified_delete_dialog.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn right_click_is_gated_when_other_dialog_is_open() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.show_help = true;
+        assert!(env.view.has_dialog());
+        // resolve_row_to_index short-circuits on any non-live-send overlay,
+        // so the right-click handler should bail without opening the menu.
+        assert!(!env.view.handle_right_click(5, 1));
+        assert!(env.view.context_menu.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn context_menu_counts_as_dialog() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        assert!(!env.view.has_dialog());
+        env.view.handle_right_click(5, 1);
+        assert!(env.view.has_dialog());
+    }
+
+    #[test]
+    #[serial]
+    fn left_click_outside_menu_dismisses_it() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 1);
+        assert!(env.view.context_menu.is_some());
+        // Before a render captures the menu's last_area, every click
+        // reads as "outside", which is exactly the dismissal contract
+        // we want here. (Item-row hit testing has its own unit coverage
+        // in `dialogs::context_menu`.)
+        let consumed = env.view.handle_context_menu_click(99, 99);
+        assert!(consumed, "router should mark the click consumed");
+        assert!(
+            env.view.context_menu.is_none(),
+            "outside click should dismiss the menu"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn handle_context_menu_click_returns_false_when_no_menu() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        assert!(env.view.context_menu.is_none());
+        assert!(!env.view.handle_context_menu_click(5, 5));
+    }
+
+    #[test]
+    #[serial]
+    fn left_click_on_empty_sidebar_outside_live_mode_is_noop() {
+        // Left-click on empty sidebar space is intentionally low-stakes:
+        // it does NOT open the new-session dialog anymore (right-click
+        // owns that entry point) and it doesn't move selection. The
+        // user can keep clicking the empty area to dismiss preview
+        // selections without summoning modals.
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        // Sessions occupy inner rows 0 and 1 (y=1, y=2). Row 5 is well
+        // past the last item but still inside list_inner_area.
+        assert!(!env.view.handle_empty_list_click(5, 5));
+        assert!(env.view.new_dialog.is_none());
+        assert!(env.view.context_menu.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn left_click_on_empty_sidebar_in_live_mode_exits_live_mode() {
+        // Quick-exit gesture: when live-send is active, a click on the
+        // empty sidebar drops the user out of live mode. Mirrors the
+        // Ctrl+Q chord but with the mouse, so a user who came in via
+        // a left-click can also leave that way.
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        use crate::tui::home::live_send;
+        env.view.live_send = Some(live_send::LiveSendState {
+            session_id: "fake".to_string(),
+            title: "fake".to_string(),
+            tmux_name: "aoe_test_empty_click_exit_live".to_string(),
+            target: live_send::LiveSendTarget::Agent,
+            exit_chords: live_send::parse_chord_list(live_send::DEFAULT_EXIT_CHORD),
+        });
+        assert!(env.view.live_send.is_some());
+        assert!(env.view.handle_empty_list_click(5, 5));
+        assert!(
+            env.view.live_send.is_none(),
+            "click on empty sidebar should exit live mode"
+        );
+        assert!(env.view.new_dialog.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn click_on_a_real_row_does_not_change_empty_click_state() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        // Row 1 resolves to flat_items[0], a real session row. The
+        // empty-list click handler must defer to the regular click
+        // path; it shouldn't open new-session or exit live mode here.
+        assert!(!env.view.handle_empty_list_click(5, 1));
+        assert!(env.view.new_dialog.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn empty_sidebar_click_is_gated_when_overlay_is_open() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.show_help = true;
+        assert!(!env.view.handle_empty_list_click(5, 5));
+        assert!(env.view.new_dialog.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn right_click_on_empty_sidebar_opens_empty_menu() {
+        // Right-clicking the empty area of the sidebar (below the last
+        // session) opens the dedicated 3-item menu so the mouse can
+        // reach New / Sort / Grouping the same way `n`/`o`/`g` would
+        // from the keyboard.
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        assert!(env.view.handle_right_click(5, 5));
+        let menu = env.view.context_menu.as_ref().expect("menu opened");
+        let labels: Vec<String> = menu
+            .items_for_test()
+            .iter()
+            .map(|(_, label)| (*label).to_string())
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["New Session", "Change Sort", "Change Grouping"]
+        );
+    }
+
+    /// Helper: hit a key through the home view's handle_key path so
+    /// the dispatch tests run the same wiring real input does. Both
+    /// click and keyboard funnel through `dispatch_context_menu_action`,
+    /// so this covers the dispatcher without having to mock the menu's
+    /// `last_area` for hit-testing.
+    fn send_key(env: &mut crate::tui::home::tests::TestEnv, code: crossterm::event::KeyCode) {
+        env.view.handle_key(
+            crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+            None,
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn empty_sidebar_menu_new_session_dispatches() {
+        // First item (New Session) submits through the shared
+        // dispatcher and opens the new-session dialog.
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 5);
+        send_key(&mut env, crossterm::event::KeyCode::Enter);
+        assert!(env.view.context_menu.is_none());
+        assert!(env.view.new_dialog.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn empty_sidebar_menu_sort_dispatches() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 5);
+        send_key(&mut env, crossterm::event::KeyCode::Down); // highlight "Change Sort"
+        send_key(&mut env, crossterm::event::KeyCode::Enter);
+        assert!(env.view.context_menu.is_none());
+        assert!(env.view.sort_picker_dialog.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn empty_sidebar_menu_grouping_dispatches() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 5);
+        send_key(&mut env, crossterm::event::KeyCode::Down);
+        send_key(&mut env, crossterm::event::KeyCode::Down); // highlight "Change Grouping"
+        send_key(&mut env, crossterm::event::KeyCode::Enter);
+        assert!(env.view.context_menu.is_none());
+        assert!(env.view.group_picker_dialog.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn empty_sidebar_menu_n_hotkey_opens_new_session() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 5);
+        send_key(&mut env, crossterm::event::KeyCode::Char('n'));
+        assert!(env.view.context_menu.is_none());
+        assert!(env.view.new_dialog.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn empty_sidebar_menu_o_hotkey_opens_sort_picker() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 5);
+        send_key(&mut env, crossterm::event::KeyCode::Char('o'));
+        assert!(env.view.context_menu.is_none());
+        assert!(env.view.sort_picker_dialog.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn empty_sidebar_menu_g_hotkey_opens_group_picker() {
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 5);
+        send_key(&mut env, crossterm::event::KeyCode::Char('g'));
+        assert!(env.view.context_menu.is_none());
+        assert!(env.view.group_picker_dialog.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn session_menu_n_hotkey_is_inert() {
+        // Sanity: the session-row menu only has Rename/Delete actions,
+        // so 'n' must NOT submit NewSession when the wrong menu is open.
+        // This proves the hotkey gate (action must be in items) holds.
+        let mut env = create_test_env_with_sessions(2);
+        setup_inner(&mut env);
+        env.view.handle_right_click(5, 1); // row 1 = first session
+        send_key(&mut env, crossterm::event::KeyCode::Char('n'));
+        assert!(env.view.context_menu.is_some(), "menu should stay open");
+        assert!(
+            env.view.new_dialog.is_none(),
+            "n on session menu must not open new-session"
+        );
+    }
+}

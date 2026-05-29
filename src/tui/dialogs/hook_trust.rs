@@ -14,6 +14,9 @@ pub struct HookTrustDialog {
     project_path: String,
     selected: bool, // true = Trust, false = Skip
     scroll_offset: u16,
+    trust_button_area: Rect,
+    skip_button_area: Rect,
+    cancel_button_area: Rect,
 }
 
 /// Result from the hook trust dialog.
@@ -36,7 +39,34 @@ impl HookTrustDialog {
             project_path,
             selected: false,
             scroll_offset: 0,
+            trust_button_area: Rect::default(),
+            skip_button_area: Rect::default(),
+            cancel_button_area: Rect::default(),
         }
+    }
+
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<HookTrustAction>> {
+        let pos = ratatui::layout::Position::from((col, row));
+        if self.trust_button_area.contains(pos) {
+            return Some(DialogResult::Submit(HookTrustAction::Trust {
+                hooks: self.hooks.clone(),
+                hooks_hash: self.hooks_hash.clone(),
+                project_path: self.project_path.clone(),
+            }));
+        }
+        if self.skip_button_area.contains(pos) {
+            return Some(DialogResult::Submit(HookTrustAction::Skip));
+        }
+        if self.cancel_button_area.contains(pos) {
+            return Some(DialogResult::Cancel);
+        }
+        None
+    }
+
+    /// Hover does not change the Trust/Skip selection. See
+    /// `ConfirmDialog::handle_hover` for the rationale.
+    pub fn handle_hover(&mut self, _col: u16, _row: u16) -> bool {
+        false
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<HookTrustAction> {
@@ -128,7 +158,7 @@ impl HookTrustDialog {
         lines
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let hook_lines = self.build_hook_lines();
         let content_height = hook_lines.len() as u16 + 4; // +4 for header, spacing, buttons
 
@@ -191,18 +221,42 @@ impl HookTrustDialog {
             Style::default().fg(theme.dimmed)
         };
 
+        let trust_label = "[Trust & Run (y)]";
+        let skip_label = "[Skip (n)]";
+        let cancel_label = "[Cancel (Esc)]";
+        let gap: u16 = 4;
+        let prefix: u16 = 2;
+        let trust_w = trust_label.chars().count() as u16;
+        let skip_w = skip_label.chars().count() as u16;
+        let cancel_w = cancel_label.chars().count() as u16;
+        let total = prefix + trust_w + gap + skip_w + gap + cancel_w;
+        let button_area = chunks[2];
+        if button_area.width >= total {
+            let left_pad = (button_area.width - total) / 2;
+            let trust_x = button_area.x + left_pad + prefix;
+            let skip_x = trust_x + trust_w + gap;
+            let cancel_x = skip_x + skip_w + gap;
+            self.trust_button_area = Rect::new(trust_x, button_area.y, trust_w, 1);
+            self.skip_button_area = Rect::new(skip_x, button_area.y, skip_w, 1);
+            self.cancel_button_area = Rect::new(cancel_x, button_area.y, cancel_w, 1);
+        } else {
+            self.trust_button_area = Rect::default();
+            self.skip_button_area = Rect::default();
+            self.cancel_button_area = Rect::default();
+        }
+
         let buttons = Line::from(vec![
             Span::raw("  "),
-            Span::styled("[Trust & Run (y)]", trust_style),
+            Span::styled(trust_label, trust_style),
             Span::raw("    "),
-            Span::styled("[Skip (n)]", skip_style),
+            Span::styled(skip_label, skip_style),
             Span::raw("    "),
-            Span::styled("[Cancel (Esc)]", Style::default().fg(theme.dimmed)),
+            Span::styled(cancel_label, Style::default().fg(theme.dimmed)),
         ]);
 
         frame.render_widget(
             Paragraph::new(buttons).alignment(Alignment::Center),
-            chunks[2],
+            button_area,
         );
     }
 }

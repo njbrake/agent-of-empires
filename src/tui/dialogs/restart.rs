@@ -35,6 +35,8 @@ pub struct RestartDialog {
     tool_index: usize,
     /// 0 = profile, 1 = tool.
     focused_field: usize,
+    profile_selector_area: Rect,
+    tool_selector_area: Rect,
 }
 
 impl RestartDialog {
@@ -63,6 +65,54 @@ impl RestartDialog {
             profile_index,
             tool_index,
             focused_field: 0,
+            profile_selector_area: Rect::default(),
+            tool_selector_area: Rect::default(),
+        }
+    }
+
+    pub fn handle_click(&mut self, col: u16, row: u16) -> Option<DialogResult<RestartData>> {
+        let pos = ratatui::layout::Position::from((col, row));
+        if self.profile_selector_area.contains(pos) {
+            self.focused_field = 0;
+            if !self.available_profiles.is_empty() {
+                self.profile_index = (self.profile_index + 1) % self.available_profiles.len();
+                // Mirror keyboard cycling: when the profile changes,
+                // re-resolve the tool default so the picker updates too.
+                self.sync_tool_from_profile();
+            }
+            return Some(DialogResult::Continue);
+        }
+        if self.tool_selector_area.contains(pos) {
+            self.focused_field = 1;
+            if !self.available_tools.is_empty() {
+                self.tool_index = (self.tool_index + 1) % self.available_tools.len();
+            }
+            return Some(DialogResult::Continue);
+        }
+        None
+    }
+
+    /// Hover does not change the focused field. Click commits via
+    /// `handle_click`; see `ConfirmDialog::handle_hover` for the
+    /// rationale (mouse drift between the user reading the dialog and
+    /// hitting a keystroke must not silently shift which field that
+    /// key targets).
+    pub fn handle_hover(&mut self, _col: u16, _row: u16) -> bool {
+        false
+    }
+
+    /// Re-resolve the default tool for the currently selected profile
+    /// and snap `tool_index` accordingly, matching the keyboard's
+    /// "cycle profile -> auto-pick its default_tool" behavior.
+    fn sync_tool_from_profile(&mut self) {
+        let Some(profile) = self.selected_profile().map(String::from) else {
+            return;
+        };
+        let cfg = resolve_config_or_warn(&profile);
+        if let Some(default_tool) = cfg.session.default_tool.as_ref() {
+            if let Some(idx) = self.available_tools.iter().position(|t| t == default_tool) {
+                self.tool_index = idx;
+            }
         }
     }
 
@@ -194,7 +244,7 @@ impl RestartDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_area = super::centered_rect(area, 54, 14);
         frame.render_widget(Clear, dialog_area);
 
@@ -242,7 +292,9 @@ impl RestartDialog {
         frame.render_widget(Paragraph::new(current_tool_line), chunks[2]);
 
         self.render_profile_selector(frame, chunks[4], theme);
+        self.profile_selector_area = chunks[4];
         self.render_tool_selector(frame, chunks[5], theme);
+        self.tool_selector_area = chunks[5];
         self.render_hints(frame, chunks[7], theme);
     }
 

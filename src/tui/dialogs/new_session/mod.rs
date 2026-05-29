@@ -216,6 +216,23 @@ pub struct NewSessionDialog {
     /// provisions a fresh scratch directory. Toggled with Ctrl+T from
     /// anywhere in the form. Mutually exclusive with worktree mode.
     pub(super) scratch: bool,
+    /// Per-field hit rect captured by the renderer of the main form
+    /// so a mouse click / hover can target the same cells the user
+    /// sees. Each entry is `(focused_field_index, rect)`. Cleared and
+    /// repopulated every frame; empty while an overlay (sandbox config,
+    /// tool config, worktree config, loading, dir picker, etc.) is up,
+    /// so a stray click during one of those modes won't snap focus to
+    /// the underlying main-form field that used to sit there.
+    pub(super) focusable_rects: Vec<(usize, ratatui::layout::Rect)>,
+    /// Rects for the sandbox-config overlay, keyed by
+    /// `sandbox_focused_field`. Populated only when that overlay is up.
+    pub(super) sandbox_config_rects: Vec<(usize, ratatui::layout::Rect)>,
+    /// Rects for the tool-config overlay, keyed by
+    /// `tool_config_focused_field`.
+    pub(super) tool_config_rects: Vec<(usize, ratatui::layout::Rect)>,
+    /// Rects for the worktree-config overlay, keyed by
+    /// `worktree_config_focused_field`.
+    pub(super) worktree_config_rects: Vec<(usize, ratatui::layout::Rect)>,
 }
 
 /// Shared logic for handling key events in an editable list (env keys or env values).
@@ -469,6 +486,10 @@ impl NewSessionDialog {
             group_ghost: None,
             confirm_create_dir: None,
             scratch: false,
+            focusable_rects: Vec::new(),
+            sandbox_config_rects: Vec::new(),
+            tool_config_rects: Vec::new(),
+            worktree_config_rects: Vec::new(),
         }
     }
 
@@ -736,6 +757,10 @@ impl NewSessionDialog {
             group_ghost: None,
             confirm_create_dir: None,
             scratch: false,
+            focusable_rects: Vec::new(),
+            sandbox_config_rects: Vec::new(),
+            tool_config_rects: Vec::new(),
+            worktree_config_rects: Vec::new(),
         }
     }
 
@@ -801,6 +826,10 @@ impl NewSessionDialog {
             group_ghost: None,
             confirm_create_dir: None,
             scratch: false,
+            focusable_rects: Vec::new(),
+            sandbox_config_rects: Vec::new(),
+            tool_config_rects: Vec::new(),
+            worktree_config_rects: Vec::new(),
         }
     }
 
@@ -817,6 +846,250 @@ fn project_picker_label(p: &crate::session::Project) -> String {
 }
 
 impl NewSessionDialog {
+    /// Route a left-click on the main form. Returns `Some(Continue)`
+    /// when the click landed on a focusable field (focus moves and,
+    /// for checkbox / cycler rows, the value advances the same way
+    /// Space / Left+Right would). Returns `None` when the click missed
+    /// every captured rect or when the dialog is in an overlay mode
+    /// where the main-form rects don't apply (the renderer leaves
+    /// `focusable_rects` empty in those modes).
+    ///
+    /// The overlay modes (sandbox/tool/worktree config, dir picker,
+    /// group/branch/projects picker, help) are still keyboard-only;
+    /// `handle_click` only fires on the top-level form.
+    pub fn handle_click(&mut self, col: u16, row: u16) -> Option<DialogResult<NewSessionData>> {
+        let pos = ratatui::layout::Position::from((col, row));
+
+        // List pickers (group / branch / projects) float over every
+        // other surface (main form AND config overlays), so route their
+        // clicks first. Otherwise the worktree config overlay below
+        // would swallow clicks meant for the branch picker that pops
+        // up from inside it.
+        if self.group_picker.is_active() {
+            match self.group_picker.handle_click(col, row) {
+                ListPickerResult::Continue | ListPickerResult::Cancelled => {
+                    return Some(DialogResult::Continue);
+                }
+                ListPickerResult::Selected(value) => {
+                    self.group = Input::new(value);
+                    self.clear_group_ghost();
+                    return Some(DialogResult::Continue);
+                }
+            }
+        }
+        if self.branch_picker.is_active() {
+            match self.branch_picker.handle_click(col, row) {
+                ListPickerResult::Continue | ListPickerResult::Cancelled => {
+                    return Some(DialogResult::Continue);
+                }
+                ListPickerResult::Selected(value) => {
+                    self.worktree_branch = Input::new(value);
+                    return Some(DialogResult::Continue);
+                }
+            }
+        }
+        if self.projects_picker.is_active() {
+            match self.projects_picker.handle_click(col, row) {
+                ListPickerResult::Continue | ListPickerResult::Cancelled => {
+                    return Some(DialogResult::Continue);
+                }
+                ListPickerResult::Selected(value) => {
+                    // Mirror the Enter-key handler in the worktree-config
+                    // path: resolve the display name back to a project
+                    // path via `available_projects` and append to
+                    // `workspace_repos` if not already present.
+                    if let Some(project) = self
+                        .available_projects
+                        .iter()
+                        .find(|p| project_picker_label(p) == value)
+                    {
+                        let path = project.path.clone();
+                        if !self.workspace_repos.iter().any(|p| p == &path) {
+                            self.workspace_repos.push(path);
+                        }
+                    }
+                    return Some(DialogResult::Continue);
+                }
+            }
+        }
+
+        // Config overlays (sandbox / tool / worktree) take precedence
+        // over the main form: their rects are populated only while
+        // their mode is active.
+        if self.sandbox_config_mode {
+            if let Some(hit) = self
+                .sandbox_config_rects
+                .iter()
+                .find(|(_, rect)| rect.contains(pos))
+                .map(|(f, _)| *f)
+            {
+                self.sandbox_focused_field = hit;
+            }
+            return Some(DialogResult::Continue);
+        }
+        if self.tool_config_mode {
+            if let Some(hit) = self
+                .tool_config_rects
+                .iter()
+                .find(|(_, rect)| rect.contains(pos))
+                .map(|(f, _)| *f)
+            {
+                self.tool_config_focused_field = hit;
+            }
+            return Some(DialogResult::Continue);
+        }
+        if self.worktree_config_mode {
+            if let Some(hit) = self
+                .worktree_config_rects
+                .iter()
+                .find(|(_, rect)| rect.contains(pos))
+                .map(|(f, _)| *f)
+            {
+                self.worktree_config_focused_field = hit;
+                // Field index 1 is the new-branch checkbox in the
+                // worktree-config overlay; a click toggles it like Space
+                // would on the keyboard.
+                if hit == 1 {
+                    self.create_new_branch = !self.create_new_branch;
+                }
+            }
+            return Some(DialogResult::Continue);
+        }
+
+        let hit_field = self
+            .focusable_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .map(|(field, _)| *field)?;
+        self.focused_field = hit_field;
+        self.activate_focused_field();
+        Some(DialogResult::Continue)
+    }
+
+    /// Hover only updates the active picker's row highlight (menu-style
+    /// behavior the user expects). It deliberately does NOT move focus
+    /// between form fields; main form or any of the config overlays.
+    /// Stealing focus from the field the user is typing into just
+    /// because the mouse cursor drifts across the dialog is jarring.
+    /// Click still sets focus.
+    pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
+        if self.group_picker.is_active() {
+            return self.group_picker.handle_hover(col, row);
+        }
+        if self.branch_picker.is_active() {
+            return self.branch_picker.handle_hover(col, row);
+        }
+        if self.projects_picker.is_active() {
+            return self.projects_picker.handle_hover(col, row);
+        }
+        false
+    }
+
+    /// Perform the focused field's primary action: toggle a checkbox,
+    /// cycle a picker. Text fields (path, title, group) have no primary
+    /// action and are left alone. Mirrors the per-field branches of
+    /// `handle_key`'s Space / Left / Right handlers so a click produces
+    /// byte-identical state changes.
+    fn activate_focused_field(&mut self) {
+        let has_profile_selection = self.available_profiles.len() > 1;
+        let has_tool_selection = self.available_tools.len() > 1;
+        let is_host_only = self.selected_tool_host_only();
+        let has_sandbox = self.docker_available && !is_host_only;
+        let has_yolo = !self.selected_tool_always_yolo();
+        let profile_field = if has_profile_selection { 0 } else { usize::MAX };
+        let mut fi = if has_profile_selection { 1 } else { 0 };
+        fi += 2; // title + path
+        let tool_field = if has_tool_selection {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
+        let yolo_mode_field = if has_yolo {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
+        let worktree_field = if !is_host_only {
+            let f = fi;
+            fi += 1;
+            f
+        } else {
+            usize::MAX
+        };
+        let sandbox_field = if has_sandbox {
+            // No `fi += 1` here; sandbox is the last index we need to
+            // resolve, and the unused assignment trips clippy.
+            fi
+        } else {
+            usize::MAX
+        };
+
+        if self.focused_field == profile_field {
+            if self.available_profiles.len() > 1 {
+                self.profile_index = (self.profile_index + 1) % self.available_profiles.len();
+                // Mirror the keyboard cycle: pick up the new profile's
+                // defaults (sandbox, yolo, hooks, tool override) so the
+                // dialog reflects what a submit would actually create.
+                self.reload_config_defaults();
+            }
+        } else if self.focused_field == tool_field {
+            if self.available_tools.len() > 1 {
+                self.tool_index = (self.tool_index + 1) % self.available_tools.len();
+                // Same side effects the Space/Left/Right tool handler
+                // applies: always-yolo tools force the toggle, host-only
+                // tools clear sandbox + worktree, and the per-tool config
+                // overlay (and its branch override) get re-resolved.
+                if self.selected_tool_always_yolo() {
+                    self.yolo_mode = true;
+                } else {
+                    self.yolo_mode = self.yolo_mode_default;
+                }
+                if self.selected_tool_host_only() {
+                    self.sandbox_enabled = false;
+                    self.worktree_enabled = false;
+                    self.worktree_branch.reset();
+                }
+                self.reload_tool_config();
+            }
+        } else if self.focused_field == yolo_mode_field {
+            self.yolo_mode = !self.yolo_mode;
+        } else if self.focused_field == worktree_field {
+            // Mirror the keyboard handler: worktree and scratch are
+            // mutually exclusive, so a click on the worktree row while
+            // scratch is on surfaces an inline hint rather than
+            // silently toggling.
+            if self.scratch {
+                self.error_message = Some(
+                    "Worktree is disabled in scratch mode. Press Ctrl+T to leave scratch first."
+                        .to_string(),
+                );
+            } else {
+                self.worktree_enabled = !self.worktree_enabled;
+                if !self.worktree_enabled {
+                    self.worktree_config_mode = false;
+                }
+            }
+        } else if self.focused_field == sandbox_field {
+            self.sandbox_enabled = !self.sandbox_enabled;
+            if self.sandbox_enabled {
+                let config = resolve_config_or_warn(&self.profile);
+                self.extra_env = config.sandbox.environment.clone();
+                self.inherited_settings = build_inherited_settings(&config.sandbox);
+            } else {
+                self.extra_env.clear();
+                self.env_list_expanded = false;
+                self.env_editing_input = None;
+                self.inherited_settings.clear();
+                self.sandbox_config_mode = false;
+            }
+        }
+        // Path / Title / Group: focus change only, no toggle action.
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
         // When loading, only allow Esc to cancel
         if self.loading {

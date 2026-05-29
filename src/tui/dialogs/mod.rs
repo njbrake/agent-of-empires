@@ -3,6 +3,7 @@
 mod changelog;
 mod command_palette;
 mod confirm;
+mod context_menu;
 mod custom_instruction;
 mod delete_options;
 mod group_delete_options;
@@ -30,6 +31,7 @@ pub use command_palette::{
     builtin_commands, CommandPaletteDialog, PaletteAction, PaletteCommand, PaletteGroup,
 };
 pub use confirm::ConfirmDialog;
+pub use context_menu::{ContextMenuAction, ContextMenuDialog};
 pub use custom_instruction::CustomInstructionDialog;
 pub use delete_options::{DeleteDialogConfig, DeleteOptions, UnifiedDeleteDialog};
 pub use group_delete_options::{GroupDeleteOptions, GroupDeleteOptionsDialog};

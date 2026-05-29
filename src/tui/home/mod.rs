@@ -31,11 +31,11 @@ use super::deletion_poller::DeletionPoller;
 #[cfg(feature = "serve")]
 use super::dialogs::ServeView;
 use super::dialogs::{
-    ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
-    GroupPickerDialog, HookTrustDialog, HooksInstallDialog, InfoDialog, IntroDialog,
-    NewSessionData, NewSessionDialog, NoAgentsDialog, ProfilePickerDialog, ProjectsDialog,
-    RenameDialog, RestartDialog, SnoozeDurationDialog, SortPickerDialog, UnifiedDeleteDialog,
-    UpdateConfirmDialog,
+    ChangelogDialog, CommandPaletteDialog, ConfirmDialog, ContextMenuDialog,
+    GroupDeleteOptionsDialog, GroupPickerDialog, HookTrustDialog, HooksInstallDialog, InfoDialog,
+    IntroDialog, NewSessionData, NewSessionDialog, NoAgentsDialog, ProfilePickerDialog,
+    ProjectsDialog, RenameDialog, RestartDialog, SnoozeDurationDialog, SortPickerDialog,
+    UnifiedDeleteDialog, UpdateConfirmDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -360,6 +360,9 @@ pub struct HomeView {
     pub(super) group_delete_options_dialog: Option<GroupDeleteOptionsDialog>,
     pub(super) rename_dialog: Option<RenameDialog>,
     pub(super) restart_dialog: Option<RestartDialog>,
+    /// Right-click popup on the sidebar list. Anchored to a screen
+    /// position when opened; the renderer clamps it into view.
+    pub(super) context_menu: Option<ContextMenuDialog>,
     pub(super) group_rename_context: Option<GroupRenameContext>,
     pub(super) hook_trust_dialog: Option<HookTrustDialog>,
     /// Session data pending hook trust approval
@@ -432,6 +435,13 @@ pub struct HomeView {
     pub(super) pending_stop_session: Option<String>,
     /// Session to force-remove after the confirmation dialog is accepted
     pub(super) pending_force_remove_session: Option<String>,
+    /// Action emitted by a mouse-click on a modal dialog (e.g. clicking
+    /// `[Yes]` on a stop-session confirm). The keyboard path returns
+    /// these via `handle_key -> Option<Action>`, but the mouse path
+    /// goes through `handle_dialog_click` which has no return slot for
+    /// an Action. Stashed here and drained by `app.rs` after the click
+    /// is consumed so both paths produce the same downstream effect.
+    pub(super) pending_dialog_click_action: Option<crate::tui::app::Action>,
     // Search
     pub(super) search_active: bool,
     pub(super) search_query: Input,
@@ -734,6 +744,7 @@ impl HomeView {
             group_delete_options_dialog: None,
             rename_dialog: None,
             restart_dialog: None,
+            context_menu: None,
             group_rename_context: None,
             hook_trust_dialog: None,
             pending_hook_trust_data: None,
@@ -765,6 +776,7 @@ impl HomeView {
             pending_attach_after_warning: None,
             pending_stop_session: None,
             pending_force_remove_session: None,
+            pending_dialog_click_action: None,
             search_active: false,
             search_query: Input::default(),
             search_matches: Vec::new(),
@@ -2081,6 +2093,7 @@ impl HomeView {
             || self.group_delete_options_dialog.is_some()
             || self.rename_dialog.is_some()
             || self.restart_dialog.is_some()
+            || self.context_menu.is_some()
             || self.hook_trust_dialog.is_some()
             || self.hooks_install_dialog.is_some()
             || self.intro_dialog.is_some()
@@ -2114,6 +2127,7 @@ impl HomeView {
             || self.group_delete_options_dialog.is_some()
             || self.rename_dialog.is_some()
             || self.restart_dialog.is_some()
+            || self.context_menu.is_some()
             || self.hook_trust_dialog.is_some()
             || self.hooks_install_dialog.is_some()
             || self.intro_dialog.is_some()

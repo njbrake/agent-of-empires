@@ -24,6 +24,10 @@ pub struct GroupDeleteOptionsDialog {
     has_containers: bool,
     options: GroupDeleteOptions,
     focused_field: usize,
+    /// Captured rect per focusable field, populated by `render`.
+    /// Drives both click (set focus + toggle) and hover (set focus
+    /// only).
+    focusable_rects: Vec<(usize, Rect)>,
 }
 
 impl GroupDeleteOptionsDialog {
@@ -40,6 +44,59 @@ impl GroupDeleteOptionsDialog {
             has_containers,
             options: GroupDeleteOptions::default(),
             focused_field: 0,
+            focusable_rects: Vec::new(),
+        }
+    }
+
+    pub fn handle_click(&mut self, col: u16, row: u16) -> Option<DialogResult<GroupDeleteOptions>> {
+        let pos = ratatui::layout::Position::from((col, row));
+        let hit = self
+            .focusable_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .map(|(field, _)| *field)?;
+        self.focused_field = hit;
+        self.toggle_focused_field();
+        Some(DialogResult::Continue)
+    }
+
+    /// Hover does not change focus on the radios / checkboxes. See
+    /// `ConfirmDialog::handle_hover` for the rationale. Click still
+    /// moves focus and toggles state.
+    pub fn handle_hover(&mut self, _col: u16, _row: u16) -> bool {
+        false
+    }
+
+    /// Mirror the Space-key branch's per-field toggle / radio logic so a
+    /// click produces byte-identical state changes.
+    fn toggle_focused_field(&mut self) {
+        match self.focused_field {
+            0 => {
+                self.options.delete_sessions = false;
+                self.options.delete_worktrees = false;
+                self.options.force_delete_worktrees = false;
+                self.options.delete_branches = false;
+                self.options.delete_containers = false;
+            }
+            1 => {
+                self.options.delete_sessions = true;
+            }
+            f if Some(f) == self.worktree_field_index() => {
+                self.options.delete_worktrees = !self.options.delete_worktrees;
+                if !self.options.delete_worktrees {
+                    self.options.force_delete_worktrees = false;
+                }
+            }
+            f if Some(f) == self.force_field_index() => {
+                self.options.force_delete_worktrees = !self.options.force_delete_worktrees;
+            }
+            f if Some(f) == self.branch_field_index() => {
+                self.options.delete_branches = !self.options.delete_branches;
+            }
+            f if Some(f) == self.container_field_index() => {
+                self.options.delete_containers = !self.options.delete_containers;
+            }
+            _ => {}
         }
     }
 
@@ -125,34 +182,7 @@ impl GroupDeleteOptionsDialog {
                 DialogResult::Continue
             }
             KeyCode::Char(' ') => {
-                match self.focused_field {
-                    0 => {
-                        self.options.delete_sessions = false;
-                        self.options.delete_worktrees = false;
-                        self.options.force_delete_worktrees = false;
-                        self.options.delete_branches = false;
-                        self.options.delete_containers = false;
-                    }
-                    1 => {
-                        self.options.delete_sessions = true;
-                    }
-                    f if Some(f) == self.worktree_field_index() => {
-                        self.options.delete_worktrees = !self.options.delete_worktrees;
-                        if !self.options.delete_worktrees {
-                            self.options.force_delete_worktrees = false;
-                        }
-                    }
-                    f if Some(f) == self.force_field_index() => {
-                        self.options.force_delete_worktrees = !self.options.force_delete_worktrees;
-                    }
-                    f if Some(f) == self.branch_field_index() => {
-                        self.options.delete_branches = !self.options.delete_branches;
-                    }
-                    f if Some(f) == self.container_field_index() => {
-                        self.options.delete_containers = !self.options.delete_containers;
-                    }
-                    _ => {}
-                }
+                self.toggle_focused_field();
                 DialogResult::Continue
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -172,7 +202,8 @@ impl GroupDeleteOptionsDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.focusable_rects.clear();
         let show_worktree_option = self.options.delete_sessions && self.has_managed_worktrees;
         let show_force_option = show_worktree_option && self.options.delete_worktrees;
         let show_container_option = self.options.delete_sessions && self.has_containers;
@@ -261,6 +292,7 @@ impl GroupDeleteOptionsDialog {
             Span::styled(" Move sessions to default group", move_style),
         ]);
         frame.render_widget(Paragraph::new(move_line), chunks[2]);
+        self.focusable_rects.push((0, chunks[2]));
 
         // Delete sessions option
         let delete_focused = self.focused_field == 1;
@@ -278,6 +310,7 @@ impl GroupDeleteOptionsDialog {
             Span::styled(" Delete all sessions", delete_style),
         ]);
         frame.render_widget(Paragraph::new(delete_line), chunks[3]);
+        self.focusable_rects.push((1, chunks[3]));
 
         // Track current chunk index for optional checkboxes
         let mut next_chunk = 4;
@@ -297,6 +330,9 @@ impl GroupDeleteOptionsDialog {
                 style,
             );
             frame.render_widget(Paragraph::new(wt_line), chunks[next_chunk]);
+            if let Some(idx) = self.worktree_field_index() {
+                self.focusable_rects.push((idx, chunks[next_chunk]));
+            }
             next_chunk += 1;
 
             if show_force_option {
@@ -311,6 +347,9 @@ impl GroupDeleteOptionsDialog {
                     style,
                 );
                 frame.render_widget(Paragraph::new(fc_line), chunks[next_chunk]);
+                if let Some(idx) = self.force_field_index() {
+                    self.focusable_rects.push((idx, chunks[next_chunk]));
+                }
                 next_chunk += 1;
             }
 
@@ -326,6 +365,9 @@ impl GroupDeleteOptionsDialog {
                 style,
             );
             frame.render_widget(Paragraph::new(br_line), chunks[next_chunk]);
+            if let Some(idx) = self.branch_field_index() {
+                self.focusable_rects.push((idx, chunks[next_chunk]));
+            }
             next_chunk += 1;
         }
 
@@ -342,6 +384,9 @@ impl GroupDeleteOptionsDialog {
                 style,
             );
             frame.render_widget(Paragraph::new(ct_line), chunks[next_chunk]);
+            if let Some(idx) = self.container_field_index() {
+                self.focusable_rects.push((idx, chunks[next_chunk]));
+            }
             next_chunk += 1;
         }
 

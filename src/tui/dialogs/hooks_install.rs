@@ -13,6 +13,8 @@ pub struct HooksInstallDialog {
     needs_codex_trust_note: bool,
     selected: bool, // true = Accept, false = Cancel
     scroll_offset: u16,
+    accept_button_area: Rect,
+    cancel_button_area: Rect,
 }
 
 impl HooksInstallDialog {
@@ -55,7 +57,26 @@ impl HooksInstallDialog {
             needs_codex_trust_note,
             selected: true,
             scroll_offset: 0,
+            accept_button_area: Rect::default(),
+            cancel_button_area: Rect::default(),
         }
+    }
+
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<bool>> {
+        let pos = ratatui::layout::Position::from((col, row));
+        if self.accept_button_area.contains(pos) {
+            return Some(DialogResult::Submit(true));
+        }
+        if self.cancel_button_area.contains(pos) {
+            return Some(DialogResult::Cancel);
+        }
+        None
+    }
+
+    /// Hover does not change the Accept / Cancel selection. See
+    /// `ConfirmDialog::handle_hover` for the rationale.
+    pub fn handle_hover(&mut self, _col: u16, _row: u16) -> bool {
+        false
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<bool> {
@@ -145,7 +166,7 @@ impl HooksInstallDialog {
         lines
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let content_lines = self.build_content_lines();
         let content_height = content_lines.len() as u16 + 6; // header + spacing + buttons
 
@@ -208,16 +229,35 @@ impl HooksInstallDialog {
             Style::default().fg(theme.dimmed)
         };
 
+        let accept_label = "[Accept (y)]";
+        let cancel_label = "[Cancel (Esc)]";
+        let gap: u16 = 4;
+        let prefix: u16 = 2;
+        let accept_w = accept_label.chars().count() as u16;
+        let cancel_w = cancel_label.chars().count() as u16;
+        let total = prefix + accept_w + gap + cancel_w;
+        let button_area = chunks[2];
+        if button_area.width >= total {
+            let left_pad = (button_area.width - total) / 2;
+            let accept_x = button_area.x + left_pad + prefix;
+            let cancel_x = accept_x + accept_w + gap;
+            self.accept_button_area = Rect::new(accept_x, button_area.y, accept_w, 1);
+            self.cancel_button_area = Rect::new(cancel_x, button_area.y, cancel_w, 1);
+        } else {
+            self.accept_button_area = Rect::default();
+            self.cancel_button_area = Rect::default();
+        }
+
         let buttons = Line::from(vec![
             Span::raw("  "),
-            Span::styled("[Accept (y)]", accept_style),
+            Span::styled(accept_label, accept_style),
             Span::raw("    "),
-            Span::styled("[Cancel (Esc)]", cancel_style),
+            Span::styled(cancel_label, cancel_style),
         ]);
 
         frame.render_widget(
             Paragraph::new(buttons).alignment(Alignment::Center),
-            chunks[2],
+            button_area,
         );
     }
 }

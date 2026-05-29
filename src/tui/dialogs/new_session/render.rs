@@ -14,7 +14,16 @@ use crate::tui::components::{
 use crate::tui::styles::Theme;
 
 impl NewSessionDialog {
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        // Rebuilt every frame: layout changes (a profile gains/loses
+        // its description row, scratch toggles off worktree, etc.) move
+        // every subsequent field, so stale rects would point at the
+        // wrong row. Clearing here also wipes rects when an overlay
+        // mode replaces the main form, so a click during sandbox /
+        // tool / worktree config mode doesn't snap focus to whatever
+        // main-form field used to be under that cell.
+        self.focusable_rects.clear();
+
         // If loading, render the loading overlay instead
         if self.loading {
             self.render_loading(frame, area, theme);
@@ -45,6 +54,14 @@ impl NewSessionDialog {
         let has_sandbox = self.docker_available && !is_host_only;
         let has_yolo = !self.selected_tool_always_yolo();
         let dialog_width = 80;
+        // Capture the full overlay area up front so the centered-pop
+        // pickers at the bottom of this function don't accidentally
+        // use a per-field `area` that the loop below shadows on every
+        // row. Without this the dir / group / branch / projects
+        // pickers anchor against whichever Layout chunk the local
+        // `area` last pointed at (typically the Group row) and render
+        // as a tiny strip inside the underlying dialog.
+        let full_area = area;
         // When the selected profile has a description, the profile row needs
         // an extra line to render it beneath the name. We compute this once
         // here so the layout constraint and the renderer agree on height.
@@ -156,30 +173,37 @@ impl NewSessionDialog {
 
         // Profile picker (only when multiple profiles)
         if has_profile_selection {
-            self.render_profile_field(frame, chunks[ci], theme);
+            let area = chunks[ci];
+            self.render_profile_field(frame, area, theme);
+            self.focusable_rects.push((0, area));
             ci += 1;
         }
 
         // Path (rendered first so the user picks the working directory
         // before naming the session).
-        let path_placeholder = if self.focused_field == self.path_field() {
+        let path_field_idx = self.path_field();
+        let path_placeholder = if self.focused_field == path_field_idx {
             Some("(Ctrl+P to browse directories)")
         } else {
             None
         };
-        self.render_path_field(frame, chunks[ci], path_placeholder, theme);
+        let area = chunks[ci];
+        self.render_path_field(frame, area, path_placeholder, theme);
+        self.focusable_rects.push((path_field_idx, area));
         ci += 1;
 
         // Title
+        let area = chunks[ci];
         render_text_field(
             frame,
-            chunks[ci],
+            area,
             "Title:",
             &self.title,
             self.focused_field == title_field,
             Some("(random civ)"),
             theme,
         );
+        self.focusable_rects.push((title_field, area));
         ci += 1;
 
         // Tool (always shown, interactive or read-only). The cycler itself is
@@ -213,7 +237,13 @@ impl NewSessionDialog {
                 Style::default().fg(theme.dimmed),
             ));
         }
-        frame.render_widget(Paragraph::new(Line::from(tool_spans)), chunks[ci]);
+        let area = chunks[ci];
+        frame.render_widget(Paragraph::new(Line::from(tool_spans)), area);
+        // Push the tool rect only when interactive (multiple tools).
+        // A read-only tool row shouldn't accept focus on click.
+        if has_tool_selection {
+            self.focusable_rects.push((tool_field, area));
+        }
         ci += 1;
 
         // YOLO Mode checkbox (hidden for AlwaysYolo agents like pi)
@@ -245,7 +275,9 @@ impl NewSessionDialog {
                     },
                 ),
             ]);
-            frame.render_widget(Paragraph::new(yolo_line), chunks[ci]);
+            let area = chunks[ci];
+            frame.render_widget(Paragraph::new(yolo_line), area);
+            self.focusable_rects.push((yolo_mode_field, area));
             ci += 1;
         }
 
@@ -302,7 +334,9 @@ impl NewSessionDialog {
                 ));
             }
 
-            frame.render_widget(Paragraph::new(Line::from(spans)), chunks[ci]);
+            let area = chunks[ci];
+            frame.render_widget(Paragraph::new(Line::from(spans)), area);
+            self.focusable_rects.push((worktree_field, area));
             ci += 1;
         }
 
@@ -343,7 +377,9 @@ impl NewSessionDialog {
                 ));
             }
 
-            frame.render_widget(Paragraph::new(Line::from(spans)), chunks[ci]);
+            let area = chunks[ci];
+            frame.render_widget(Paragraph::new(Line::from(spans)), area);
+            self.focusable_rects.push((sandbox_field, area));
             ci += 1;
         }
 
@@ -354,9 +390,10 @@ impl NewSessionDialog {
             } else {
                 None
             };
+        let area = chunks[ci];
         render_text_field_with_ghost(
             frame,
-            chunks[ci],
+            area,
             "Group:",
             &self.group,
             self.focused_field == group_field,
@@ -364,6 +401,7 @@ impl NewSessionDialog {
             self.group_ghost_text(),
             theme,
         );
+        self.focusable_rects.push((group_field, area));
         ci += 1;
 
         // Hints/errors (last chunk)
@@ -465,23 +503,23 @@ impl NewSessionDialog {
         }
 
         if self.show_help {
-            self.render_help_overlay(frame, area, theme);
+            self.render_help_overlay(frame, full_area, theme);
         }
 
         if self.group_picker.is_active() {
-            self.group_picker.render(frame, area, theme);
+            self.group_picker.render(frame, full_area, theme);
         }
 
         if self.branch_picker.is_active() {
-            self.branch_picker.render(frame, area, theme);
+            self.branch_picker.render(frame, full_area, theme);
         }
 
         if self.projects_picker.is_active() {
-            self.projects_picker.render(frame, area, theme);
+            self.projects_picker.render(frame, full_area, theme);
         }
 
         if self.dir_picker.is_active() {
-            self.dir_picker.render(frame, area, theme);
+            self.dir_picker.render(frame, full_area, theme);
         }
     }
 
@@ -615,7 +653,8 @@ impl NewSessionDialog {
         set_prefixed_input_cursor_position(frame, row_area, prefix, input);
     }
 
-    fn render_sandbox_config(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_sandbox_config(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.sandbox_config_rects.clear();
         let dialog_width: u16 = 72;
 
         // Sandbox config fields: image, env, inherited
@@ -675,10 +714,12 @@ impl NewSessionDialog {
             None,
             theme,
         );
+        self.sandbox_config_rects.push((0, chunks[ci]));
         ci += 1;
 
         // Environment
         self.render_env_field(frame, chunks[ci], self.sandbox_focused_field == 1, theme);
+        self.sandbox_config_rects.push((1, chunks[ci]));
         ci += 1;
 
         // Inherited settings (always visible, not focusable)
@@ -701,7 +742,8 @@ impl NewSessionDialog {
         }
     }
 
-    fn render_tool_config(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_tool_config(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.tool_config_rects.clear();
         let dialog_width: u16 = 72;
 
         let constraints = vec![
@@ -765,6 +807,7 @@ impl NewSessionDialog {
             cmd_placeholder,
             theme,
         );
+        self.tool_config_rects.push((0, chunks[0]));
 
         // Extra Args
         let args_placeholder = if self.tool_config_focused_field == 1 {
@@ -783,6 +826,7 @@ impl NewSessionDialog {
             args_placeholder,
             theme,
         );
+        self.tool_config_rects.push((1, chunks[1]));
 
         // Hints
         let hint_spans = vec![
@@ -800,7 +844,8 @@ impl NewSessionDialog {
         }
     }
 
-    fn render_worktree_config(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_worktree_config(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.worktree_config_rects.clear();
         let dialog_width: u16 = 72;
 
         let repos_height: u16 = if self.workspace_repos_expanded {
@@ -859,6 +904,7 @@ impl NewSessionDialog {
             Some("(empty = title)"),
             theme,
         );
+        self.worktree_config_rects.push((0, chunks[0]));
 
         // New Branch checkbox
         {
@@ -891,6 +937,7 @@ impl NewSessionDialog {
                 Span::styled(format!(" {}", text), text_style),
             ]);
             frame.render_widget(Paragraph::new(line), chunks[1]);
+            self.worktree_config_rects.push((1, chunks[1]));
         }
 
         // Base Branch (only meaningful when "new branch" is checked; when
@@ -910,6 +957,7 @@ impl NewSessionDialog {
                 Some(placeholder),
                 theme,
             );
+            self.worktree_config_rects.push((2, chunks[2]));
         }
 
         // Extra Repos
@@ -919,6 +967,7 @@ impl NewSessionDialog {
             self.worktree_config_focused_field == 3,
             theme,
         );
+        self.worktree_config_rects.push((3, chunks[3]));
 
         // Hints
         let mut hint_spans = vec![

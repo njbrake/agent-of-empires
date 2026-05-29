@@ -15,6 +15,8 @@ pub struct UpdateConfirmDialog {
     pub latest_version: String,
     pub needs_sudo: bool,
     selected: bool, // true = Yes, false = No
+    yes_button_area: Rect,
+    no_button_area: Rect,
 }
 
 impl UpdateConfirmDialog {
@@ -36,7 +38,26 @@ impl UpdateConfirmDialog {
             latest_version,
             needs_sudo,
             selected: false,
+            yes_button_area: Rect::default(),
+            no_button_area: Rect::default(),
         }
+    }
+
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<()>> {
+        let pos = ratatui::layout::Position::from((col, row));
+        if self.yes_button_area.contains(pos) {
+            return Some(DialogResult::Submit(()));
+        }
+        if self.no_button_area.contains(pos) {
+            return Some(DialogResult::Cancel);
+        }
+        None
+    }
+
+    /// Hover does not change the Yes/No selection. See `ConfirmDialog`
+    /// for the rationale.
+    pub fn handle_hover(&mut self, _col: u16, _row: u16) -> bool {
+        false
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<()> {
@@ -66,7 +87,7 @@ impl UpdateConfirmDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let height = if self.needs_sudo { 11 } else { 10 };
         let dialog_area = super::centered_rect(area, 60, height);
 
@@ -92,7 +113,9 @@ impl UpdateConfirmDialog {
             Paragraph::new(self.prompt_block.as_str()).style(Style::default().fg(theme.text));
         frame.render_widget(body, chunks[0]);
 
-        render_yes_no(frame, chunks[1], theme, self.selected);
+        let (yes, no) = render_yes_no(frame, chunks[1], theme, self.selected);
+        self.yes_button_area = yes;
+        self.no_button_area = no;
     }
 }
 

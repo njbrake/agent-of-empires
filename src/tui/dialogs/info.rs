@@ -12,6 +12,7 @@ pub struct InfoDialog {
     message: String,
     width: u16,
     height: u16,
+    dialog_area: Rect,
 }
 
 impl InfoDialog {
@@ -21,6 +22,22 @@ impl InfoDialog {
             message: message.to_string(),
             width: 50,
             height: 9,
+            dialog_area: Rect::default(),
+        }
+    }
+
+    /// A left-click anywhere inside the info dialog dismisses it,
+    /// matching the keyboard's "any of Esc/Enter/Space closes" model.
+    /// `None` when the click landed outside the dialog area, so the
+    /// caller can decide whether to swallow it anyway.
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<()>> {
+        if self
+            .dialog_area
+            .contains(ratatui::layout::Position::from((col, row)))
+        {
+            Some(DialogResult::Cancel)
+        } else {
+            None
         }
     }
 
@@ -40,8 +57,9 @@ impl InfoDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_area = super::centered_rect(area, self.width, self.height);
+        self.dialog_area = dialog_area;
 
         frame.render_widget(Clear, dialog_area);
 
@@ -67,12 +85,13 @@ impl InfoDialog {
             .wrap(Wrap { trim: true });
         frame.render_widget(message, chunks[0]);
 
-        // OK button
+        // OK button rendered for visual affordance; click is handled
+        // by the whole-dialog hit region in `handle_click`, so the
+        // button's own rect doesn't need to be captured.
         let button = Line::from(vec![Span::styled(
             "[OK]",
             Style::default().fg(theme.accent).bold(),
         )]);
-
         frame.render_widget(
             Paragraph::new(button).alignment(Alignment::Center),
             chunks[1],

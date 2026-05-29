@@ -24,6 +24,11 @@ impl SettingsView {
     pub fn handle_key(&mut self, key: KeyEvent) -> SettingsAction {
         // Clear transient messages on any key
         self.success_message = None;
+        // Any keypress invalidates the mouse hover highlight; otherwise
+        // a stationary cursor keeps highlighting an unrelated row while
+        // the keyboard cursor moves elsewhere. Mirrors the sidebar's
+        // move_cursor_clears_hover pattern.
+        self.mouse_pos = None;
 
         // Handle custom instruction dialog
         if let Some(ref mut dialog) = self.custom_instruction_dialog {
@@ -1120,6 +1125,105 @@ impl SettingsView {
             }
         }
     }
+
+    /// Route a left-click into the settings view. Returns
+    /// `Some(SettingsAction)` when the click was consumed (the
+    /// settings view stays open, only the focus/scope/selection
+    /// changes; the caller still needs to redraw). Returns `None`
+    /// when nothing hit and the click should be treated as a swallow
+    /// (since settings is a full-screen takeover, clicks anywhere
+    /// inside it are absorbed by the modal regardless).
+    ///
+    /// Editing modes (`editing_input`, `list_edit_state`, custom
+    /// instruction dialog, help overlay, search overlay) intentionally
+    /// skip click routing so a stray click during composition doesn't
+    /// reset focus or drop a half-typed value. The keyboard's Esc /
+    /// Enter handlers remain the way out of those modes.
+    pub fn handle_click(&mut self, col: u16, row: u16) -> Option<SettingsAction> {
+        if self.editing_input.is_some()
+            || self.list_edit_state.is_some()
+            || self.custom_instruction_dialog.is_some()
+            || self.show_help
+            || self.search_input.is_some()
+        {
+            return None;
+        }
+        let pos = ratatui::layout::Position::from((col, row));
+
+        if let Some((scope, _)) = self
+            .scope_tab_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .copied()
+        {
+            if scope != self.scope {
+                if self.has_changes {
+                    return Some(SettingsAction::UnsavedChangesWarning);
+                }
+                self.scope = scope;
+                self.rebuild_categories_for_scope();
+                self.rebuild_fields();
+            }
+            return Some(SettingsAction::Continue);
+        }
+
+        if let Some((idx, _)) = self
+            .category_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .copied()
+        {
+            self.focus = SettingsFocus::Categories;
+            if self.selected_category != idx {
+                self.selected_category = idx;
+                self.selected_field = 0;
+                self.fields_scroll_offset = 0;
+                self.rebuild_fields();
+            }
+            return Some(SettingsAction::Continue);
+        }
+
+        if let Some((idx, _)) = self
+            .field_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .copied()
+        {
+            self.focus = SettingsFocus::Fields;
+            self.selected_field = idx;
+            return Some(SettingsAction::Continue);
+        }
+
+        None
+    }
+
+    /// Track the mouse position so the renderer can paint a hover
+    /// highlight on whichever scope chip / category row / field row
+    /// the cursor is over. Hover never moves the keyboard cursor;
+    /// see `ConfirmDialog::handle_hover` for why. Editing / search /
+    /// help modes clear the hover so the highlight doesn't bleed
+    /// behind the overlay.
+    pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
+        let suppress = self.editing_input.is_some()
+            || self.list_edit_state.is_some()
+            || self.custom_instruction_dialog.is_some()
+            || self.show_help
+            || self.search_input.is_some();
+        let new_pos = if suppress { None } else { Some((col, row)) };
+        if self.mouse_pos == new_pos {
+            return false;
+        }
+        // Only request a redraw when the resolved hover target
+        // actually changes; a mouse drift inside the same field or
+        // entirely off the rects shouldn't repaint every pixel.
+        let prev_scope = self.hovered_scope();
+        let prev_cat = self.hovered_category();
+        let prev_field = self.hovered_field();
+        self.mouse_pos = new_pos;
+        prev_scope != self.hovered_scope()
+            || prev_cat != self.hovered_category()
+            || prev_field != self.hovered_field()
+    }
 }
 
 /// Validate that an entry for AgentExtraArgs or AgentCommandOverride is in `agent_name=value` format.
@@ -1449,6 +1553,175 @@ mod tests {
             assert!(view.search_input.is_none());
             assert_eq!(view.selected_category, cat_before);
             assert_eq!(view.selected_field, field_before);
+        }
+    }
+
+    mod mouse_routing {
+        use super::*;
+        use crate::session::Storage;
+        use crate::tui::settings::{SettingsScope, SettingsView};
+        use ratatui::layout::Rect;
+        use serial_test::serial;
+        use tempfile::TempDir;
+
+        fn setup_test_home(temp: &TempDir) {
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+        }
+
+        fn fresh_view() -> (TempDir, SettingsView) {
+            let temp = TempDir::new().unwrap();
+            setup_test_home(&temp);
+            let _ = Storage::new("test").unwrap();
+            let view = SettingsView::new("test", None).unwrap();
+            (temp, view)
+        }
+
+        #[test]
+        #[serial]
+        fn click_on_scope_tab_switches_scope() {
+            let (_t, mut view) = fresh_view();
+            // Stage a Profile scope rect at known coords.
+            view.scope_tab_rects
+                .push((SettingsScope::Profile, Rect::new(40, 0, 18, 1)));
+            assert_eq!(view.scope, SettingsScope::Global);
+            view.handle_click(45, 0);
+            assert_eq!(view.scope, SettingsScope::Profile);
+        }
+
+        #[test]
+        #[serial]
+        fn click_on_scope_tab_with_unsaved_changes_warns() {
+            let (_t, mut view) = fresh_view();
+            view.has_changes = true;
+            view.scope_tab_rects
+                .push((SettingsScope::Profile, Rect::new(40, 0, 18, 1)));
+            let result = view.handle_click(45, 0);
+            assert!(matches!(
+                result,
+                Some(SettingsAction::UnsavedChangesWarning)
+            ));
+            assert_eq!(
+                view.scope,
+                SettingsScope::Global,
+                "scope must not change while there are unsaved changes"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn click_on_category_row_focuses_and_selects() {
+            let (_t, mut view) = fresh_view();
+            view.focus = crate::tui::settings::SettingsFocus::Fields;
+            let original = view.selected_category;
+            // Pick a different Tab row to stage a click against.
+            let other_tab = (0..view.categories.len())
+                .find(|&i| {
+                    i != original
+                        && matches!(
+                            view.categories[i],
+                            crate::tui::settings::CategoryRow::Tab(_)
+                        )
+                })
+                .expect("expected at least two Tab rows in test layout");
+            view.category_rects
+                .push((other_tab, Rect::new(0, 10, 20, 1)));
+            view.handle_click(5, 10);
+            assert_eq!(view.focus, crate::tui::settings::SettingsFocus::Categories);
+            assert_eq!(view.selected_category, other_tab);
+        }
+
+        #[test]
+        #[serial]
+        fn click_on_field_focuses_and_selects() {
+            let (_t, mut view) = fresh_view();
+            view.field_rects.push((0, Rect::new(20, 5, 50, 2)));
+            view.field_rects.push((1, Rect::new(20, 8, 50, 2)));
+            view.selected_field = 0;
+            view.handle_click(25, 9);
+            assert_eq!(view.focus, crate::tui::settings::SettingsFocus::Fields);
+            assert_eq!(view.selected_field, 1);
+        }
+
+        #[test]
+        #[serial]
+        fn handle_click_returns_none_when_editing() {
+            let (_t, mut view) = fresh_view();
+            view.editing_input = Some(tui_input::Input::new("typing".to_string()));
+            view.scope_tab_rects
+                .push((SettingsScope::Profile, Rect::new(40, 0, 18, 1)));
+            // A click during edit should NOT switch scope or even
+            // resolve a hit; the keyboard's Esc / Enter own the exit.
+            assert!(view.handle_click(45, 0).is_none());
+            assert_eq!(view.scope, SettingsScope::Global);
+        }
+
+        #[test]
+        #[serial]
+        fn hover_never_moves_focus() {
+            // Hover must not shift the keyboard cursor in settings;
+            // otherwise the mouse drifting across the fields panel
+            // silently changes which field a subsequent Enter / Space
+            // targets. Click still navigates.
+            let (_t, mut view) = fresh_view();
+            view.field_rects.push((0, Rect::new(20, 5, 50, 2)));
+            view.field_rects.push((1, Rect::new(20, 8, 50, 2)));
+            view.focus = crate::tui::settings::SettingsFocus::Categories;
+            view.selected_field = 0;
+            view.handle_hover(25, 9);
+            assert_eq!(view.focus, crate::tui::settings::SettingsFocus::Categories);
+            assert_eq!(view.selected_field, 0);
+        }
+
+        #[test]
+        #[serial]
+        fn hover_records_mouse_pos_and_resolves_to_field() {
+            // Hover only paints a visual highlight (drawn by the
+            // renderer from `hovered_field()` against `field_rects`);
+            // it must not touch keyboard selection state. Verify both:
+            // mouse_pos is set and resolves to the right field, but
+            // selected_field stays put.
+            let (_t, mut view) = fresh_view();
+            view.field_rects.push((0, Rect::new(20, 5, 50, 2)));
+            view.field_rects.push((1, Rect::new(20, 8, 50, 2)));
+            view.selected_field = 0;
+            let changed = view.handle_hover(25, 9);
+            assert!(changed, "hover entering a new field should redraw");
+            assert_eq!(view.hovered_field(), Some(1));
+            assert_eq!(view.selected_field, 0, "selection must not move");
+        }
+
+        #[test]
+        #[serial]
+        fn keypress_clears_hover() {
+            // A stationary hover left over from before the user
+            // switched to keyboard would otherwise stay lit on a row
+            // the user is no longer interacting with. Any keystroke
+            // invalidates it.
+            let (_t, mut view) = fresh_view();
+            view.field_rects.push((0, Rect::new(20, 5, 50, 2)));
+            view.handle_hover(25, 5);
+            assert_eq!(view.hovered_field(), Some(0));
+            view.handle_key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Down,
+                crossterm::event::KeyModifiers::NONE,
+            ));
+            assert_eq!(view.hovered_field(), None);
+        }
+
+        #[test]
+        #[serial]
+        fn hover_suppressed_while_editing() {
+            // While a text field is being edited the rest of the
+            // surface is keyboard-only; a lingering hover highlight
+            // there would mislead the user about what a click does
+            // (in fact, click is also gated during edit).
+            let (_t, mut view) = fresh_view();
+            view.field_rects.push((0, Rect::new(20, 5, 50, 2)));
+            view.editing_input = Some(tui_input::Input::new(String::new()));
+            view.handle_hover(25, 5);
+            assert_eq!(view.hovered_field(), None);
         }
     }
 }

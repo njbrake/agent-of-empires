@@ -1318,3 +1318,109 @@ fn test_worktree_toggle_blocked_when_scratch_on() {
         "user must see an explanation, not a silent no-op"
     );
 }
+
+/// Stage a focusable rect at a known position so click / hover routing
+/// can be tested without going through a full render pass.
+fn stage_focusable(dialog: &mut NewSessionDialog, field: usize, rect: ratatui::layout::Rect) {
+    dialog.focusable_rects.push((field, rect));
+}
+
+#[test]
+fn click_on_unstaged_dialog_returns_none() {
+    let mut dialog = single_tool_dialog();
+    assert!(dialog.handle_click(5, 5).is_none());
+}
+
+#[test]
+fn click_on_yolo_row_toggles_yolo() {
+    let mut dialog = single_tool_dialog();
+    // Single-tool, no-profile layout: path=0, title=1, yolo=2.
+    stage_focusable(&mut dialog, 2, ratatui::layout::Rect::new(0, 5, 30, 1));
+    let before = dialog.yolo_mode;
+    let result = dialog.handle_click(10, 5).expect("click should hit yolo");
+    assert!(matches!(result, DialogResult::Continue));
+    assert_eq!(dialog.focused_field, 2);
+    assert_eq!(dialog.yolo_mode, !before);
+}
+
+#[test]
+fn click_on_path_field_just_moves_focus() {
+    let mut dialog = single_tool_dialog();
+    stage_focusable(&mut dialog, 0, ratatui::layout::Rect::new(0, 3, 30, 1));
+    dialog.focused_field = 1; // start elsewhere
+    let path_before = dialog.path.value().to_string();
+    let result = dialog.handle_click(10, 3).expect("click should hit path");
+    assert!(matches!(result, DialogResult::Continue));
+    assert_eq!(dialog.focused_field, 0);
+    assert_eq!(
+        dialog.path.value(),
+        path_before,
+        "clicking the path row must not edit the path"
+    );
+}
+
+#[test]
+fn click_on_tool_cycles_when_multi_tool() {
+    let mut dialog = multi_tool_dialog();
+    // Multi-tool, no-profile layout: path=0, title=1, tool=2.
+    stage_focusable(&mut dialog, 2, ratatui::layout::Rect::new(0, 5, 30, 1));
+    let before = dialog.tool_index;
+    dialog.handle_click(10, 5).expect("click should hit tool");
+    assert_eq!(
+        dialog.tool_index,
+        (before + 1) % dialog.available_tools.len(),
+        "clicking the tool row should cycle to the next tool"
+    );
+    assert_eq!(dialog.focused_field, 2);
+}
+
+#[test]
+fn hover_over_field_does_not_move_focus() {
+    // Hover must never steal focus from the field the user is editing.
+    // Otherwise a stray mouse drift while typing the title moves focus
+    // to whatever row the cursor crossed, and the next keystroke goes
+    // somewhere unexpected.
+    let mut dialog = single_tool_dialog();
+    stage_focusable(&mut dialog, 2, ratatui::layout::Rect::new(0, 5, 30, 1));
+    let yolo_before = dialog.yolo_mode;
+    let focus_before = dialog.focused_field;
+    assert_ne!(focus_before, 2);
+    let changed = dialog.handle_hover(10, 5);
+    assert!(!changed, "hover must not report a focus change");
+    assert_eq!(
+        dialog.focused_field, focus_before,
+        "hover must leave focus alone"
+    );
+    assert_eq!(
+        dialog.yolo_mode, yolo_before,
+        "hover must not toggle anything either"
+    );
+}
+
+#[test]
+fn hover_off_focusables_does_not_change_focus() {
+    let mut dialog = single_tool_dialog();
+    stage_focusable(&mut dialog, 0, ratatui::layout::Rect::new(0, 3, 30, 1));
+    dialog.focused_field = 1;
+    assert!(!dialog.handle_hover(80, 80));
+    assert_eq!(dialog.focused_field, 1);
+}
+
+#[test]
+fn click_on_worktree_while_scratch_on_surfaces_error_not_toggle() {
+    let mut dialog = single_tool_dialog();
+    // Turn scratch on; mirror the keyboard behavior; worktree click
+    // while scratch is on must NOT silently re-enable worktree.
+    dialog.handle_key(ctrl_key(KeyCode::Char('t')));
+    assert!(dialog.scratch);
+    assert!(!dialog.worktree_enabled);
+    // Single-tool layout: path=0, title=1, yolo=2, worktree=3.
+    stage_focusable(&mut dialog, 3, ratatui::layout::Rect::new(0, 7, 30, 1));
+    dialog.error_message = None;
+    dialog.handle_click(10, 7);
+    assert!(
+        !dialog.worktree_enabled,
+        "worktree toggle must be blocked while scratch is on"
+    );
+    assert!(dialog.error_message.is_some());
+}

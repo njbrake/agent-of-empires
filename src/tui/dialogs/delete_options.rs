@@ -61,6 +61,11 @@ pub struct UnifiedDeleteDialog {
     /// Screen rect of the rendered `[No]` button, paired with
     /// `yes_button_area`.
     no_button_area: Rect,
+    /// Per-focusable hit rect captured during `render`. Drives both
+    /// hover (move focus) and click (toggle / submit). Yes/No still
+    /// have dedicated fields above because the renderer returns them
+    /// from `render_yes_no` already; everything else lives here.
+    focusable_rects: Vec<(FocusElement, Rect)>,
 }
 
 impl UnifiedDeleteDialog {
@@ -104,16 +109,18 @@ impl UnifiedDeleteDialog {
             focusable_elements,
             yes_button_area: Rect::default(),
             no_button_area: Rect::default(),
+            focusable_rects: Vec::new(),
         }
     }
 
-    /// Route a left-click. Returns `Some(Submit)` when the user clicked
-    /// the `[Yes]` button, `Some(Cancel)` for `[No]`, and `None` for
-    /// clicks that landed elsewhere inside the dialog (those are
-    /// silently absorbed by the modal, no fall-through to the list).
-    /// Rects are written during `render`; before the first render both
-    /// rects are zero-sized so `contains()` returns false.
-    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<DeleteOptions>> {
+    /// Route a left-click. Returns `Some(Submit)` for `[Yes]`,
+    /// `Some(Cancel)` for `[No]`, `Some(Continue)` for a click on a
+    /// checkbox row (which is treated as a focus-then-toggle), and
+    /// `None` for clicks that landed elsewhere inside the dialog
+    /// (those are silently absorbed by the modal, no fall-through to
+    /// the list). Rects are written during `render`; before the first
+    /// render every rect is zero-sized so `contains()` returns false.
+    pub fn handle_click(&mut self, col: u16, row: u16) -> Option<DialogResult<DeleteOptions>> {
         let pos = ratatui::layout::Position::from((col, row));
         if self.yes_button_area.contains(pos) {
             return Some(DialogResult::Submit(self.options.clone()));
@@ -121,7 +128,56 @@ impl UnifiedDeleteDialog {
         if self.no_button_area.contains(pos) {
             return Some(DialogResult::Cancel);
         }
+        if let Some(element) = self.hit_focusable(col, row) {
+            self.focus = element;
+            self.toggle_focused_checkbox();
+            return Some(DialogResult::Continue);
+        }
         None
+    }
+
+    /// Hover does not change focus on the checkboxes or Yes/No buttons.
+    /// See `ConfirmDialog::handle_hover` for the rationale. Click still
+    /// moves focus and (for checkboxes) toggles state.
+    pub fn handle_hover(&mut self, _col: u16, _row: u16) -> bool {
+        false
+    }
+
+    fn hit_focusable(&self, col: u16, row: u16) -> Option<FocusElement> {
+        let pos = ratatui::layout::Position::from((col, row));
+        self.focusable_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(pos))
+            .map(|(element, _)| *element)
+    }
+
+    /// Toggle whichever checkbox the focus is currently on. No-op for
+    /// the Yes/No buttons, which use Submit/Cancel from `handle_key`
+    /// instead. Mirrors the Space key handler so click and Space
+    /// produce byte-identical state changes.
+    fn toggle_focused_checkbox(&mut self) {
+        match self.focus {
+            FocusElement::WorktreeCheckbox => {
+                self.options.delete_worktree = !self.options.delete_worktree;
+                if !self.options.delete_worktree {
+                    self.options.force_delete = false;
+                }
+                self.rebuild_focusable_elements();
+            }
+            FocusElement::ForceCheckbox => {
+                self.options.force_delete = !self.options.force_delete;
+            }
+            FocusElement::BranchCheckbox => {
+                self.options.delete_branch = !self.options.delete_branch;
+            }
+            FocusElement::SandboxCheckbox => {
+                self.options.delete_sandbox = !self.options.delete_sandbox;
+            }
+            FocusElement::KeepScratchCheckbox => {
+                self.options.keep_scratch = !self.options.keep_scratch;
+            }
+            FocusElement::YesButton | FocusElement::NoButton => {}
+        }
     }
 
     fn build_focusable_elements(
@@ -191,56 +247,17 @@ impl UnifiedDeleteDialog {
             KeyCode::Enter => match self.focus {
                 FocusElement::YesButton => DialogResult::Submit(self.options.clone()),
                 FocusElement::NoButton => DialogResult::Cancel,
-                // Enter on checkbox toggles it (same as Space) rather than submitting
-                FocusElement::WorktreeCheckbox => {
-                    self.options.delete_worktree = !self.options.delete_worktree;
-                    if !self.options.delete_worktree {
-                        self.options.force_delete = false;
-                    }
-                    self.rebuild_focusable_elements();
-                    DialogResult::Continue
-                }
-                FocusElement::ForceCheckbox => {
-                    self.options.force_delete = !self.options.force_delete;
-                    DialogResult::Continue
-                }
-                FocusElement::BranchCheckbox => {
-                    self.options.delete_branch = !self.options.delete_branch;
-                    DialogResult::Continue
-                }
-                FocusElement::SandboxCheckbox => {
-                    self.options.delete_sandbox = !self.options.delete_sandbox;
-                    DialogResult::Continue
-                }
-                FocusElement::KeepScratchCheckbox => {
-                    self.options.keep_scratch = !self.options.keep_scratch;
+                // Enter on a checkbox toggles it (same as Space) rather
+                // than submitting; share the toggle logic with the
+                // Space key handler and mouse click handler.
+                _ => {
+                    self.toggle_focused_checkbox();
                     DialogResult::Continue
                 }
             },
 
             KeyCode::Char(' ') => {
-                match self.focus {
-                    FocusElement::WorktreeCheckbox => {
-                        self.options.delete_worktree = !self.options.delete_worktree;
-                        if !self.options.delete_worktree {
-                            self.options.force_delete = false;
-                        }
-                        self.rebuild_focusable_elements();
-                    }
-                    FocusElement::ForceCheckbox => {
-                        self.options.force_delete = !self.options.force_delete;
-                    }
-                    FocusElement::BranchCheckbox => {
-                        self.options.delete_branch = !self.options.delete_branch;
-                    }
-                    FocusElement::SandboxCheckbox => {
-                        self.options.delete_sandbox = !self.options.delete_sandbox;
-                    }
-                    FocusElement::KeepScratchCheckbox => {
-                        self.options.keep_scratch = !self.options.keep_scratch;
-                    }
-                    FocusElement::YesButton | FocusElement::NoButton => {}
-                }
+                self.toggle_focused_checkbox();
                 DialogResult::Continue
             }
 
@@ -279,6 +296,10 @@ impl UnifiedDeleteDialog {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        // Rebuilt every frame so a layout change (e.g. focusing the
+        // worktree checkbox unhides the force-delete row) doesn't leave
+        // stale hit rects pointing at the wrong cells.
+        self.focusable_rects.clear();
         let has_worktree = self.config.worktree_branch.is_some();
         let has_sandbox = self.config.has_sandbox;
         let is_scratch = self.config.is_scratch;
@@ -346,69 +367,84 @@ impl UnifiedDeleteDialog {
 
         if checkbox_count > 0 {
             if let Some(branch) = &self.config.worktree_branch {
+                let area = chunks[chunk_idx];
                 let focused = self.focus == FocusElement::WorktreeCheckbox;
                 self.render_checkbox(
                     frame,
-                    chunks[chunk_idx],
+                    area,
                     theme,
                     "Delete worktree",
                     Some(branch),
                     self.options.delete_worktree,
                     focused,
                 );
+                self.focusable_rects
+                    .push((FocusElement::WorktreeCheckbox, area));
                 chunk_idx += 1;
 
                 if show_force {
+                    let area = chunks[chunk_idx];
                     let force_focused = self.focus == FocusElement::ForceCheckbox;
                     self.render_indented_checkbox(
                         frame,
-                        chunks[chunk_idx],
+                        area,
                         theme,
                         "Force delete",
                         self.options.force_delete,
                         force_focused,
                     );
+                    self.focusable_rects
+                        .push((FocusElement::ForceCheckbox, area));
                     chunk_idx += 1;
                 }
 
+                let area = chunks[chunk_idx];
                 let branch_focused = self.focus == FocusElement::BranchCheckbox;
                 self.render_checkbox(
                     frame,
-                    chunks[chunk_idx],
+                    area,
                     theme,
                     "Delete branch",
                     Some(branch),
                     self.options.delete_branch,
                     branch_focused,
                 );
+                self.focusable_rects
+                    .push((FocusElement::BranchCheckbox, area));
                 chunk_idx += 1;
             }
 
             if has_sandbox {
+                let area = chunks[chunk_idx];
                 let focused = self.focus == FocusElement::SandboxCheckbox;
                 self.render_checkbox(
                     frame,
-                    chunks[chunk_idx],
+                    area,
                     theme,
                     "Delete container",
                     None,
                     self.options.delete_sandbox,
                     focused,
                 );
+                self.focusable_rects
+                    .push((FocusElement::SandboxCheckbox, area));
                 chunk_idx += 1;
             }
 
             if is_scratch {
+                let area = chunks[chunk_idx];
                 let focused = self.focus == FocusElement::KeepScratchCheckbox;
                 self.render_checkbox(
                     frame,
-                    chunks[chunk_idx],
+                    area,
                     theme,
                     "Keep scratch directory",
                     None,
                     self.options.keep_scratch,
                     focused,
                 );
+                self.focusable_rects
+                    .push((FocusElement::KeepScratchCheckbox, area));
                 chunk_idx += 1;
             }
 
@@ -682,7 +718,7 @@ mod tests {
         // Both button rects default to Rect::default() (zero-sized) so
         // the contains() check returns false until the dialog has been
         // painted at least once.
-        let dialog = simple_dialog();
+        let mut dialog = simple_dialog();
         assert!(dialog.handle_click(5, 5).is_none());
     }
 
@@ -751,5 +787,100 @@ mod tests {
             }
             _ => panic!("Expected Submit"),
         }
+    }
+
+    /// Stage button + checkbox rects manually (the real ones come from
+    /// `render`, which is impractical to invoke in a unit test).
+    fn stage_rects_for_simple(dialog: &mut UnifiedDeleteDialog) {
+        dialog.yes_button_area = Rect::new(10, 8, 5, 1);
+        dialog.no_button_area = Rect::new(19, 8, 4, 1);
+        // simple_dialog has no worktree/sandbox/scratch, so the only
+        // focusable elements are the two buttons; no checkbox rects.
+    }
+
+    fn stage_rects_for_full(dialog: &mut UnifiedDeleteDialog) {
+        dialog.focusable_rects.clear();
+        dialog
+            .focusable_rects
+            .push((FocusElement::WorktreeCheckbox, Rect::new(5, 3, 30, 1)));
+        if dialog.options.delete_worktree {
+            dialog
+                .focusable_rects
+                .push((FocusElement::ForceCheckbox, Rect::new(5, 4, 30, 1)));
+        }
+        dialog
+            .focusable_rects
+            .push((FocusElement::BranchCheckbox, Rect::new(5, 5, 30, 1)));
+        dialog
+            .focusable_rects
+            .push((FocusElement::SandboxCheckbox, Rect::new(5, 6, 30, 1)));
+        dialog.yes_button_area = Rect::new(10, 10, 5, 1);
+        dialog.no_button_area = Rect::new(19, 10, 4, 1);
+    }
+
+    #[test]
+    fn hover_never_changes_focus() {
+        // Hover must leave focus alone; otherwise mouse drift between
+        // reading the dialog and pressing Enter / Space silently shifts
+        // which element the next keystroke targets.
+        let mut dialog = simple_dialog();
+        stage_rects_for_simple(&mut dialog);
+        dialog.focus = FocusElement::NoButton;
+        // Over Yes, over No, over checkbox row, off-rects; all no-ops.
+        for (col, row) in [(12, 8), (20, 8), (10, 5), (50, 50)] {
+            assert!(!dialog.handle_hover(col, row), "hover at ({col},{row})");
+            assert_eq!(dialog.focus, FocusElement::NoButton);
+        }
+    }
+
+    #[test]
+    fn hover_on_checkbox_row_does_not_steal_focus() {
+        let mut dialog = full_dialog();
+        stage_rects_for_full(&mut dialog);
+        dialog.focus = FocusElement::YesButton;
+        assert!(!dialog.handle_hover(10, 5));
+        assert_eq!(dialog.focus, FocusElement::YesButton);
+    }
+
+    #[test]
+    fn click_on_checkbox_toggles_and_focuses() {
+        let mut dialog = full_dialog();
+        stage_rects_for_full(&mut dialog);
+        let before = dialog.options.delete_branch;
+        let result = dialog
+            .handle_click(10, 5)
+            .expect("checkbox click should return Continue");
+        assert!(matches!(result, DialogResult::Continue));
+        assert_eq!(dialog.focus, FocusElement::BranchCheckbox);
+        assert_eq!(dialog.options.delete_branch, !before);
+    }
+
+    #[test]
+    fn click_on_worktree_checkbox_toggles_and_rebuilds_focusables() {
+        let mut dialog = full_dialog();
+        // Force a known starting state so the test doesn't depend on
+        // whatever the default config's `worktree.auto_cleanup` is.
+        dialog.options.delete_worktree = true;
+        dialog.options.force_delete = true;
+        dialog.rebuild_focusable_elements();
+        stage_rects_for_full(&mut dialog);
+
+        let before_focusables = dialog.focusable_elements.len();
+        let result = dialog
+            .handle_click(10, 3)
+            .expect("worktree click should return Continue");
+        assert!(matches!(result, DialogResult::Continue));
+        assert!(
+            !dialog.options.delete_worktree,
+            "worktree click should toggle the option off"
+        );
+        assert!(
+            !dialog.options.force_delete,
+            "turning worktree off also clears force_delete"
+        );
+        assert!(
+            dialog.focusable_elements.len() < before_focusables,
+            "ForceCheckbox should drop out of focusables when worktree is off"
+        );
     }
 }

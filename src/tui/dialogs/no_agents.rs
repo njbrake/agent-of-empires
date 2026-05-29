@@ -21,13 +21,34 @@ pub enum NoAgentsAction {
 pub struct NoAgentsDialog {
     /// true = "Re-check" focused, false = "Quit" focused
     recheck_focused: bool,
+    recheck_button_area: Rect,
+    quit_button_area: Rect,
 }
 
 impl NoAgentsDialog {
     pub fn new() -> Self {
         Self {
             recheck_focused: true,
+            recheck_button_area: Rect::default(),
+            quit_button_area: Rect::default(),
         }
+    }
+
+    pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<NoAgentsAction>> {
+        let pos = ratatui::layout::Position::from((col, row));
+        if self.recheck_button_area.contains(pos) {
+            return Some(DialogResult::Submit(NoAgentsAction::Recheck));
+        }
+        if self.quit_button_area.contains(pos) {
+            return Some(DialogResult::Submit(NoAgentsAction::Quit));
+        }
+        None
+    }
+
+    /// Hover does not change the Re-check / Quit focus. See
+    /// `ConfirmDialog::handle_hover` for the rationale.
+    pub fn handle_hover(&mut self, _col: u16, _row: u16) -> bool {
+        false
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<NoAgentsAction> {
@@ -53,7 +74,7 @@ impl NoAgentsDialog {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_area = super::centered_rect(area, 70, 20);
 
         frame.render_widget(Clear, dialog_area);
@@ -142,6 +163,27 @@ impl NoAgentsDialog {
             Span::styled("[Quit]", quit_style),
         ]);
 
+        let button_area = chunks[1];
+        // Compute centered button positions deterministically so the
+        // hit rects line up with the rendered glyphs.
+        let recheck_label = "[Re-check]";
+        let quit_label = "[Quit]";
+        let gap: u16 = 4;
+        let total_width =
+            recheck_label.chars().count() as u16 + gap + quit_label.chars().count() as u16;
+        if button_area.width >= total_width {
+            let left_pad = (button_area.width - total_width) / 2;
+            let recheck_x = button_area.x + left_pad;
+            let recheck_w = recheck_label.chars().count() as u16;
+            let quit_x = recheck_x + recheck_w + gap;
+            let quit_w = quit_label.chars().count() as u16;
+            self.recheck_button_area = Rect::new(recheck_x, button_area.y, recheck_w, 1);
+            self.quit_button_area = Rect::new(quit_x, button_area.y, quit_w, 1);
+        } else {
+            self.recheck_button_area = Rect::default();
+            self.quit_button_area = Rect::default();
+        }
+
         frame.render_widget(
             Paragraph::new(vec![
                 buttons,
@@ -151,7 +193,7 @@ impl NoAgentsDialog {
                 )),
             ])
             .alignment(Alignment::Center),
-            chunks[1],
+            button_area,
         );
     }
 }

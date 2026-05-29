@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, BorderType, Borders, Clear, List, ListItem, Padding, Paragraph, Scrollbar,
@@ -18,6 +18,24 @@ use super::{
 };
 use crate::tui::components::set_input_cursor_position;
 use crate::tui::styles::Theme;
+
+/// Paint a hover background over `area` by mutating the buffer cell by
+/// cell. Preserves each cell's existing fg / modifiers so previously
+/// rendered text stays readable; only the bg gets overwritten. Using
+/// this instead of `Style::default().bg(...)` on the underlying widget
+/// avoids fighting per-row styles (ratatui widget styles cascade in ways
+/// that are hard to predict for things like List rows or Paragraph
+/// spans), so the hover overlay reliably shows where a click will land.
+fn paint_hover_bg(frame: &mut Frame, area: Rect, bg: Color) {
+    let buf = frame.buffer_mut();
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_bg(bg);
+            }
+        }
+    }
+}
 
 /// Detect if we're running over SSH
 fn is_ssh_session() -> bool {
@@ -101,6 +119,14 @@ pub(super) fn wrap_description_height(text: &str, width: u16) -> u16 {
 
 impl SettingsView {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        // Rebuilt every frame: scope tabs, category rows, and visible
+        // field rows all shift when the layout changes (scope switch,
+        // category resort, scroll), so stale rects from the prior
+        // frame would point at the wrong cells.
+        self.scope_tab_rects.clear();
+        self.category_rects.clear();
+        self.field_rects.clear();
+
         // Clear the area
         frame.render_widget(Clear, area);
 
@@ -137,7 +163,7 @@ impl SettingsView {
         }
     }
 
-    fn render_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_header(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let block = Block::default()
             .borders(Borders::BOTTOM)
             .border_style(Style::default().fg(theme.border));
@@ -167,6 +193,32 @@ impl SettingsView {
                 format!("Profile: {}", self.profile)
             };
 
+        // Pre-compute the rect for each `[ <Scope> ]` chip so clicks can
+        // switch scope. The widths must stay in sync with the spans
+        // pushed just below; the layout is deterministic enough to
+        // mirror it inline without re-querying the paragraph.
+        let chip_y = inner.y;
+        let chip_height: u16 = 1;
+        let global_chip_width: u16 = 2 + 6 + 2; // "[ Global ]"
+        let profile_chip_width: u16 = 2 + profile_label.chars().count() as u16 + 2;
+        let repo_chip_width: u16 = 2 + 4 + 2;
+        let prefix_width: u16 =
+            ("  Settings".chars().count() + modified.chars().count() + 4) as u16;
+        let global_x = inner.x.saturating_add(prefix_width);
+        let profile_x = global_x.saturating_add(global_chip_width).saturating_add(2);
+        let repo_x = profile_x
+            .saturating_add(profile_chip_width)
+            .saturating_add(2);
+
+        self.scope_tab_rects.push((
+            SettingsScope::Global,
+            Rect::new(global_x, chip_y, global_chip_width, chip_height),
+        ));
+        self.scope_tab_rects.push((
+            SettingsScope::Profile,
+            Rect::new(profile_x, chip_y, profile_chip_width, chip_height),
+        ));
+
         let mut spans = vec![
             Span::styled("  Settings", Style::default().fg(theme.text)),
             Span::styled(modified, Style::default().fg(theme.error)),
@@ -186,9 +238,30 @@ impl SettingsView {
             spans.push(Span::styled("[ ", Style::default().fg(theme.border)));
             spans.push(Span::styled("Repo", repo_style));
             spans.push(Span::styled(" ]", Style::default().fg(theme.border)));
+            self.scope_tab_rects.push((
+                SettingsScope::Repo,
+                Rect::new(repo_x, chip_y, repo_chip_width, chip_height),
+            ));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), inner);
+
+        // Hover overlay: paint a dim bg over the chip the mouse is on,
+        // unless it's already the active scope (whose accent fg is its
+        // own indicator). Resolved after the paragraph paints so the
+        // chip text remains readable on top.
+        if let Some(scope) = self.hovered_scope() {
+            if scope != self.scope {
+                if let Some((_, rect)) = self
+                    .scope_tab_rects
+                    .iter()
+                    .find(|(s, _)| *s == scope)
+                    .copied()
+                {
+                    paint_hover_bg(frame, rect, theme.selection);
+                }
+            }
+        }
     }
 
     fn render_content(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -205,7 +278,7 @@ impl SettingsView {
         self.render_fields(frame, layout[1], theme);
     }
 
-    fn render_categories(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    fn render_categories(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let is_focused = self.focus == SettingsFocus::Categories;
 
         let border_style = if is_focused {
@@ -265,8 +338,32 @@ impl SettingsView {
             })
             .collect();
 
+        // Capture hit rect per Tab row (Section dividers are skipped).
+        // The List renders rows top-down starting at `inner.y`. We
+        // mirror that layout here so each rect points at the same row
+        // the user sees.
+        for (i, row) in self.categories.iter().enumerate() {
+            if matches!(row, CategoryRow::Tab(_)) && (i as u16) < inner.height {
+                self.category_rects
+                    .push((i, Rect::new(inner.x, inner.y + i as u16, inner.width, 1)));
+            }
+        }
+
         let list = List::new(items);
         frame.render_widget(list, inner);
+
+        // Hover overlay: dim bg on whichever category row the mouse
+        // sits over, suppressed when that row is already the selected
+        // category (selection wins, same rule as the sidebar).
+        if let Some(idx) = self.hovered_category() {
+            if idx != self.selected_category {
+                if let Some((_, rect)) =
+                    self.category_rects.iter().find(|(i, _)| *i == idx).copied()
+                {
+                    paint_hover_bg(frame, rect, theme.selection);
+                }
+            }
+        }
     }
 
     fn render_fields(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -377,7 +474,26 @@ impl SettingsView {
             };
 
             self.render_field(frame, field_area, field, i, is_selected, theme);
+            // SectionHeader rows are non-interactive dividers; skipping
+            // them matches the keyboard navigation that hops over them.
+            if !matches!(field.value, FieldValue::SectionHeader) {
+                self.field_rects.push((i, field_area));
+            }
             y_pos += field_h + 1; // +1 for spacing
+        }
+
+        // Hover overlay: dim bg on whichever field the mouse sits over.
+        // Suppressed when that field is the selected one; the selected
+        // styling is already brighter and should win. Routed after the
+        // whole field loop so SectionHeader rows can't bleed an
+        // overlay on themselves (they never make it into field_rects).
+        if let Some(idx) = self.hovered_field() {
+            let suppress = is_focused && idx == self.selected_field;
+            if !suppress {
+                if let Some((_, rect)) = self.field_rects.iter().find(|(i, _)| *i == idx).copied() {
+                    paint_hover_bg(frame, rect, theme.selection);
+                }
+            }
         }
 
         // Render scrollbar if content overflows
