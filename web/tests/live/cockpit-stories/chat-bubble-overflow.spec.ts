@@ -123,8 +123,9 @@ base("long URL, PW paste, and code line stay inside the chat viewport", async ({
     // Belt-and-suspenders clamp is in place.
     await expect(viewport).toHaveCSS("overflow-x", "hidden");
 
-    // Fenced code block keeps its own horizontal scroll: its computed
-    // overflow-x is auto/scroll and its content is wider than its box.
+    // Fenced code block keeps its own horizontal-scroll affordance: the
+    // scroll container's computed overflow-x is auto/scroll (the wrap rule
+    // targets p/li/blockquote/a only, so the code container is untouched).
     const codeScroller: Locator = viewport
       .locator(".cockpit-markdown .overflow-x-auto")
       .first();
@@ -133,10 +134,17 @@ base("long URL, PW paste, and code line stay inside the chat viewport", async ({
       (el) => getComputedStyle(el).overflowX,
     );
     expect(["auto", "scroll"]).toContain(codeOverflowX);
-    const codeScrolls = await codeScroller.evaluate(
+
+    // The wrap rule must NOT leak into code: the long line stays a single
+    // unwrapped line, so the code <pre>'s content is wider than its box.
+    // (scrollWidth reports the full content width even though the bubble's
+    // `pre { overflow: hidden }` clips it.) If overflow-wrap leaked here the
+    // line would wrap and scrollWidth would collapse to clientWidth.
+    const codePre: Locator = codeScroller.locator("pre").first();
+    const codeLineUnwrapped = await codePre.evaluate(
       (el) => (el as HTMLElement).scrollWidth > (el as HTMLElement).clientWidth,
     );
-    expect(codeScrolls).toBe(true);
+    expect(codeLineUnwrapped).toBe(true);
   } finally {
     if (serve) {
       await attachServeDiagnostics(testInfo, serve);
