@@ -32,7 +32,7 @@ const mockKeyboard = vi.hoisted(() => ({
     isMobile: false,
     keyboardOpen: false,
     keyboardHeight: 0,
-    reservedKeyboardHeight: 0,
+    keyboardOcclusion: 0,
   },
 }));
 // A real xterm-like element holding a textarea so focusSelf / toggleKeyboard
@@ -114,7 +114,7 @@ beforeEach(() => {
     isMobile: false,
     keyboardOpen: false,
     keyboardHeight: 0,
-    reservedKeyboardHeight: 0,
+    keyboardOcclusion: 0,
   };
 });
 
@@ -278,7 +278,7 @@ describe("PairedShellPane", () => {
   });
 
   it("reserves keyboard padding in fullViewport mode", async () => {
-    mockKeyboard.current.reservedKeyboardHeight = 320;
+    mockKeyboard.current.keyboardOcclusion = 320;
     await renderReady({ fullViewport: true });
     const root = document.querySelector('[data-term="paired"]')
       ?.parentElement as HTMLElement;
