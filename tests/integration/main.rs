@@ -30,6 +30,9 @@ mod worktree_integration;
 #[cfg(feature = "serve")]
 mod cockpit_acp_smoke;
 
+#[cfg(feature = "serve")]
+mod cockpit_session_delete;
+
 #[cfg(all(feature = "serve", debug_assertions))]
 mod cockpit_midturn_resume;
 

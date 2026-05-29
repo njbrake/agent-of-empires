@@ -34,18 +34,57 @@ class ShimAgent {
     // assert the watchdog without waiting for CANCEL_ESCALATION_GRACE
     // to elapse.
     this._silentOrphanResolve = null;
+    this._installDeleteHandlerIfRequested();
   }
 
   async initialize(params) {
+    const agentCapabilities = {
+      loadSession: false,
+    };
+    // SHIM_DELETE_CAPABILITY=1 advertises sessionCapabilities.delete
+    // so the Rust client's session/delete dispatch path can be
+    // exercised end-to-end. Tests for #1404 toggle this; default off
+    // mirrors the negative-path adapters (aoe-agent, codex, opencode).
+    if (process.env.SHIM_DELETE_CAPABILITY === "1") {
+      agentCapabilities.sessionCapabilities = { delete: {} };
+    }
     return {
       protocolVersion: params.protocolVersion ?? acp.PROTOCOL_VERSION,
-      agentCapabilities: {
-        loadSession: false,
-      },
+      agentCapabilities,
       agentInfo: {
         name: "@agentclientprotocol/claude-agent-acp",
         version: "0.39.0",
       },
+    };
+  }
+
+  // Experimental session/delete handler installed only when
+  // SHIM_DELETE_CAPABILITY=1. Without the install, the SDK's request
+  // dispatcher returns -32601 method_not_found, which is the
+  // negative-path expectation aoe needs to test against (matches
+  // aoe-agent, codex, opencode behavior).
+  _installDeleteHandlerIfRequested() {
+    if (process.env.SHIM_DELETE_CAPABILITY !== "1") return;
+    // SHIM_DELETE_MODE controls the response shape so tests can drive
+    // the success / timeout / failure branches without spinning up
+    // distinct shim binaries. SHIM_DELETE_RECORD_FILE, when set,
+    // appends one line per call with the requested sessionId so tests
+    // assert the RPC actually fired.
+    this.unstable_deleteSession = async (params) => {
+      const mode = process.env.SHIM_DELETE_MODE ?? "success";
+      const recordFile = process.env.SHIM_DELETE_RECORD_FILE;
+      if (recordFile) {
+        const fs = await import("node:fs/promises");
+        await fs.appendFile(recordFile, `${params.sessionId}\n`);
+      }
+      if (mode === "slow") {
+        await new Promise((r) => setTimeout(r, 3000));
+        return {};
+      }
+      if (mode === "error") {
+        throw acp.RequestError.internalError({}, "shim deliberate failure");
+      }
+      return {};
     };
   }
 
