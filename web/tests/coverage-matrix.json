@@ -1982,6 +1982,18 @@
       ]
     },
     {
+      "id": "cockpit.story.fold-failed-tool-card",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/fold-failed-tool-card.spec.ts",
+        "src/components/cockpit/ToolCards.render.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/ToolCards.tsx"
+      ]
+    },
+    {
       "id": "cockpit.story.queue-follow-up-with-nav",
       "kind": "live-playwright",
       "risk": "high",
