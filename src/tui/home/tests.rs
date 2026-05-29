@@ -7468,6 +7468,43 @@ mod live_send_mode {
         assert_eq!(env.view.preview_cache.captured_lines, 1);
     }
 
+    #[test]
+    #[serial]
+    fn refresh_terminal_cache_overwrites_on_empty_capture() {
+        // Counterpart to `refresh_preserves_cache_when_live_capture_fails`:
+        // the agent cache and the host-terminal cache now share
+        // `refresh_preview_cache_core`, but only the agent wrapper carries the
+        // live-send kill switch. The terminal path must keep its old semantics
+        // (overwrite to empty so the preview surfaces "session looks gone")
+        // even when the unit fixture's backing tmux session does not exist and
+        // the capture comes back empty. Guards against the kill switch leaking
+        // into the shared core for the non-agent wrappers.
+        let mut env = create_test_env_with_sessions(1);
+        let id = env
+            .view
+            .flat_items
+            .iter()
+            .find_map(|item| match item {
+                crate::session::Item::Session { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("test env has one session");
+        env.view.selected_session = Some(id.clone());
+        env.view.terminal_preview_cache.content = "stale terminal output".to_string();
+        env.view.terminal_preview_cache.captured_lines = 1;
+        env.view.terminal_preview_cache.dimensions = (10, 10);
+        env.view.terminal_preview_cache.session_id = Some(id.clone());
+
+        env.view.refresh_terminal_preview_cache_if_needed(80, 24);
+
+        assert_eq!(
+            env.view.terminal_preview_cache.content, "",
+            "terminal cache must overwrite stale content (no kill switch outside the agent path)"
+        );
+        assert_eq!(env.view.terminal_preview_cache.dimensions, (80, 24));
+        assert_eq!(env.view.terminal_preview_cache.session_id, Some(id));
+    }
+
     mod paste_splitting {
         //! `split_paste_for_live_send` decomposes a pasted string into
         //! tmux operations the live-send worker can actually deliver.
