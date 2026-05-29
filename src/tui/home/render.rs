@@ -800,7 +800,7 @@ impl HomeView {
                 .unwrap_or_else(|| " ".to_string());
             let after: String = value.chars().skip(cursor_pos + 1).collect();
 
-            let mut spans = vec![Span::styled("/", text_style)];
+            let mut spans = vec![Span::styled("\\", text_style)];
             if !before.is_empty() {
                 spans.push(Span::styled(before, text_style));
             }
@@ -822,7 +822,7 @@ impl HomeView {
 
             frame.render_widget(Paragraph::new(Line::from(spans)), search_area);
             if !self.has_overlay_above_search() {
-                set_prefixed_input_cursor_position(frame, search_area, "/", &self.search_query);
+                set_prefixed_input_cursor_position(frame, search_area, "\\", &self.search_query);
             }
         }
     }
@@ -2262,7 +2262,7 @@ impl HomeView {
             ]
         };
         // Key-only entry for keys universal enough that a description would be
-        // noise (? for help, / for search). Saves footer width at iPhone-Mosh
+        // noise (? for help, \ for search). Saves footer width at iPhone-Mosh
         // sizes.
         let mk_key =
             |key: &str| -> Vec<Span<'static>> { vec![Span::styled(key.to_string(), key_style)] };
@@ -2371,7 +2371,7 @@ impl HomeView {
             }
         }
 
-        groups.push((4, mk_key("/")));
+        groups.push((4, mk_key("\\")));
         groups.push((4, mk(if strict { "^D" } else { "D" }, "Diff")));
         groups.push((1, mk("^K", "Cmds")));
         groups.push((0, mk_key("?")));

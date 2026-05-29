@@ -443,10 +443,10 @@ fn test_enter_on_cockpit_session_opens_cockpit_view() {
 
 #[test]
 #[serial]
-fn test_slash_enters_search_mode() {
+fn test_backslash_enters_search_mode() {
     let mut env = create_test_env_with_sessions(3);
     assert!(!env.view.search_active);
-    env.view.handle_key(key(KeyCode::Char('/')), None);
+    env.view.handle_key(key(KeyCode::Char('\\')), None);
     assert!(env.view.search_active);
     assert!(env.view.search_query.value().is_empty());
 }
@@ -455,7 +455,7 @@ fn test_slash_enters_search_mode() {
 #[serial]
 fn test_search_mode_captures_chars() {
     let mut env = create_test_env_with_sessions(3);
-    env.view.handle_key(key(KeyCode::Char('/')), None);
+    env.view.handle_key(key(KeyCode::Char('\\')), None);
     env.view.handle_key(key(KeyCode::Char('t')), None);
     env.view.handle_key(key(KeyCode::Char('e')), None);
     env.view.handle_key(key(KeyCode::Char('s')), None);
@@ -467,7 +467,7 @@ fn test_search_mode_captures_chars() {
 #[serial]
 fn test_search_mode_backspace() {
     let mut env = create_test_env_with_sessions(3);
-    env.view.handle_key(key(KeyCode::Char('/')), None);
+    env.view.handle_key(key(KeyCode::Char('\\')), None);
     env.view.handle_key(key(KeyCode::Char('a')), None);
     env.view.handle_key(key(KeyCode::Char('b')), None);
     env.view.handle_key(key(KeyCode::Backspace), None);
@@ -478,7 +478,7 @@ fn test_search_mode_backspace() {
 #[serial]
 fn test_search_mode_esc_exits_and_clears() {
     let mut env = create_test_env_with_sessions(3);
-    env.view.handle_key(key(KeyCode::Char('/')), None);
+    env.view.handle_key(key(KeyCode::Char('\\')), None);
     env.view.handle_key(key(KeyCode::Char('x')), None);
     env.view.handle_key(key(KeyCode::Esc), None);
     assert!(!env.view.search_active);
@@ -490,7 +490,7 @@ fn test_search_mode_esc_exits_and_clears() {
 #[serial]
 fn test_search_mode_enter_exits_and_clears_state() {
     let mut env = create_test_env_with_sessions(3);
-    env.view.handle_key(key(KeyCode::Char('/')), None);
+    env.view.handle_key(key(KeyCode::Char('\\')), None);
     env.view.handle_key(key(KeyCode::Char('s')), None);
     env.view.handle_key(key(KeyCode::Enter), None);
     assert!(!env.view.search_active);
@@ -683,7 +683,7 @@ fn test_search_shift_n_cycles_backward() {
 #[serial]
 fn test_esc_clears_search_matches() {
     let mut env = create_test_env_with_sessions(5);
-    env.view.handle_key(key(KeyCode::Char('/')), None);
+    env.view.handle_key(key(KeyCode::Char('\\')), None);
     env.view.handle_key(key(KeyCode::Char('s')), None);
     assert!(!env.view.search_matches.is_empty());
     env.view.handle_key(key(KeyCode::Esc), None);
@@ -696,7 +696,7 @@ fn test_esc_clears_search_matches() {
 fn test_enter_clears_matches_so_n_opens_new_dialog() {
     let mut env = create_test_env_with_sessions(5);
     // Search, then Enter to exit search mode
-    env.view.handle_key(key(KeyCode::Char('/')), None);
+    env.view.handle_key(key(KeyCode::Char('\\')), None);
     env.view.handle_key(key(KeyCode::Char('s')), None);
     env.view.handle_key(key(KeyCode::Enter), None);
     assert!(!env.view.search_active);
@@ -714,7 +714,7 @@ fn test_enter_clears_matches_so_n_opens_new_dialog() {
 fn test_reload_does_not_snap_cursor_after_enter() {
     let mut env = create_test_env_with_sessions(5);
     // Search and exit with Enter
-    env.view.handle_key(key(KeyCode::Char('/')), None);
+    env.view.handle_key(key(KeyCode::Char('\\')), None);
     env.view.handle_key(key(KeyCode::Char('s')), None);
     env.view.handle_key(key(KeyCode::Enter), None);
     assert!(!env.view.search_active);
@@ -734,7 +734,7 @@ fn test_reload_does_not_snap_cursor_after_enter() {
 #[serial]
 fn test_enter_clears_matches_and_resets_index() {
     let mut env = create_test_env_with_sessions(5);
-    env.view.handle_key(key(KeyCode::Char('/')), None);
+    env.view.handle_key(key(KeyCode::Char('\\')), None);
     env.view.handle_key(key(KeyCode::Char('s')), None);
     let match_count = env.view.search_matches.len();
     assert!(match_count > 0);
@@ -906,7 +906,7 @@ fn test_uppercase_p_in_search_mode_does_not_open_picker() {
     let mut view = env.view;
 
     // Enter search mode
-    view.handle_key(key(KeyCode::Char('/')), None);
+    view.handle_key(key(KeyCode::Char('\\')), None);
     assert!(view.search_active);
 
     // P should be treated as search input, not open picker
@@ -3493,7 +3493,7 @@ fn test_q_in_search_mode_types_q_not_quit() {
     let env = create_test_env_with_sessions(3);
     let mut view = env.view;
 
-    view.handle_key(key(KeyCode::Char('/')), None);
+    view.handle_key(key(KeyCode::Char('\\')), None);
     assert!(view.search_active);
 
     let action = view.handle_key(key(KeyCode::Char('q')), None);
@@ -3509,7 +3509,7 @@ fn test_has_dialog_true_when_search_active() {
     let mut view = env.view;
 
     assert!(!view.has_dialog());
-    view.handle_key(key(KeyCode::Char('/')), None);
+    view.handle_key(key(KeyCode::Char('\\')), None);
     assert!(view.has_dialog());
 }
 

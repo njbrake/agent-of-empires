@@ -1887,7 +1887,7 @@ impl HomeView {
                     self.open_tool_picker();
                 }
             }
-            KeyCode::Char('/') => {
+            KeyCode::Char('\\') => {
                 self.search_active = true;
                 self.search_query = Input::default();
             }
