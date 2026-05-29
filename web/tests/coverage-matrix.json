@@ -577,6 +577,17 @@
       ]
     },
     {
+      "id": "sidebar.ios-callout-suppression",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/ios-callout-suppression.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
       "id": "sidebar.favorite-indicator",
       "kind": "deferred",
       "issue": "https://github.com/agent-of-empires/agent-of-empires/issues/986",
