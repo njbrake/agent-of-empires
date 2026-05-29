@@ -110,8 +110,12 @@ test.describe("Mobile right panel picker (#1452)", () => {
     const back = page.getByTestId("mobile-back-to-agent");
     await expect(back).toBeVisible();
 
-    // Tap the file row to promote the diff viewer in place.
-    await page.locator('button:has-text("foo.ts")').first().click();
+    // Tap the file row to promote the diff viewer in place; the viewer
+    // replaces the file list in the same pane, so the row disappears.
+    const row = page.locator('button[data-index="0"]').first();
+    await row.hover();
+    await row.click();
+    await expect(page.locator('button[data-index="0"]')).toHaveCount(0);
     await expect(back).toBeVisible();
 
     await back.click();
