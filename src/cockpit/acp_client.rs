@@ -5030,6 +5030,32 @@ mod tests {
         assert!(matches!(event, Event::ThinkingStarted));
     }
 
+    // truncate_for_log is the adapter-error sanitizer in the
+    // session/delete path: it caps a third-party-controlled string so
+    // a chatty adapter can't bloat debug.log, and must never panic on
+    // UTF-8 inputs. The cases below lock down the boundary semantics
+    // (no-op under cap, exact cap, multibyte cut) so a future change
+    // to the helper can't quietly regress the no-panic invariant.
+    #[test]
+    fn truncate_for_log_below_cap_returns_input() {
+        assert_eq!(truncate_for_log("hello", 64), "hello");
+    }
+
+    #[test]
+    fn truncate_for_log_at_exact_cap_returns_input() {
+        assert_eq!(truncate_for_log("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_for_log_cuts_on_utf8_boundary_without_panic() {
+        // "é" is two bytes (0xC3 0xA9). With max_bytes=5 the naive
+        // slice would land mid-codepoint; the helper must rewind to
+        // the previous char boundary (byte 4) before appending the
+        // ellipsis. "ééé" is 6 bytes total, so we expect "éé...".
+        let out = truncate_for_log("ééé", 5);
+        assert_eq!(out, "éé...");
+    }
+
     // -------------------------------------------------------------------
     // SilentOrphanWatchdog: pure-state-machine unit tests
     //
