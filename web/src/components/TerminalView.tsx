@@ -5,7 +5,6 @@ import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import { BackToLiveButton } from "./BackToLiveButton";
 import { KeyboardFab } from "./KeyboardFab";
 import { SwitchSubstrateAction } from "./cockpit/SwitchSubstrateAction";
-import { ViewportFullscreenFab } from "./ViewportFullscreenFab";
 import { ensureSession } from "../lib/api";
 import { ACP_CAPABLE_TOOLS } from "../lib/acpCapableTools";
 import { safeSetItem } from "../lib/safeStorage";
@@ -57,25 +56,13 @@ export function TerminalView({
     session.claude_fullscreen,
     active,
   );
-  const { isMobile, keyboardOpen, keyboardHeight, reservedKeyboardHeight } =
-    useMobileKeyboard();
+  const { isMobile, keyboardOpen, keyboardOcclusion } = useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
   const [termFocused, setTermFocused] = useState(false);
-  // Default behavior on mobile: pad the viewport by reservedKeyboardHeight
-  // so the terminal container stays the same size whether the soft
-  // keyboard is up or not. Toggle this on (via the FAB) to release the
-  // reservation and use the full viewport. Each toggle is one explicit
-  // PTY resize.
-  const [viewportFullscreen, setViewportFullscreen] = useState(false);
-  const toggleViewportFullscreen = useCallback(() => {
-    setViewportFullscreen((v) => !v);
-  }, []);
-  // The actual padding applied. On desktop reservedKeyboardHeight stays 0
-  // and this is a no-op. On mobile in fullscreen mode it's also 0.
-  // Otherwise we apply the latched reservation.
-  const appliedKeyboardPadding = viewportFullscreen
-    ? 0
-    : reservedKeyboardHeight;
+  // On mobile, pad the viewport by the live keyboard occlusion so the
+  // terminal pane shrinks while the soft keyboard is up and grows back when
+  // it dismisses. On desktop keyboardOcclusion stays 0 and this is a no-op.
+  const appliedKeyboardPadding = keyboardOcclusion;
 
   // Sync React state → hook ref in an effect. The mobile toolbar toggles
   // `ctrlActive` but the onData callback reads the ref to decide whether
@@ -236,12 +223,10 @@ export function TerminalView({
     );
   }
 
-  // Pad the viewport by the latched reservation, not the live keyboard
-  // height. The pane stays the "keyboard is here" size whether the
-  // keyboard is currently up or not, so showing/hiding it stops sending
-  // SIGWINCH and stops claude from re-rendering into the scrollback.
-  // The fullscreen FAB releases the reservation when the user wants the
-  // full viewport (one explicit resize per toggle).
+  // Pad the viewport by the live keyboard occlusion so the pane tracks the
+  // soft keyboard: it shrinks when the keyboard opens and grows back when it
+  // closes. The hook debounces the occlusion so one open/close is one PTY
+  // resize, not a storm during the keyboard animation.
   const rootStyle = {
     paddingBottom:
       appliedKeyboardPadding > 0 ? appliedKeyboardPadding : undefined,
@@ -328,21 +313,14 @@ export function TerminalView({
         {isMobile && state.connected && (
           <KeyboardFab keyboardOpen={keyboardOpen} onToggle={toggleKeyboard} />
         )}
-
-        {isMobile && state.connected && reservedKeyboardHeight > 0 && (
-          <ViewportFullscreenFab
-            fullscreen={viewportFullscreen}
-            onToggle={toggleViewportFullscreen}
-          />
-        )}
       </div>
 
       {isMobile && state.connected && (
         <MobileTerminalToolbar
           sendData={sendData}
           termRef={termRef}
-          keyboardHeight={keyboardHeight}
-          reservedKeyboardHeight={reservedKeyboardHeight}
+          keyboardOpen={keyboardOpen}
+          parentHandlesKeyboardInset
           ctrlActive={ctrlActive}
           onCtrlToggle={() => setCtrlActive((v) => !v)}
         />

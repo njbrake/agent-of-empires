@@ -216,7 +216,7 @@ function PairedTerminal({
         <MobileTerminalToolbar
           sendData={sendData}
           termRef={termRef}
-          keyboardHeight={keyboardHeight}
+          keyboardOpen={keyboardOpen}
           ctrlActive={ctrlActive}
           onCtrlToggle={() => setCtrlActive((v) => !v)}
         />
