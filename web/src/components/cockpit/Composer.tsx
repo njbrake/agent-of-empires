@@ -32,6 +32,15 @@ import type { CockpitState } from "../../lib/cockpitTypes";
 import { getDraft, setDraft } from "../../lib/cockpitDrafts";
 import { useMobileKeyboard } from "../../hooks/useMobileKeyboard";
 import { useAgentProfile } from "../../lib/agentProfileContext";
+import { useDictationBurstGuard } from "./useDictationBurstGuard";
+
+export {
+  DICTATION_BURST_TIMEOUT_MS,
+  decideDictationAction,
+  type DictationBurstState,
+  type DictationDecision,
+  type DictationEvent,
+} from "./useDictationBurstGuard";
 
 /** Decision returned by {@link decideEnterAction} for an Enter
  *  keystroke on the cockpit composer textarea.
@@ -93,120 +102,6 @@ export function decideBeforeInputAction(
     return "default";
   }
   return "newline";
-}
-
-/** Dictation burst state for the iOS-Safari native-mic input path
- *  (#1431). Tracks whether we are currently inside a sequence of
- *  `inputType: "insertReplacementText"` events, so the composer can
- *  suppress assistant-ui's controlled-input cycle during the burst
- *  and flush the buffered text into the runtime exactly once at the
- *  end. */
-export type DictationBurstState =
-  | { active: false }
-  | { active: true; sinceMs: number };
-
-/** Event the composer feeds into {@link decideDictationAction}. The
- *  helper only needs the discriminator + the current monotonic clock
- *  reading; the imperative wiring lives in the component. */
-export type DictationEvent =
-  | { kind: "input"; inputType: string; nowMs: number }
-  | { kind: "timeout"; nowMs: number }
-  | { kind: "blur" };
-
-/** Decision returned by {@link decideDictationAction}. The component
- *  applies the actions imperatively (refs, timers, `setText`); the
- *  helper itself is pure so the burst-state matrix can be tested
- *  without mounting the composer + the WebKit dictation engine. */
-export interface DictationDecision {
-  /** Next burst state to commit. */
-  next: DictationBurstState;
-  /** Caller should `preventDefault()` on the React `onChange` so that
-   *  `composeEventHandlers` skips assistant-ui's `setText` flush, which
-   *  would otherwise re-render the textarea's controlled `value` prop
-   *  and invalidate WebKit's dictation range pointer. */
-  suppressUpstreamChange: boolean;
-  /** Caller should flush the buffered textarea value into
-   *  `composerRuntime.setText` before clearing the burst. Set only on
-   *  the transition from `active` to inactive. */
-  flushPending: boolean;
-  /** Caller should (re)arm the burst timeout for this many ms from
-   *  now. Set only when entering or extending a burst. */
-  armTimeoutMs: number | null;
-}
-
-/** Window (ms) after the last `insertReplacementText` event before we
- *  consider an iOS dictation burst finished and flush the buffered
- *  text into assistant-ui state. Long enough to span a breath pause
- *  between phrases in continuous dictation, short enough that the
- *  user does not perceive lag between releasing the mic and the
- *  composer state catching up. */
-export const DICTATION_BURST_TIMEOUT_MS = 1200;
-
-/** Pure decision helper for the iOS-dictation burst state machine
- *  (#1431). The composer mirrors this state in refs and applies the
- *  returned actions; tests exercise the matrix directly. */
-export function decideDictationAction(
-  prev: DictationBurstState,
-  ev: DictationEvent,
-): DictationDecision {
-  if (ev.kind === "blur") {
-    if (!prev.active) {
-      return {
-        next: { active: false },
-        suppressUpstreamChange: false,
-        flushPending: false,
-        armTimeoutMs: null,
-      };
-    }
-    return {
-      next: { active: false },
-      suppressUpstreamChange: false,
-      flushPending: true,
-      armTimeoutMs: null,
-    };
-  }
-  if (ev.kind === "timeout") {
-    if (!prev.active) {
-      return {
-        next: { active: false },
-        suppressUpstreamChange: false,
-        flushPending: false,
-        armTimeoutMs: null,
-      };
-    }
-    return {
-      next: { active: false },
-      suppressUpstreamChange: false,
-      flushPending: true,
-      armTimeoutMs: null,
-    };
-  }
-  // ev.kind === "input"
-  if (ev.inputType === "insertReplacementText") {
-    return {
-      next: { active: true, sinceMs: ev.nowMs },
-      suppressUpstreamChange: true,
-      flushPending: false,
-      armTimeoutMs: DICTATION_BURST_TIMEOUT_MS,
-    };
-  }
-  if (prev.active) {
-    // Non-replacement input while a burst is active: user typed a
-    // character, hit backspace, etc. End the burst, flush, and let
-    // this event flow through to assistant-ui normally.
-    return {
-      next: { active: false },
-      suppressUpstreamChange: false,
-      flushPending: true,
-      armTimeoutMs: null,
-    };
-  }
-  return {
-    next: { active: false },
-    suppressUpstreamChange: false,
-    flushPending: false,
-    armTimeoutMs: null,
-  };
 }
 
 /** Wrapper class + inline style for the composer's outer <div>. When the
@@ -409,46 +304,16 @@ export function Composer({
 
   const composerRuntime = useComposerRuntime();
 
-  // iOS Safari native dictation (#1431): WebKit fires `beforeinput`
-  // with `inputType: "insertReplacementText"` per partial recognition
-  // and tracks a private NSAttributedString range pointer into the
-  // textarea's text storage. Any JS write to `textarea.value` via the
-  // property setter invalidates that pointer, after which the next
-  // partial appends instead of replacing. assistant-ui's
-  // `ComposerPrimitive.Input` is fully controlled and re-renders on
-  // every `setText` (`@assistant-ui/react/.../ComposerInput.js`
-  // onChange runs `flushResourcesSync(() => setText(...))`), so the
-  // controlled-value reconciler re-writes the DOM value on every
-  // partial and dictation duplicates.
-  //
-  // Fix: detect the burst via `insertReplacementText`, suppress
-  // assistant-ui's onChange via `preventDefault` (radix's
-  // `composeEventHandlers` honours `event.defaultPrevented`), buffer
-  // the textarea value, and flush the buffer into `setText` once when
-  // the burst ends (timeout, blur, or non-replacement input).
-  const dictationStateRef = useRef<DictationBurstState>({ active: false });
-  const dictationBufferRef = useRef<string | null>(null);
-  const dictationTimerRef = useRef<number | null>(null);
-  const flushDictation = () => {
-    const buffered = dictationBufferRef.current;
-    dictationStateRef.current = { active: false };
-    dictationBufferRef.current = null;
-    if (dictationTimerRef.current !== null) {
-      window.clearTimeout(dictationTimerRef.current);
-      dictationTimerRef.current = null;
-    }
-    if (buffered !== null) {
-      composerRuntime.setText(buffered);
-    }
-  };
-  useEffect(() => {
-    return () => {
-      if (dictationTimerRef.current !== null) {
-        window.clearTimeout(dictationTimerRef.current);
-        dictationTimerRef.current = null;
-      }
-    };
-  }, []);
+  // iOS Safari native dictation (#1431): WebKit fires `beforeinput` /
+  // `input` with `inputType: "insertReplacementText"` per partial
+  // recognition and tracks a private range pointer into the textarea
+  // that is invalidated by any controlled-value re-render. The guard
+  // suspends assistant-ui's `setText` flush for the burst, buffers the
+  // textarea value, and drains it back into the runtime once the burst
+  // ends (1200 ms timeout, blur, or non-replacement input).
+  const dictationGuard = useDictationBurstGuard((text) => {
+    composerRuntime.setText(text);
+  });
 
   // Context-primer prefill: when the parent passes a `primerPrefill`
   // payload (after the user clicked "Resume with prior context" on the
@@ -675,34 +540,15 @@ export function Composer({
                 // from `beforeinput` rather than `input` so the burst
                 // flag is set before assistant-ui's onChange (composed
                 // by radix) gets a chance to run and call `setText`.
-                const decision = decideDictationAction(
-                  dictationStateRef.current,
-                  { kind: "input", inputType: ne.inputType, nowMs: Date.now() },
-                );
-                if (decision.flushPending) {
-                  flushDictation();
-                }
-                dictationStateRef.current = decision.next;
-                if (decision.armTimeoutMs !== null) {
-                  if (dictationTimerRef.current !== null) {
-                    window.clearTimeout(dictationTimerRef.current);
-                  }
-                  dictationTimerRef.current = window.setTimeout(
-                    flushDictation,
-                    decision.armTimeoutMs,
-                  );
-                }
+                dictationGuard.observeInputType(ne.inputType, Date.now());
               }}
               onChange={(e) => {
                 // Suppress assistant-ui's controlled-input flush while
                 // an iOS dictation burst is active (#1431). Radix's
                 // `composeEventHandlers` (used by ComposerPrimitive.Input)
                 // skips the downstream handler when `defaultPrevented`
-                // is set on the SyntheticEvent. The buffered text is
-                // drained into `composerRuntime.setText` when the burst
-                // ends (timeout, blur, or non-replacement input).
-                if (dictationStateRef.current.active) {
-                  dictationBufferRef.current = e.currentTarget.value;
+                // is set on the SyntheticEvent.
+                if (dictationGuard.shouldSuppressUpstream(e.currentTarget.value)) {
                   e.preventDefault();
                 }
               }}
@@ -711,13 +557,7 @@ export function Composer({
                 // the iOS soft-keyboard-owned field; flush the dictation
                 // buffer first so the pending text lands in
                 // assistant-ui state before the Send click reads it.
-                const decision = decideDictationAction(
-                  dictationStateRef.current,
-                  { kind: "blur" },
-                );
-                if (decision.flushPending) {
-                  flushDictation();
-                }
+                dictationGuard.flushOnBlur();
               }}
               onKeyDown={(e) => {
                 // Three-way Enter dispatch. See decideEnterAction for
