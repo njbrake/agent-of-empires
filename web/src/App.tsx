@@ -823,11 +823,11 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   // Lock the root height to the latched max innerHeight on mobile. Without
   // this, iOS PWA / iOS 26 Safari / Android Chrome shrink innerHeight
-  // (and therefore 100dvh) when the soft keyboard opens, which propagates
-  // to the terminal pane and SIGWINCHes claude on every show/hide.
-  // Pinning to the no-keyboard height combined with the keyboard
-  // reservation in TerminalView keeps the layout stable across the
-  // keyboard cycle.
+  // (and therefore 100dvh) when the soft keyboard opens, which would move
+  // the terminal pane by the full keyboard height on its own. Pinning the
+  // root to the no-keyboard height makes occlusion padding in TerminalView
+  // the single thing that resizes the terminal, so the keyboard behaves the
+  // same way on every platform (and not double-shrink on the shrinking ones).
   //
   // Cockpit substrate doesn't host xterm.js, so the SIGWINCH concern
   // doesn't apply; leaving the pin on for cockpit traps the composer
