@@ -1992,7 +1992,10 @@ function RejectedPromptsStrip({
                 !
               </span>
               <div className="min-w-0 flex-1">
-                <p className="truncate whitespace-pre-wrap break-words text-xs text-amber-100">
+                {/* Bound a huge rejected paste to a scrollable box so it
+                    cannot grow the strip and shove the composer off-screen,
+                    same hazard as the queued rows. See #1642. */}
+                <p className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words text-xs text-amber-100">
                   {r.text}
                 </p>
                 <p className="mt-0.5 text-[10px] text-amber-400/80">
@@ -2156,19 +2159,35 @@ function QueuedPromptRow({
         />
       ) : (
         <div className="min-w-0 flex-1">
-          <button
-            type="button"
-            onClick={() => setEditing(true)}
-            title="Click to edit"
-            className={[
-              "block w-full text-left text-xs leading-5 text-text-secondary whitespace-pre-wrap break-words hover:text-text-primary",
-              isLong && !rowExpanded ? "line-clamp-3" : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
+          {/* When expanded, a huge paste is bounded to a scrollable box
+              (max-h matches the composer's max-h-[200px]) so it can never
+              grow the strip and push the composer off-screen. The toggle
+              below stays a sibling of this box, so capping the height also
+              keeps "Show less" reachable. See #1642. */}
+          <div
+            className={
+              isLong && rowExpanded ? "max-h-48 overflow-y-auto" : ""
+            }
           >
-            {prompt.text}
-          </button>
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              title="Click to edit"
+              className={[
+                "w-full text-left text-xs leading-5 text-text-secondary whitespace-pre-wrap break-words hover:text-text-primary",
+                // `line-clamp-3` only clamps when it owns the element's
+                // display (`-webkit-box`). A static `block` here wins the
+                // cascade and silently kills the clamp, so a huge collapsed
+                // paste renders in full. Keep `block` and `line-clamp-3`
+                // mutually exclusive. See #1642.
+                isLong && !rowExpanded ? "line-clamp-3" : "block",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+            >
+              {prompt.text}
+            </button>
+          </div>
           {isLong && (
             <button
               type="button"
