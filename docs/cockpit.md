@@ -1063,7 +1063,9 @@ in-memory prompt loop entirely, so the next attach starts fresh.
 
 Set `cockpit.silent_orphan_grace_secs = 0` to disable. Both knobs are
 editable per profile in the TUI Settings (`Cockpit` category) and in
-the web dashboard's Settings tab under `Cockpit`. Nonzero values
+the web dashboard's Settings tab under `Cockpit`, inside the collapsed
+`Advanced` section alongside the other replay and watchdog tuning
+knobs. Nonzero values
 below 120 are clamped up to 120 at runtime so a typo cannot drop the
 watchdog into a tight-loop false-positive regime; debug builds honour
 `AOE_SILENT_ORPHAN_GRACE_MS` to keep test cadences sub-second.

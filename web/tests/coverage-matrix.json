@@ -193,6 +193,42 @@
       "components": []
     },
     {
+      "id": "settings.sidebar-tui-grouping",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": [
+        "src/components/__tests__/SettingsView.test.tsx"
+      ],
+      "components": [
+        "web/src/components/SettingsView.tsx"
+      ]
+    },
+    {
+      "id": "settings.advanced-fold",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/components/__tests__/SettingsView.folds.test.tsx"
+      ],
+      "components": [
+        "web/src/components/SettingsView.tsx",
+        "web/src/components/settings/FormFields.tsx"
+      ]
+    },
+    {
+      "id": "settings.advanced-fold-persistence",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/settings-advanced-fold.spec.ts"
+      ],
+      "components": [
+        "web/src/components/SettingsView.tsx",
+        "web/src/components/settings/FormFields.tsx",
+        "web/src/components/settings/LoggingSettings.tsx"
+      ]
+    },
+    {
       "id": "settings.logging-payload",
       "kind": "vitest",
       "risk": "medium",

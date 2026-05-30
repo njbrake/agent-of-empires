@@ -1,4 +1,10 @@
-import { NumberField, SelectField, TextField, ToggleField } from "./FormFields";
+import {
+  CollapsibleSection,
+  NumberField,
+  SelectField,
+  TextField,
+  ToggleField,
+} from "./FormFields";
 
 // Mirrors `KNOWN_SUB_TARGETS` in src/logging.rs. Keeping this list
 // hardcoded (rather than fetched) is intentional: it's the curated
@@ -147,10 +153,10 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
         ))}
       </div>
 
-      <div className="space-y-3 border-t border-surface-700 pt-4">
-        <h4 className="text-sm font-semibold text-text-primary">
-          Sink &amp; rotation
-        </h4>
+      <CollapsibleSection
+        title="Advanced"
+        subtitle="Sink and rotation. Some fields require restarting aoe to take effect."
+      >
         <p className="text-xs text-text-dim">
           These fields change where logs land on disk and how they rotate. They are written to <code>config.toml</code> immediately but require restarting <code>aoe</code> to take effect (the tracing subscriber and rotating writer are installed once at process startup).
         </p>
@@ -200,7 +206,7 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
           checked={showSpans}
           onChange={(v) => saveSinkField("show_spans", v)}
         />
-      </div>
+      </CollapsibleSection>
     </div>
   );
 }
