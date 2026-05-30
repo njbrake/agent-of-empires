@@ -1,5 +1,6 @@
 //! Setting field definitions and config mapping
 
+use crate::session::config::{HomeKeybinds, KeyBinding};
 use crate::session::{
     validate_check_interval, validate_snooze_duration, Config, ContainerRuntimeName,
     DefaultTerminalMode, ProfileConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
@@ -16,6 +17,7 @@ use super::SettingsScope;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsCategory {
     Theme,
+    Keybinds,
     Updates,
     Worktree,
     Sandbox,
@@ -35,6 +37,7 @@ impl SettingsCategory {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Theme => "Theme",
+            Self::Keybinds => "Keybinds",
             Self::Updates => "Updates",
             Self::Worktree => "Worktree",
             Self::Sandbox => "Sandbox",
@@ -50,6 +53,83 @@ impl SettingsCategory {
             Self::Logging => "Logging",
         }
     }
+}
+
+/// Home-screen commands eligible for user rebinding. v1 (PR-A) ships
+/// with `search` only; PR-B adds the remaining home-screen commands.
+/// `iter()` drives the conflict scan and the settings UI's field
+/// builder; adding a new command requires extending both `iter()` and
+/// `as_field_name()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HomeKeybindCmd {
+    Search,
+}
+
+impl HomeKeybindCmd {
+    /// Ordered list of every command for the settings UI and the
+    /// conflict scan. PR-B will append the remaining variants.
+    pub fn iter() -> &'static [HomeKeybindCmd] {
+        &[HomeKeybindCmd::Search]
+    }
+
+    /// Display label for the command's settings row. Title-case so the
+    /// row reads like `Search` rather than `search`.
+    pub fn label(self) -> &'static str {
+        match self {
+            HomeKeybindCmd::Search => "Search",
+        }
+    }
+
+    /// One-line help text shown beneath the row in the settings UI.
+    pub fn description(self) -> &'static str {
+        match self {
+            HomeKeybindCmd::Search => "Chord that opens the home-screen incremental search bar.",
+        }
+    }
+
+    /// Default chord. Matches the prior hardcoded binding so users
+    /// who never visit the settings tab see no behavior change.
+    pub fn default_binding(self) -> KeyBinding {
+        match self {
+            HomeKeybindCmd::Search => KeyBinding {
+                key: crate::session::config::KeyCodeRepr::Char('/'),
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+        }
+    }
+
+    /// Fetch the current binding from the home keymap.
+    pub fn get(self, home: &HomeKeybinds) -> &KeyBinding {
+        match self {
+            HomeKeybindCmd::Search => &home.search,
+        }
+    }
+
+    /// Store the new binding into the home keymap.
+    pub fn set(self, home: &mut HomeKeybinds, value: KeyBinding) {
+        match self {
+            HomeKeybindCmd::Search => home.search = value,
+        }
+    }
+}
+
+/// Conflict-scan: returns the command (if any) already bound to
+/// `candidate`, excluding `skip` (the command currently being
+/// rebound). Used by the capture dialog to refuse a collision.
+pub(crate) fn find_conflict(
+    keymap: &HomeKeybinds,
+    candidate: &KeyBinding,
+    skip: HomeKeybindCmd,
+) -> Option<HomeKeybindCmd> {
+    for cmd in HomeKeybindCmd::iter() {
+        if *cmd == skip {
+            continue;
+        }
+        if cmd.get(keymap) == candidate {
+            return Some(*cmd);
+        }
+    }
+    None
 }
 
 /// Type-safe field identifiers (prevents typos in string matching)
@@ -175,6 +255,11 @@ pub enum FieldKey {
     /// multiple section markers in one category are disambiguated by
     /// the label string on the parent `SettingField`.
     SectionMarker,
+    /// Configurable home-screen keybinding. Carries the command so the
+    /// apply path can write to the correct field on `HomeKeybinds`
+    /// without depending on the row's display label. v1 is Global-only;
+    /// the profile-apply pathway no-ops these keys.
+    Keybind(HomeKeybindCmd),
 }
 
 /// Map `UpdateCheckMode` to the Select index used by the settings TUI.
@@ -243,6 +328,7 @@ fn value_display_string(value: &FieldValue) -> String {
         FieldValue::List(items) => format!("[{} items]", items.len()),
         FieldValue::OptionalText(v) => v.clone().unwrap_or_else(|| "(empty)".to_string()),
         FieldValue::SectionHeader => String::new(),
+        FieldValue::KeyBinding { current, .. } => current.display(),
     }
 }
 
@@ -295,6 +381,13 @@ pub enum FieldValue {
     /// handlers skip cursor navigation past entries carrying this
     /// variant; apply / clear pathways no-op for them.
     SectionHeader,
+    /// Configurable home-screen keybinding. The row displays the
+    /// `current` chord plus the `default` chord for reference; Enter
+    /// opens the capture dialog so the user can type a replacement.
+    KeyBinding {
+        current: KeyBinding,
+        default: KeyBinding,
+    },
 }
 
 /// A setting field with metadata
@@ -367,6 +460,7 @@ pub fn build_fields_for_category(
 ) -> Vec<SettingField> {
     match category {
         SettingsCategory::Theme => build_theme_fields(scope, global, profile),
+        SettingsCategory::Keybinds => build_keybinds_fields(global),
         SettingsCategory::Updates => build_updates_fields(scope, global, profile),
         SettingsCategory::Worktree => build_worktree_fields(scope, global, profile),
         SettingsCategory::Sandbox => build_sandbox_fields(scope, global, profile),
@@ -381,6 +475,30 @@ pub fn build_fields_for_category(
         SettingsCategory::Cockpit => build_cockpit_fields(scope, global, profile),
         SettingsCategory::Logging => build_logging_fields(global),
     }
+}
+
+/// Build the rows of the `Keybinds` settings tab. v1 (PR-A) emits one
+/// row per `HomeKeybindCmd` variant; the row's value carries both the
+/// active chord and the default so the renderer can show
+/// `Search    /    (default: /)` without a second config lookup.
+fn build_keybinds_fields(global: &Config) -> Vec<SettingField> {
+    let home = &global.keybinds.home;
+    HomeKeybindCmd::iter()
+        .iter()
+        .copied()
+        .map(|cmd| SettingField {
+            key: FieldKey::Keybind(cmd),
+            label: cmd.label(),
+            description: cmd.description(),
+            value: FieldValue::KeyBinding {
+                current: cmd.get(home).clone(),
+                default: cmd.default_binding(),
+            },
+            category: SettingsCategory::Keybinds,
+            has_override: false,
+            inherited_display: None,
+        })
+        .collect()
 }
 
 const LOG_LEVEL_OPTIONS: &[&str] = &["trace", "debug", "info", "warn", "error"];
@@ -2870,6 +2988,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::SessionIdPollerMaxThreads, FieldValue::Number(v)) => {
             config.session.session_id_poller_max_threads = (*v).clamp(1, u32::MAX as u64) as u32;
         }
+        // Keybinds: write the new chord into the global keymap. The
+        // capture dialog has already verified the candidate is
+        // conflict-free, so this is a straight store.
+        (FieldKey::Keybind(cmd), FieldValue::KeyBinding { current, .. }) => {
+            cmd.set(&mut config.keybinds.home, current.clone());
+        }
         _ => {}
     }
 }
@@ -3354,6 +3478,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             // the list as the profile-scope replacement of the global list.
             config.environment = if v.is_empty() { None } else { Some(v.clone()) };
         }
+        // Keybinds are Global-only for v1; the profile-apply path
+        // intentionally no-ops so a stray Enter from the user does
+        // not silently create a per-profile keymap that the merger
+        // would not consult.
+        (FieldKey::Keybind(_), _) => {}
         _ => {}
     }
 }

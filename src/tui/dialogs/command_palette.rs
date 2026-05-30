@@ -15,6 +15,7 @@ use tui_input::Input;
 use unicode_width::UnicodeWidthStr;
 
 use super::DialogResult;
+use crate::session::config::HomeKeybinds;
 use crate::tui::components::set_prefixed_input_cursor_position;
 use crate::tui::home::bindings::{self, ActionId};
 use crate::tui::styles::Theme;
@@ -86,7 +87,11 @@ pub struct PaletteCommand {
 /// keyboard dispatcher. Pure-navigation keys (j/k, arrows, h/l) are excluded.
 /// `Enter` (attach) and `Tab` (live-send) aren't relocatable keybindings, so
 /// they're appended explicitly rather than pulled from the registry.
-pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<PaletteCommand> {
+pub fn builtin_commands(
+    serve_enabled: bool,
+    strict_hotkeys: bool,
+    keybinds: &HomeKeybinds,
+) -> Vec<PaletteCommand> {
     let mut cmds: Vec<PaletteCommand> = bindings::BINDINGS
         .iter()
         .filter_map(|b| {
@@ -99,7 +104,7 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
                 title: meta.title.to_string(),
                 group: meta.group,
                 keywords: meta.keywords.to_vec(),
-                hotkey: bindings::label(b.id, strict_hotkeys),
+                hotkey: bindings::label(b.id, strict_hotkeys, keybinds),
                 payload: PaletteAction::Invoke(b.id),
             })
         })
@@ -489,7 +494,7 @@ mod tests {
     }
 
     fn make_dialog() -> CommandPaletteDialog {
-        CommandPaletteDialog::new(builtin_commands(false, false))
+        CommandPaletteDialog::new(builtin_commands(false, false, &HomeKeybinds::default()))
     }
 
     #[test]
@@ -523,7 +528,7 @@ mod tests {
         // (e.g., moving Tab elsewhere) or accidentally regressing the
         // payload to `Key(Tab)` would break strict-mode users who reach
         // live-send only through the palette.
-        let cmds = builtin_commands(false, false);
+        let cmds = builtin_commands(false, false, &HomeKeybinds::default());
         let entry = cmds
             .iter()
             .find(|c| c.id == "live-send")
@@ -541,7 +546,7 @@ mod tests {
         // `Invoke(ActionId::…)` so `run_action` opens the picker directly.
         // Previously these synthesized `Key('o')` / `Key('g')`, which the
         // strict-mode typing-guard would have swallowed.
-        let cmds = builtin_commands(false, true);
+        let cmds = builtin_commands(false, true, &HomeKeybinds::default());
         let sort = cmds
             .iter()
             .find(|c| c.id == "pick-sort")
@@ -638,8 +643,8 @@ mod tests {
 
     #[test]
     fn serve_command_only_with_feature() {
-        let with = builtin_commands(true, false);
-        let without = builtin_commands(false, false);
+        let with = builtin_commands(true, false, &HomeKeybinds::default());
+        let without = builtin_commands(false, false, &HomeKeybinds::default());
         assert!(with.iter().any(|c| c.id == "serve"));
         assert!(!without.iter().any(|c| c.id == "serve"));
     }
@@ -649,8 +654,8 @@ mod tests {
         // Picks one entry whose label moves under strict mode and one whose
         // binding gets relocated to Ctrl. Catches regressions where strict
         // mode was forgotten when adding a new entry.
-        let normal = builtin_commands(false, false);
-        let strict = builtin_commands(false, true);
+        let normal = builtin_commands(false, false, &HomeKeybinds::default());
+        let strict = builtin_commands(false, true, &HomeKeybinds::default());
 
         let new_normal = normal.iter().find(|c| c.id == "new-session").unwrap();
         let new_strict = strict.iter().find(|c| c.id == "new-session").unwrap();

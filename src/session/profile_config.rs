@@ -53,6 +53,13 @@ pub struct ProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cockpit: Option<CockpitConfigOverride>,
 
+    // NOTE: there is intentionally no `keybinds` override field here.
+    // Configurable home-screen keybinds are Global-only for v1; the
+    // settings UI accepts edits only in the Global scope and the
+    // merger never inherits a per-profile keymap. Per-profile
+    // overrides can land later without breaking the on-disk format
+    // by adding `keybinds: Option<KeybindsConfigOverride>` and an
+    // arm to `merge_configs`.
     /// Per-profile override for the host-side `environment` list. When
     /// `Some`, replaces the global list entirely (matching the existing
     /// `sandbox.environment` override semantics). `None` inherits the
