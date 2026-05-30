@@ -12,7 +12,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test as base, expect } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import {
   spawnAoeServe,
   listSessions,
@@ -42,7 +42,7 @@ const SCRIPT = {
   ],
 };
 
-base("stopping mid-tool settles the card and survives reload", async ({ page }, testInfo) => {
+test("stopping mid-tool settles the card and survives reload", async ({ page }, testInfo) => {
   let serveHandle: { home: string } | undefined;
   let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-stuck-tool-"));
