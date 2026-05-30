@@ -1157,9 +1157,16 @@ export function TodoGroupCard({ items }: { items: TodoGroupChild[] }) {
       ) ?? null;
   const previewSnapshot = latestSuccessful ?? latestAttempt;
   const latestFailed = latestAttempt.result?.kind === "tool_error";
+  const latestStopped = latestAttempt.result?.kind === "tool_stopped";
   const breakdown = todoBreakdown(todoCounts(previewSnapshot.todos));
   const running = snapshots.some((s) => !s.result);
-  const status: Status = running ? "running" : latestFailed ? "err" : "ok";
+  const status: Status = running
+    ? "running"
+    : latestFailed
+      ? "err"
+      : latestStopped
+        ? "stopped"
+        : "ok";
 
   const startedAt = snapshots
     .map((s) => s.tool.started_at)
@@ -1176,7 +1183,7 @@ export function TodoGroupCard({ items }: { items: TodoGroupChild[] }) {
   return (
     <CardChrome
       status={status}
-      neutralOnDone={!latestFailed}
+      neutralOnDone={!latestFailed && !latestStopped}
       icon={<ListChecks className="h-3.5 w-3.5" />}
       label="todos"
       primary={

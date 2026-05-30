@@ -298,6 +298,32 @@ describe("TodoGroupCard fold (#1468)", () => {
     // The header surfaces the failed latest attempt rather than looking clean.
     expect(container.textContent).toContain("failed");
   });
+
+  it("surfaces a stopped header when the latest snapshot was interrupted (#1646)", () => {
+    const stoppedTail = {
+      tool: makeToolCall({
+        id: "td4",
+        name: "TodoWrite",
+        kind: "other",
+        args_preview: JSON.stringify({
+          todos: [{ content: "Interrupted plan", status: "in_progress" }],
+        }),
+      }),
+      result: makeStopped({ id: "stopped-td4", toolCallId: "td4" }),
+    };
+    const { container } = render(
+      <Wrap toolKey="claude">
+        <TodoGroupCard items={[...items, stoppedTail]} />
+      </Wrap>,
+    );
+    // Collapsed preview falls back to the last good snapshot, not the
+    // interrupted one.
+    expect(container.textContent).toContain("Step Charlie");
+    expect(container.textContent).not.toContain("Interrupted plan");
+    // The header reads "stopped", not the misleading "done".
+    expect(container.textContent).toContain("stopped");
+    expect(container.textContent).not.toContain("done");
+  });
 });
 
 describe("ToolCards memory_recall (claude-agent-acp v0.37.0)", () => {
