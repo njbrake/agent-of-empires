@@ -16,6 +16,17 @@
       ]
     },
     {
+      "id": "session.create-duplicate-worktree-error",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/session-create-duplicate-worktree.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ReviewStep.tsx"
+      ]
+    },
+    {
       "id": "terminal.live-output-resize",
       "kind": "vitest",
       "risk": "medium",
