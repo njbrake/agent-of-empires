@@ -241,6 +241,30 @@ describe("TodoGroupCard fold (#1468)", () => {
     // History renders each call in original order.
     expect(text.indexOf("Step Alpha")).toBeLessThan(text.indexOf("Step Bravo"));
   });
+
+  it("falls back to the last successful snapshot when the latest failed", () => {
+    const failedTail = {
+      tool: makeToolCall({
+        id: "td4",
+        name: "TodoWrite",
+        kind: "other",
+        args_preview: JSON.stringify({
+          todos: [{ content: "Broken plan", status: "in_progress" }],
+        }),
+      }),
+      result: makeError({ id: "done-td4", toolCallId: "td4" }),
+    };
+    const { container } = render(
+      <Wrap toolKey="claude">
+        <TodoGroupCard items={[...items, failedTail]} />
+      </Wrap>,
+    );
+    // Collapsed preview shows the last good snapshot, not the failed one.
+    expect(container.textContent).toContain("Step Charlie");
+    expect(container.textContent).not.toContain("Broken plan");
+    // The header surfaces the failed latest attempt rather than looking clean.
+    expect(container.textContent).toContain("failed");
+  });
 });
 
 describe("ToolCards memory_recall (claude-agent-acp v0.37.0)", () => {

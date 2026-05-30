@@ -1107,10 +1107,19 @@ export function TodoGroupCard({ items }: { items: TodoGroupChild[] }) {
   );
   if (snapshots.length === 0) return null;
 
-  const latest = snapshots[snapshots.length - 1]!;
-  const breakdown = todoBreakdown(todoCounts(latest.todos));
+  // The collapsed preview shows the latest *successful* snapshot, since
+  // a TodoWrite that ended in tool_error never became the live state.
+  // The header still reflects the latest attempt so a failed trailing
+  // update surfaces as an error rather than looking clean. See #1468.
+  const latestAttempt = snapshots[snapshots.length - 1]!;
+  const latestSuccessful =
+    [...snapshots].reverse().find((s) => s.result?.kind !== "tool_error") ??
+    null;
+  const previewSnapshot = latestSuccessful ?? latestAttempt;
+  const latestFailed = latestAttempt.result?.kind === "tool_error";
+  const breakdown = todoBreakdown(todoCounts(previewSnapshot.todos));
   const running = snapshots.some((s) => !s.result);
-  const status: Status = running ? "running" : "ok";
+  const status: Status = running ? "running" : latestFailed ? "err" : "ok";
 
   const startedAt = snapshots
     .map((s) => s.tool.started_at)
@@ -1127,7 +1136,7 @@ export function TodoGroupCard({ items }: { items: TodoGroupChild[] }) {
   return (
     <CardChrome
       status={status}
-      neutralOnDone
+      neutralOnDone={!latestFailed}
       icon={<ListChecks className="h-3.5 w-3.5" />}
       label="todos"
       primary={
@@ -1142,7 +1151,11 @@ export function TodoGroupCard({ items }: { items: TodoGroupChild[] }) {
       onToggle={() => setOpen((v) => !v)}
       startedAt={startedAt}
       endedAt={endedAt}
-      subBody={<TodoList todos={latest.todos} />}
+      subBody={
+        previewSnapshot.result?.kind === "tool_error" ? undefined : (
+          <TodoList todos={previewSnapshot.todos} />
+        )
+      }
       body={
         <div className="border-t border-surface-800 bg-surface-900/30 px-2 py-1">
           {snapshots.map((s) => (
