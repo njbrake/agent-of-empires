@@ -7,8 +7,8 @@
 import { useCallback, useMemo } from "react";
 import {
   Joyride,
-  ACTIONS,
   EVENTS,
+  STATUS,
   type ButtonType,
   type EventData,
   type Options,
@@ -95,11 +95,13 @@ export default function TourRunner({ run, steps, onFinish }: TourRunnerProps) {
   const handleEvent = useCallback(
     (data: EventData) => {
       if (data.type !== EVENTS.TOUR_END) return;
-      // A user finish/skip/close marks the tour seen. Our own stop() (scope
-      // change, unmount) and target-not-found recovery must not, so the user is
-      // not silently opted out by navigation.
+      // Gate on the terminal status, not the action: a programmatic stop
+      // (run -> false on scope change / unmount) ends with a non-terminal
+      // status and may carry `action: null`, which an action allowlist would
+      // misread as a user finish and silently opt the user out. Only an
+      // actual finish or skip marks the tour seen.
       const markSeen =
-        data.action !== ACTIONS.STOP && data.action !== ACTIONS.RESET;
+        data.status === STATUS.FINISHED || data.status === STATUS.SKIPPED;
       onFinish(markSeen);
     },
     [onFinish],
