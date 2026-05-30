@@ -10,6 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::git::error::GitError;
 use crate::session::{EnsureReadyError, EnsureReadyOutcome, Instance, Status, Storage};
 
 use super::validate_no_shell_injection;
@@ -2057,7 +2058,7 @@ pub async fn create_session(
             tracing::warn!(target: "http.api.sessions", "Session creation failed: {}", e);
             (
                 StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "create_failed", "message": "Failed to create session"})),
+                Json(serde_json::json!({"error": "create_failed", "message": public_create_session_error(&e)})),
             )
                 .into_response()
         }
@@ -2070,6 +2071,33 @@ pub async fn create_session(
                 .into_response()
         }
     }
+}
+
+/// Pick the client-facing message for a failed session creation.
+///
+/// The full error is always logged server-side; this only governs what
+/// reaches the browser. We whitelist the well-typed `GitError` variants
+/// that carry a clear, actionable, credential-free message (a branch name
+/// or a worktree path the user chose) and let everything else fall back to
+/// the generic string. This keeps raw git stderr, libgit2 internals, IO
+/// paths, and arbitrary `bail!` strings off the wire even though the
+/// duplicate-worktree case now surfaces its real message.
+fn public_create_session_error(e: &anyhow::Error) -> String {
+    if let Some(git_err) = e.chain().find_map(|c| c.downcast_ref::<GitError>()) {
+        match git_err {
+            GitError::WorktreeAlreadyExists(_)
+            | GitError::BranchAlreadyCheckedOut(_)
+            | GitError::BranchNotFound(_)
+            | GitError::NotAGitRepo => return git_err.to_string(),
+            // Raw command output / libgit2 / IO: not safe to expose.
+            GitError::WorktreeCommandFailed(_)
+            | GitError::CloneFailed(_)
+            | GitError::WorktreeNotFound(_)
+            | GitError::Git2Error(_)
+            | GitError::IoError(_) => {}
+        }
+    }
+    "Failed to create session".to_string()
 }
 
 // --- Ensure agent session ---
@@ -2994,6 +3022,58 @@ mod tests {
         inst.status = Status::Running;
         inst.group_path = "work/projects".to_string();
         inst
+    }
+
+    #[test]
+    fn public_create_session_error_forwards_whitelisted_git_errors() {
+        let dup: anyhow::Error =
+            GitError::WorktreeAlreadyExists(std::path::PathBuf::from("/tmp/repo-worktrees/foo"))
+                .into();
+        assert_eq!(
+            public_create_session_error(&dup),
+            "Worktree already exists at /tmp/repo-worktrees/foo"
+        );
+
+        let in_use: anyhow::Error =
+            GitError::BranchAlreadyCheckedOut("feature/foo".to_string()).into();
+        assert_eq!(
+            public_create_session_error(&in_use),
+            "Branch 'feature/foo' is already in use by another worktree"
+        );
+
+        // Whitelisted variants survive an anyhow::Context wrapper too.
+        let wrapped = anyhow::Error::from(GitError::BranchNotFound("nope".to_string()))
+            .context("while creating worktree");
+        assert_eq!(
+            public_create_session_error(&wrapped),
+            "Branch 'nope' not found"
+        );
+    }
+
+    #[test]
+    fn public_create_session_error_hides_unsafe_messages() {
+        // Raw git stderr (even already-sanitized) must not reach the client.
+        let cmd: anyhow::Error = GitError::WorktreeCommandFailed(
+            "fatal: unable to access 'https://<redacted>@host/repo.git'".to_string(),
+        )
+        .into();
+        assert_eq!(
+            public_create_session_error(&cmd),
+            "Failed to create session"
+        );
+
+        let clone: anyhow::Error =
+            GitError::CloneFailed("https://alice:supersecret@host/repo.git".to_string()).into();
+        let msg = public_create_session_error(&clone);
+        assert_eq!(msg, "Failed to create session");
+        assert!(!msg.contains("supersecret"));
+
+        // A non-GitError anyhow also stays generic.
+        let other = anyhow::anyhow!("something internal at /home/user/.config/secret");
+        assert_eq!(
+            public_create_session_error(&other),
+            "Failed to create session"
+        );
     }
 
     #[test]

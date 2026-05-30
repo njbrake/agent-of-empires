@@ -9,6 +9,7 @@ use anyhow::{bail, Result};
 use chrono::Utc;
 
 use crate::containers::{self, ContainerRuntimeInterface};
+use crate::git::error::GitError;
 use crate::git::GitWorktree;
 
 use super::{
@@ -470,7 +471,7 @@ pub fn build_instance(
                 let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
 
                 if worktree_path.exists() {
-                    bail!("Worktree already exists at {}", worktree_path.display());
+                    return Err(GitError::WorktreeAlreadyExists(worktree_path.clone()).into());
                 }
 
                 let w = git_wt.create_worktree(
