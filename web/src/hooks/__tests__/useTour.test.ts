@@ -11,6 +11,7 @@ const base = {
   scope: "dashboard" as const,
   isDesktop: true,
   seen: false,
+  automated: false,
 };
 
 describe("shouldAutoLaunch", () => {
@@ -33,5 +34,9 @@ describe("shouldAutoLaunch", () => {
 
   it("does not auto-launch once the tour has been seen", () => {
     expect(shouldAutoLaunch({ ...base, seen: true })).toBe(false);
+  });
+
+  it("does not auto-launch inside an automated browser session", () => {
+    expect(shouldAutoLaunch({ ...base, automated: true })).toBe(false);
   });
 });

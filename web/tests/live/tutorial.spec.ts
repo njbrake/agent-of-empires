@@ -19,6 +19,14 @@ base("first-run tutorial: auto-launch, skip, persist, re-trigger", async ({ page
   });
 
   try {
+    // Auto-launch is suppressed in automated sessions (navigator.webdriver) so
+    // the spotlight overlay never intercepts clicks in the rest of the suite.
+    // This spec is the one place that exercises auto-launch, so present as a
+    // real (non-automated) browser. Persists across reloads/navigations.
+    await page.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", { get: () => false });
+    });
+
     await page.goto(serve.baseUrl);
 
     // Story 1: auto-launches on first load, with a Skip button on the step.

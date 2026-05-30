@@ -40,20 +40,29 @@ export interface UseTourOptions {
 /**
  * Pure auto-launch decision, extracted so the truth table is unit-testable
  * without driving rAF / Suspense / the lazy engine. The tour auto-launches only
- * on a settled dashboard, with a fine pointer, when the user has not yet seen it.
+ * on a settled dashboard, with a fine pointer, when the user has not yet seen
+ * it, and never inside an automated browser session (a synthetic monitor, a
+ * scraper, or our own Playwright suites): the spotlight overlay would otherwise
+ * intercept clicks in unrelated flows. The menu re-trigger stays available.
  */
 export function shouldAutoLaunch(args: {
   autoLaunchReady: boolean;
   scope: TourScope;
   isDesktop: boolean;
   seen: boolean;
+  automated: boolean;
 }): boolean {
   return (
     args.autoLaunchReady &&
     args.scope === "dashboard" &&
     args.isDesktop &&
-    !args.seen
+    !args.seen &&
+    !args.automated
   );
+}
+
+function isAutomatedSession(): boolean {
+  return typeof navigator !== "undefined" && navigator.webdriver === true;
 }
 
 export interface UseTourResult {
@@ -113,7 +122,9 @@ export function useTour({
   useEffect(() => {
     if (autoStartedRef.current) return;
     const seen = safeGetItem(TOUR_SEEN_KEY) === "1";
-    if (!shouldAutoLaunch({ autoLaunchReady, scope, isDesktop, seen })) return;
+    const automated = isAutomatedSession();
+    if (!shouldAutoLaunch({ autoLaunchReady, scope, isDesktop, seen, automated }))
+      return;
     const id = begin(() => {
       autoStartedRef.current = true;
     });
