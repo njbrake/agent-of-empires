@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import type { SessionResponse, Workspace } from "../lib/types";
 import { PaletteTriggerPill } from "./PaletteTriggerPill";
 import { OverflowMenu, type OverflowItem } from "./OverflowMenu";
+import { TOUR_ANCHORS, tourAnchor } from "../lib/tourSteps";
 
 interface Props {
   activeWorkspace: Workspace | undefined;
@@ -12,6 +13,7 @@ interface Props {
   diffCollapsed: boolean;
   onOpenHelp: () => void;
   onOpenAbout: () => void;
+  onStartTutorial: () => void;
   onLogout: () => void;
   loginRequired: boolean;
   isOffline: boolean;
@@ -34,6 +36,7 @@ export function TopBar({
   diffCollapsed,
   onOpenHelp,
   onOpenAbout,
+  onStartTutorial,
   onLogout,
   loginRequired,
   isOffline,
@@ -43,14 +46,18 @@ export function TopBar({
   const overflowItems = useMemo<OverflowItem[]>(() => {
     const items: OverflowItem[] = [
       { label: "Help", onClick: onOpenHelp },
+      { label: "Show tutorial", onClick: onStartTutorial },
       { label: "About", onClick: onOpenAbout },
     ];
     if (loginRequired) items.push({ label: "Sign out", onClick: onLogout });
     return items;
-  }, [onOpenHelp, onOpenAbout, onLogout, loginRequired]);
+  }, [onOpenHelp, onStartTutorial, onOpenAbout, onLogout, loginRequired]);
 
   return (
-    <header className="h-12 bg-surface-800 border-b border-surface-700/20 flex items-center px-3 shrink-0 gap-2">
+    <header
+      {...tourAnchor(TOUR_ANCHORS.topbar)}
+      className="h-12 bg-surface-800 border-b border-surface-700/20 flex items-center px-3 shrink-0 gap-2"
+    >
       {/* LEFT ZONE */}
       <div className="flex items-center gap-2 min-w-0 shrink-0">
         <button
@@ -137,7 +144,7 @@ export function TopBar({
           </button>
         )}
 
-        <OverflowMenu items={overflowItems} />
+        <OverflowMenu items={overflowItems} triggerDataTour={TOUR_ANCHORS.topbarMore} />
       </div>
     </header>
   );
