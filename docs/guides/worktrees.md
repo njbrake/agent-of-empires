@@ -9,7 +9,7 @@ For workflow guidance, see the [Workflow Guide](workflow.md).
 | Feature | CLI | TUI |
 |---------|-----|-----|
 | Create new branch | Use `-b` flag | Always creates new branch |
-| Use existing branch | Omit `-b` flag | "Attach to existing branch" toggle (TUI: `Ctrl+P`; web: in the session step under the branch field) |
+| Use existing branch | Omit `-b` flag | "Attach to existing branch" toggle (TUI: `Ctrl+P`; web: in the session step under the branch field, inside the "Advanced" disclosure) |
 | Branch validation | Checks if branch exists | None (always creates) |
 | Pick a base branch | `--base-branch <name>` | `Base` field in `Ctrl+P` overlay |
 
@@ -70,7 +70,7 @@ freshness signal.
 
 In the TUI, enable the Worktree checkbox to create a new branch and worktree. By default, the worktree name is derived from the session title. Press `Ctrl+P` on the Worktree field to set an explicit `Name`, attach to an existing branch, pick a `Base` branch the new branch is based on (defaults to the repo default), or configure extra repos. `Ctrl+P` on the `Base` field opens a branch picker over local and remote-tracking branches.
 
-The web dashboard's new-session wizard exposes the same control under an "Advanced" disclosure beneath the worktree name input; it shows a typeahead populated from local + remote branches via `GET /api/git/branches?include_remote=true`. The same step also exposes an "Attach to existing branch" toggle that flips the request from "create new branch" to "attach to whichever branch is named" — when on, the server re-uses any existing worktree for that branch and otherwise checks the branch out into a new worktree. Mirrors the TUI / CLI behavior (CLI: omit `-b`). See #969.
+The web dashboard's new-session wizard folds the worktree controls behind an "Advanced" disclosure on the session step, leaving only the session title visible by default. Inside Advanced, a "Base branch" disclosure beneath the worktree name input shows a typeahead populated from local + remote branches via `GET /api/git/branches?include_remote=true`. The same Advanced section also exposes an "Attach to existing branch" toggle that flips the request from "create new branch" to "attach to whichever branch is named": when on, the server re-uses any existing worktree for that branch and otherwise checks the branch out into a new worktree. Mirrors the TUI / CLI behavior (CLI: omit `-b`). See #969 and #1514.
 
 ## Configuration
 
