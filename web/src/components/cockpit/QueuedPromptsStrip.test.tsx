@@ -121,7 +121,12 @@ describe("QueuedPromptRow expanded-state bounds (#1642)", () => {
     const { getByTitle, getByRole } = renderWithProfile("claude", [
       mk("a", hugePaste),
     ]);
-    expect(getByTitle("Click to edit").className).toContain("line-clamp-3");
+    const textButton = getByTitle("Click to edit");
+    expect(textButton.className).toContain("line-clamp-3");
+    // `block` must NOT co-exist with `line-clamp-3`: its `display:block`
+    // wins the cascade over line-clamp's `-webkit-box` and silently kills
+    // the clamp, rendering the whole paste. See #1642.
+    expect(textButton.className.split(/\s+/)).not.toContain("block");
     // Collapsed affordance is the "…" toggle.
     expect(
       getByRole("button", { name: "Show full queued prompt" }),

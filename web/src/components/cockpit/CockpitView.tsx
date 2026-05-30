@@ -2174,8 +2174,13 @@ function QueuedPromptRow({
               onClick={() => setEditing(true)}
               title="Click to edit"
               className={[
-                "block w-full text-left text-xs leading-5 text-text-secondary whitespace-pre-wrap break-words hover:text-text-primary",
-                isLong && !rowExpanded ? "line-clamp-3" : "",
+                "w-full text-left text-xs leading-5 text-text-secondary whitespace-pre-wrap break-words hover:text-text-primary",
+                // `line-clamp-3` only clamps when it owns the element's
+                // display (`-webkit-box`). A static `block` here wins the
+                // cascade and silently kills the clamp, so a huge collapsed
+                // paste renders in full. Keep `block` and `line-clamp-3`
+                // mutually exclusive. See #1642.
+                isLong && !rowExpanded ? "line-clamp-3" : "block",
               ]
                 .filter(Boolean)
                 .join(" ")}
