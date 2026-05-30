@@ -1910,11 +1910,17 @@ impl HomeView {
                 self.search_query = Input::default();
             }
             ActionId::SearchNext => {
+                if self.search_matches.is_empty() {
+                    return None;
+                }
                 self.search_match_index = (self.search_match_index + 1) % self.search_matches.len();
                 self.cursor = self.search_matches[self.search_match_index];
                 self.update_selected();
             }
             ActionId::SearchPrev => {
+                if self.search_matches.is_empty() {
+                    return None;
+                }
                 self.search_match_index = if self.search_match_index == 0 {
                     self.search_matches.len() - 1
                 } else {

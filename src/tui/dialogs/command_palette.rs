@@ -696,7 +696,7 @@ mod tests {
     const PALETTE_EXEMPT: &[(ActionId, &str)] = &[
         (
             ActionId::Quit,
-            "added to the palette manually (Settings group), not via registry metadata",
+            "intentionally excluded from the palette; q is quick-exit, doesn't need discovery",
         ),
         (
             ActionId::ToolPicker,
