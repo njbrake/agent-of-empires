@@ -278,6 +278,11 @@ interface CardChromeProps {
   expanded: boolean;
   onToggle?: () => void;
   body?: React.ReactNode;
+  /** Region rendered unconditionally below the header, regardless of
+   *  `expanded`. Used by `TodoGroupCard` to keep the latest todo list
+   *  visible while the per-snapshot history stays behind the expand
+   *  toggle (#1468). */
+  subBody?: React.ReactNode;
   /** When true and the card has settled (`status !== "running"`),
    *  render a neutral dot and omit the status badge. Used by
    *  `ToolGroupCard` so a single child error doesn't roll up to a
@@ -326,6 +331,7 @@ function CardChrome({
   expanded,
   onToggle,
   body,
+  subBody,
   startedAt,
   endedAt,
   neutralOnDone,
@@ -366,6 +372,7 @@ function CardChrome({
           />
         )}
       </Header>
+      {subBody}
       {expanded && body}
     </div>
   );
@@ -989,21 +996,55 @@ const TODO_CLASS: Record<TodoStatus, string> = {
   cancelled: "text-text-dim line-through",
 };
 
-function TodoUpdateCard({ tool, result, todos }: TodoCardProps) {
-  const status = statusFor(result);
-  const counts = useMemo(() => {
-    const c = { pending: 0, in_progress: 0, completed: 0, cancelled: 0 };
-    for (const t of todos) c[t.status] += 1;
-    return c;
-  }, [todos]);
-  const [open, setOpen] = useState(todos.length <= 5);
+function todoCounts(todos: TodoItem[]): Record<TodoStatus, number> {
+  const c: Record<TodoStatus, number> = {
+    pending: 0,
+    in_progress: 0,
+    completed: 0,
+    cancelled: 0,
+  };
+  for (const t of todos) c[t.status] += 1;
+  return c;
+}
 
+function todoBreakdown(counts: Record<TodoStatus, number>): string[] {
   const breakdown: string[] = [];
   if (counts.in_progress > 0) breakdown.push(`${counts.in_progress} active`);
   if (counts.pending > 0) breakdown.push(`${counts.pending} pending`);
   if (counts.completed > 0) breakdown.push(`${counts.completed} done`);
-  if (counts.cancelled > 0)
-    breakdown.push(`${counts.cancelled} cancelled`);
+  if (counts.cancelled > 0) breakdown.push(`${counts.cancelled} cancelled`);
+  return breakdown;
+}
+
+/** The todo checklist itself, shared by the per-call `TodoUpdateCard`
+ *  body and the folded `TodoGroupCard`'s always-visible latest list. */
+function TodoList({ todos }: { todos: TodoItem[] }) {
+  return (
+    <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+      <ul className="flex flex-col gap-1 font-mono text-xs">
+        {todos.map((t, i) => (
+          <li
+            key={`${i}-${t.content}`}
+            className={`flex items-start gap-2 ${TODO_CLASS[t.status]}`}
+          >
+            <span className="select-none w-4 shrink-0 text-center">
+              {TODO_GLYPH[t.status]}
+            </span>
+            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+              {t.content}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function TodoUpdateCard({ tool, result, todos }: TodoCardProps) {
+  const status = statusFor(result);
+  const counts = useMemo(() => todoCounts(todos), [todos]);
+  const [open, setOpen] = useState(todos.length <= 5);
+  const breakdown = todoBreakdown(counts);
 
   return (
     <CardChrome
@@ -1024,24 +1065,108 @@ function TodoUpdateCard({ tool, result, todos }: TodoCardProps) {
       endedAt={result?.at}
       body={
         <ToolErrorBody status={status} errorText={result?.text}>
-          <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
-            <ul className="flex flex-col gap-1 font-mono text-xs">
-              {todos.map((t, i) => (
-                <li
-                  key={`${i}-${t.content}`}
-                  className={`flex items-start gap-2 ${TODO_CLASS[t.status]}`}
-                >
-                  <span className="select-none w-4 shrink-0 text-center">
-                    {TODO_GLYPH[t.status]}
-                  </span>
-                  <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-                    {t.content}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
+          <TodoList todos={todos} />
         </ToolErrorBody>
+      }
+    />
+  );
+}
+
+interface TodoGroupChild {
+  tool: ToolCall;
+  result?: ActivityRow;
+}
+
+/** Folds a run of consecutive TodoWrite snapshots into one card. The
+ *  collapsed view shows the latest list (the only snapshot whose
+ *  pending/in_progress/completed mix is current); expanding reveals
+ *  each individual update in order so the plan's evolution during the
+ *  turn stays auditable. See #1468. */
+export function TodoGroupCard({ items }: { items: TodoGroupChild[] }) {
+  const profile = useAgentProfile();
+  const [open, setOpen] = useState(false);
+  const snapshots = useMemo(
+    () =>
+      items
+        .map((it) => {
+          const c = classifyTodoWrite(it.tool, profile);
+          return c.isTodoWrite
+            ? { tool: it.tool, result: it.result, todos: c.todos }
+            : null;
+        })
+        .filter(
+          (
+            s,
+          ): s is {
+            tool: ToolCall;
+            result: ActivityRow | undefined;
+            todos: TodoItem[];
+          } => s !== null,
+        ),
+    [items, profile],
+  );
+  if (snapshots.length === 0) return null;
+
+  // The collapsed preview shows the latest *successful* snapshot, since
+  // a TodoWrite that ended in tool_error never became the live state.
+  // The header still reflects the latest attempt so a failed trailing
+  // update surfaces as an error rather than looking clean. See #1468.
+  const latestAttempt = snapshots[snapshots.length - 1]!;
+  const latestSuccessful =
+    [...snapshots].reverse().find((s) => s.result?.kind !== "tool_error") ??
+    null;
+  const previewSnapshot = latestSuccessful ?? latestAttempt;
+  const latestFailed = latestAttempt.result?.kind === "tool_error";
+  const breakdown = todoBreakdown(todoCounts(previewSnapshot.todos));
+  const running = snapshots.some((s) => !s.result);
+  const status: Status = running ? "running" : latestFailed ? "err" : "ok";
+
+  const startedAt = snapshots
+    .map((s) => s.tool.started_at)
+    .sort()
+    .at(0);
+  const allDone = snapshots.every((s) => s.result);
+  const endedAt = allDone
+    ? snapshots
+        .map((s) => s.result!.at)
+        .sort()
+        .at(-1)
+    : undefined;
+
+  return (
+    <CardChrome
+      status={status}
+      neutralOnDone={!latestFailed}
+      icon={<ListChecks className="h-3.5 w-3.5" />}
+      label="todos"
+      primary={
+        <>
+          <span>updated {snapshots.length} times</span>
+          {breakdown.length > 0 && (
+            <span className="ml-2 text-text-dim">· {breakdown.join(" · ")}</span>
+          )}
+        </>
+      }
+      expanded={open}
+      onToggle={() => setOpen((v) => !v)}
+      startedAt={startedAt}
+      endedAt={endedAt}
+      subBody={
+        previewSnapshot.result?.kind === "tool_error" ? undefined : (
+          <TodoList todos={previewSnapshot.todos} />
+        )
+      }
+      body={
+        <div className="border-t border-surface-800 bg-surface-900/30 px-2 py-1">
+          {snapshots.map((s) => (
+            <TodoUpdateCard
+              key={s.tool.id}
+              tool={s.tool}
+              result={s.result}
+              todos={s.todos}
+            />
+          ))}
+        </div>
       }
     />
   );

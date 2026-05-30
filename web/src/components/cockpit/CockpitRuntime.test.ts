@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   SUBAGENT_TASK_NAME,
+  TODO_GROUP_NAME,
   TOOL_GROUP_NAME,
   activityToThreadMessages,
 } from "./CockpitRuntime";
@@ -27,6 +28,27 @@ function toolStart(id: string, kind = "read"): ActivityRow {
     id: `start-${id}`,
     kind: "tool_start",
     text: "Read",
+    toolCallId: id,
+    tool,
+    at: "2026-05-12T00:00:00Z",
+  };
+}
+
+function todoStart(
+  id: string,
+  todos: Array<{ content: string; status: string }>,
+): ActivityRow {
+  const tool: ToolCall = {
+    id,
+    name: `Update TODOs: ${todos.map((t) => t.content).join(", ")}`,
+    kind: "think",
+    args_preview: JSON.stringify({ todos }),
+    started_at: "2026-05-12T00:00:00Z",
+  };
+  return {
+    id: `start-${id}`,
+    kind: "tool_start",
+    text: "Update TODOs",
     toolCallId: id,
     tool,
     at: "2026-05-12T00:00:00Z",
@@ -129,6 +151,103 @@ describe("activityToThreadMessages; tool-call grouping (#1057)", () => {
     expect(groups).toHaveLength(0);
     const toolParts = parts.filter((p) => p.type === "tool-call");
     expect(toolParts).toHaveLength(4);
+  });
+
+  it("folds ≥3 consecutive TodoWrite snapshots into one todo group (#1468)", () => {
+    const messages = activityToThreadMessages(
+      [
+        userRow("go"),
+        todoStart("td1", [{ content: "a", status: "pending" }]),
+        todoStart("td2", [{ content: "a", status: "in_progress" }]),
+        todoStart("td3", [{ content: "a", status: "completed" }]),
+      ],
+      false,
+    );
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      toolName?: string;
+    }>;
+    const toolParts = parts.filter((p) => p.type === "tool-call");
+    expect(toolParts).toHaveLength(1);
+    expect(toolParts[0]!.toolName).toBe(TODO_GROUP_NAME);
+    // The folded payload preserves each snapshot in original order so
+    // the expand-history view can replay the plan's evolution.
+    const payload = JSON.parse(
+      (toolParts[0] as { argsText?: string }).argsText!,
+    );
+    expect(
+      payload.children.map((c: { toolCallId: string }) => c.toolCallId),
+    ).toEqual(["td1", "td2", "td3"]);
+  });
+
+  it("leaves 2 consecutive TodoWrite snapshots inline (#1468)", () => {
+    const messages = activityToThreadMessages(
+      [
+        userRow("go"),
+        todoStart("td1", [{ content: "a", status: "pending" }]),
+        todoStart("td2", [{ content: "a", status: "completed" }]),
+      ],
+      false,
+    );
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      toolName?: string;
+    }>;
+    const toolParts = parts.filter((p) => p.type === "tool-call");
+    expect(toolParts).toHaveLength(2);
+    for (const p of toolParts) {
+      expect(p.toolName).not.toBe(TODO_GROUP_NAME);
+      expect(p.toolName).not.toBe(TOOL_GROUP_NAME);
+    }
+  });
+
+  it("keeps a ≥3 run mixing TodoWrite with real tool work inline (#1468)", () => {
+    const messages = activityToThreadMessages(
+      [
+        userRow("go"),
+        todoStart("td1", [{ content: "a", status: "pending" }]),
+        todoStart("td2", [{ content: "a", status: "in_progress" }]),
+        toolStart("r1"),
+      ],
+      false,
+    );
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      toolName?: string;
+    }>;
+    const toolParts = parts.filter((p) => p.type === "tool-call");
+    expect(toolParts).toHaveLength(3);
+    for (const p of toolParts) {
+      expect(p.toolName).not.toBe(TODO_GROUP_NAME);
+      expect(p.toolName).not.toBe(TOOL_GROUP_NAME);
+    }
+  });
+
+  it("text between TodoWrite snapshots splits the fold (#1468)", () => {
+    const messages = activityToThreadMessages(
+      [
+        userRow("go"),
+        todoStart("a1", [{ content: "a", status: "pending" }]),
+        todoStart("a2", [{ content: "a", status: "in_progress" }]),
+        messageRow("Working on it."),
+        todoStart("b1", [{ content: "a", status: "in_progress" }]),
+        todoStart("b2", [{ content: "a", status: "completed" }]),
+      ],
+      false,
+    );
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      toolName?: string;
+    }>;
+    const groups = parts.filter(
+      (p) => p.type === "tool-call" && p.toolName === TODO_GROUP_NAME,
+    );
+    // Each side of the text is a run of 2, below the fold threshold.
+    expect(groups).toHaveLength(0);
   });
 
   it("smuggles parent_tool_call_id through args_preview as _aoe_parent_tool_call_id (#1041)", () => {

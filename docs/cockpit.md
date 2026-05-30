@@ -399,6 +399,29 @@ choice stays explicit.
 Tools without ACP support continue to work exactly as they do today
 (tmux + PTY); cockpit is additive, not a replacement.
 
+## Timeline card grouping
+
+To keep the timeline readable, cockpit folds two kinds of runs into
+single collapsible cards:
+
+- **Silent tool work.** A run of three or more consecutive tool calls
+  with no agent text between them (for example Read, Read, Grep, Read
+  during investigation) collapses into one "actions" card. Expand it to
+  see each call as its normal per-tool card.
+- **Consecutive TodoWrite updates.** When the agent fires three or more
+  `TodoWrite` calls back-to-back, the per-call snapshots fold into one
+  todo card titled "updated N times". Collapsed, the card shows the
+  latest list (the only snapshot whose pending/in-progress/done mix is
+  current), so you see what the agent is working on without expanding.
+  Expand it to inspect each individual update in order and audit how the
+  plan evolved during the turn.
+
+Folding only fires when every call in the run is the same shape. A
+TodoWrite sandwiched between real tool work (Read, Edit) stays inline as
+its own card rather than being hidden inside a group, so a status update
+between actions is never buried. Two-in-a-row stays inline as well; the
+fold threshold is three.
+
 ## Worker persistence across `aoe serve` restart
 
 > **Behavior change (cockpit-only).** Prior releases tore down every

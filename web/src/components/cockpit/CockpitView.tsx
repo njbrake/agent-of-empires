@@ -34,6 +34,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import {
   CockpitRuntime,
   SUBAGENT_TASK_NAME,
+  TODO_GROUP_NAME,
   TOOL_GROUP_NAME,
   type CockpitContext,
 } from "./CockpitRuntime";
@@ -48,7 +49,12 @@ import {
 } from "./queuedPromptsLayout";
 import { StartupErrorScreen } from "./StartupErrorScreen";
 import { pickWorkerStoppedVariant } from "./workerStoppedBanner";
-import { SubagentCard, ToolCard, ToolGroupCard } from "./ToolCards";
+import {
+  SubagentCard,
+  ToolCard,
+  ToolGroupCard,
+  TodoGroupCard,
+} from "./ToolCards";
 import { DiffCommentsUserCard } from "../diff/comments/DiffCommentsUserCard";
 import { parseDiffCommentsSentinel } from "../diff/comments/buildPrompt";
 import {
@@ -67,6 +73,7 @@ import { useApprovalSound } from "../../hooks/useApprovalSound";
 import { useIsCoarsePointer } from "../../hooks/useIsCoarsePointer";
 import type {
   Approval,
+  ActivityRow,
   ApprovalDecision,
   CockpitState,
   Plan,
@@ -574,6 +581,11 @@ function AssistantToolCall(props: ToolCallProps) {
     return <AssistantToolGroup argsText={props.argsText} />;
   }
 
+  // Run of consecutive TodoWrite snapshots folded into one card (#1468).
+  if (props.toolName === TODO_GROUP_NAME) {
+    return <AssistantTodoGroup argsText={props.argsText} />;
+  }
+
   if (props.toolName === SUBAGENT_TASK_NAME) {
     return <AssistantSubagentTask argsText={props.argsText} />;
   }
@@ -666,54 +678,72 @@ interface GroupChild {
   isError?: boolean;
 }
 
-function AssistantToolGroup({ argsText }: { argsText?: string }) {
-  let children: GroupChild[] = [];
-  if (argsText) {
-    try {
-      const parsed = JSON.parse(argsText);
-      if (parsed && Array.isArray(parsed.children)) {
-        children = parsed.children as GroupChild[];
-      }
-    } catch {
-      // Malformed payload; fall through to an empty group rather than
-      // crashing the assistant-ui render.
+/** Parse the `{ children: [...] }` payload CockpitRuntime stashes in a
+ *  group part's argsText. Returns an empty list on malformed JSON
+ *  rather than crashing the assistant-ui render. */
+function parseGroupChildren(argsText?: string): GroupChild[] {
+  if (!argsText) return [];
+  try {
+    const parsed = JSON.parse(argsText);
+    if (parsed && Array.isArray(parsed.children)) {
+      return parsed.children as GroupChild[];
     }
+  } catch {
+    // ignore
   }
-  const items = children.map((c) => {
-    const fallbackAt = toolCallTimestamp(c.toolCallId);
-    let parsedArgs: Record<string, unknown> = {};
-    try {
-      const p = JSON.parse(c.argsText);
-      if (p && typeof p === "object" && !Array.isArray(p)) {
-        parsedArgs = p as Record<string, unknown>;
-      }
-    } catch {
-      // ignore
+  return [];
+}
+
+/** Reconstruct the ToolCall + completion-row pair a group child stands
+ *  for, mirroring the top-level AssistantToolCall path so durations and
+ *  per-kind dispatch behave identically inside a group. */
+function groupChildToItem(c: GroupChild): {
+  tool: ToolCall;
+  result?: ActivityRow;
+  kind: string;
+} {
+  const fallbackAt = toolCallTimestamp(c.toolCallId);
+  let parsedArgs: Record<string, unknown> = {};
+  try {
+    const p = JSON.parse(c.argsText);
+    if (p && typeof p === "object" && !Array.isArray(p)) {
+      parsedArgs = p as Record<string, unknown>;
     }
-    const startedAt = pickStartedAt(parsedArgs, c.argsText) ?? fallbackAt;
-    const endedAt = pickEndedAt(c.result) ?? fallbackAt;
-    const tool: ToolCall = {
-      id: c.toolCallId,
-      name: prettifyToolName(c.toolName, parsedArgs),
-      kind: c.toolName,
-      args_preview: c.argsText,
-      started_at: startedAt,
-    };
-    const result =
-      c.result !== undefined
-        ? {
-            id: `done-${c.toolCallId}`,
-            kind: c.isError
-              ? ("tool_error" as const)
-              : ("tool_complete" as const),
-            text: c.result.content,
-            toolCallId: c.toolCallId,
-            at: endedAt,
-          }
-        : undefined;
-    return { tool, result, kind: c.toolName };
-  });
+  } catch {
+    // ignore
+  }
+  const startedAt = pickStartedAt(parsedArgs, c.argsText) ?? fallbackAt;
+  const endedAt = pickEndedAt(c.result) ?? fallbackAt;
+  const tool: ToolCall = {
+    id: c.toolCallId,
+    name: prettifyToolName(c.toolName, parsedArgs),
+    kind: c.toolName,
+    args_preview: c.argsText,
+    started_at: startedAt,
+  };
+  const result =
+    c.result !== undefined
+      ? {
+          id: `done-${c.toolCallId}`,
+          kind: c.isError
+            ? ("tool_error" as const)
+            : ("tool_complete" as const),
+          text: c.result.content,
+          toolCallId: c.toolCallId,
+          at: endedAt,
+        }
+      : undefined;
+  return { tool, result, kind: c.toolName };
+}
+
+function AssistantToolGroup({ argsText }: { argsText?: string }) {
+  const items = parseGroupChildren(argsText).map(groupChildToItem);
   return <ToolGroupCard items={items} />;
+}
+
+function AssistantTodoGroup({ argsText }: { argsText?: string }) {
+  const items = parseGroupChildren(argsText).map(groupChildToItem);
+  return <TodoGroupCard items={items} />;
 }
 
 interface SubagentPayload {
