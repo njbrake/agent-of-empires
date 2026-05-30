@@ -171,6 +171,14 @@ describe("activityToThreadMessages; tool-call grouping (#1057)", () => {
     const toolParts = parts.filter((p) => p.type === "tool-call");
     expect(toolParts).toHaveLength(1);
     expect(toolParts[0]!.toolName).toBe(TODO_GROUP_NAME);
+    // The folded payload preserves each snapshot in original order so
+    // the expand-history view can replay the plan's evolution.
+    const payload = JSON.parse(
+      (toolParts[0] as { argsText?: string }).argsText!,
+    );
+    expect(
+      payload.children.map((c: { toolCallId: string }) => c.toolCallId),
+    ).toEqual(["td1", "td2", "td3"]);
   });
 
   it("leaves 2 consecutive TodoWrite snapshots inline (#1468)", () => {
