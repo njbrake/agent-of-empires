@@ -2238,6 +2238,12 @@ pub async fn ensure_session(
     let restart_result = tokio::task::spawn_blocking(
         move || -> Result<(Instance, crate::session::StartOutcome), Box<(Instance, anyhow::Error)>> {
             let mut inst = instance;
+            // The clone above came from `state.instances`, which lags disk by
+            // up to one status-poll tick (~2s). A CLI `set-session-id` that
+            // landed inside that window already wrote `sessions.json`; restart
+            // here would resume the stale in-memory sid and re-persist it over
+            // the user's change. Re-read the disk-authoritative value first.
+            inst.reconcile_session_id_from_disk();
             // Use kill_clean (vs bare tmux kill) so a remain-on-exit dead
             // pane is respawned-then-killed; bare kill races against the
             // session cache on macOS and can leave the corpse pane behind,

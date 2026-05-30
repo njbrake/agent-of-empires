@@ -250,6 +250,16 @@ impl HomeView {
         // non-status fields restart_with_size touches are kept.
         let size = crate::terminal::get_size();
         self.try_mutate_instance_writeback_on_err(&id, |inst| {
+            // The live instance can hold a stale `agent_session_id` relative
+            // to disk: a CLI `aoe session set-session-id`/`--clear` from
+            // another terminal writes `sessions.json` while this long-running
+            // TUI still mirrors the old sid (it is not a `merge_from_tui`
+            // field, so the periodic save loop never reloads it). Restarting
+            // off the stale value resumes the wrong conversation and
+            // re-persists the old sid over the user's change. Re-read the
+            // disk-authoritative value first, mirroring the REST
+            // `ensure_session` restart path.
+            inst.reconcile_session_id_from_disk();
             inst.restart_with_size(size).map(|_| ())
         })?;
 

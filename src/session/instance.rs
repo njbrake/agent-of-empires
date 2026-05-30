@@ -742,6 +742,36 @@ impl Instance {
         }
     }
 
+    /// Reconcile `agent_session_id` against the disk-authoritative value
+    /// before a restart that would re-persist it. A long-running daemon (the
+    /// `aoe serve` REST `ensure_session` path, or a standalone `aoe -p ...`
+    /// TUI) mirrors `agent_session_id` in memory but never reloads it from
+    /// disk on its own: it is not a `merge_from_tui` field, so the TUI save
+    /// loop leaves it alone, and the serve poller only catches up on its next
+    /// `status_poll_loop` tick (~2s). Inside that window a CLI
+    /// `aoe session set-session-id` (or `--clear`) from another terminal has
+    /// already written `sessions.json` while this in-memory instance still
+    /// holds the old sid. Restarting off the stale value resumes the wrong
+    /// conversation and re-persists the old sid back over the user's change.
+    /// Re-reading from disk here closes that window. No-op when the instance
+    /// is absent from storage or the read fails, leaving the in-memory value.
+    pub fn reconcile_session_id_from_disk(&mut self) {
+        match super::storage::Storage::new(&self.source_profile).and_then(|s| s.load()) {
+            Ok(instances) => {
+                if let Some(disk) = instances.into_iter().find(|i| i.id == self.id) {
+                    self.agent_session_id = disk.agent_session_id;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(target: "session.store",
+                    session = %self.id,
+                    error = %e,
+                    "failed to reload disk agent_session_id before restart; using in-memory value",
+                );
+            }
+        }
+    }
+
     /// Splice TUI-mirrored, persisted fields from `src` onto `self`. Used by
     /// `HomeView::save` for fields the TUI is the canonical disk writer of
     /// (the daemon's `status_poll_loop` keeps these in memory only). The
@@ -4966,6 +4996,67 @@ mod tests {
             let loaded = storage.load().unwrap();
             assert_eq!(loaded.len(), 1);
             assert_eq!(loaded[0].agent_session_id, None);
+        }
+
+        #[test]
+        #[serial]
+        fn reconcile_session_id_from_disk_picks_up_cli_set() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("reconcile-test").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "reconcile-test".to_string();
+            inst.agent_session_id = Some("old-sid".to_string());
+            let id = inst.id.clone();
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(&[on_disk.clone()], &[])
+                        .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            // Simulate a CLI `set-session-id` landing on disk while `inst` is a
+            // stale in-memory daemon clone.
+            super::persist_session_to_storage("reconcile-test", &id, "new-sid");
+
+            assert_eq!(inst.agent_session_id.as_deref(), Some("old-sid"));
+            inst.reconcile_session_id_from_disk();
+            assert_eq!(inst.agent_session_id.as_deref(), Some("new-sid"));
+        }
+
+        #[test]
+        #[serial]
+        fn reconcile_session_id_from_disk_picks_up_cli_clear() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("reconcile-clear").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "reconcile-clear".to_string();
+            inst.agent_session_id = Some("old-sid".to_string());
+            let id = inst.id.clone();
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(&[on_disk.clone()], &[])
+                        .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            clear_session_id_on_disk("reconcile-clear", &id);
+
+            inst.reconcile_session_id_from_disk();
+            assert_eq!(inst.agent_session_id, None);
         }
 
         #[cfg(feature = "serve")]
