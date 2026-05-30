@@ -32,6 +32,10 @@ export function makeError(over: Partial<ActivityRow> = {}): ActivityRow {
   return makeCompletion({ kind: "tool_error", text: "failed", ...over });
 }
 
+export function makeStopped(over: Partial<ActivityRow> = {}): ActivityRow {
+  return makeCompletion({ kind: "tool_stopped", text: "", ...over });
+}
+
 export const fixtures = {
   bash: makeToolCall({
     id: "bash-1",

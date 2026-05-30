@@ -35,6 +35,7 @@ import {
   fixtures,
   makeCompletion,
   makeError,
+  makeStopped,
   makeToolCall,
 } from "./__fixtures__/toolCalls";
 
@@ -158,6 +159,38 @@ describe("ToolCards dispatch", () => {
       </Wrap>,
     );
     expect(container.textContent).toContain("done");
+  });
+
+  it("renders the 'stopped' badge on tool_stopped results, not running/failed/done", () => {
+    const { container } = render(
+      <Wrap>
+        <ToolCard tool={fixtures.bash} result={makeStopped()} />
+      </Wrap>,
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("stopped");
+    expect(text).not.toContain("running");
+    expect(text).not.toContain("failed");
+    expect(text).not.toContain("done");
+  });
+
+  it("freezes the duration on a tool_stopped result (endedAt is set)", () => {
+    // A stopped card carries a terminal `at`, so the duration is a fixed
+    // span rather than a live-ticking elapsed timer. started_at
+    // 00:00:00 -> at 00:00:01 == 1.0s. See #1646.
+    const { container } = render(
+      <Wrap>
+        <ToolCard
+          tool={makeToolCall({
+            id: "bash-1",
+            kind: "execute",
+            started_at: "2026-05-21T00:00:00Z",
+          })}
+          result={makeStopped({ at: "2026-05-21T00:00:01Z" })}
+        />
+      </Wrap>,
+    );
+    expect(container.textContent).toContain("1.0s");
   });
 });
 

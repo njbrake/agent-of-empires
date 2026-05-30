@@ -807,6 +807,10 @@ If the agent ignores `session/cancel` mid-tool-call (most commonly a `block: tru
 
 Follow-up prompts the daemon refused while the original turn was still in flight no longer vanish silently. The composer shows them as amber "Rejected" pills with a Retry button; clicking Retry re-dispatches the prompt through the normal send path against the freshly-respawned worker.
 
+### Tool card stuck "running" after a stop
+
+Stopping the agent while a tool call is mid-execution settles that tool's card to a distinct terminal **stopped** state: the elapsed-time timer freezes and the badge leaves the orange "running" state for a muted "stopped". This is intentional. The adapter resolves a cancelled prompt without sending a per-tool completion, so the cockpit closes any still-open tool calls itself when the turn ends. "stopped" is neither "done" (no success was reported) nor "failed" (no error was reported); the tool's real outcome was never reported. The same applies on reload (the state is reconstructed from the persisted turn-end event) and when the backend switches agents mid-turn.
+
 ### Rate-limit recovery
 
 When the active ACP backend reports `errorKind: "rate_limit"` on `session/prompt` (Claude's adapter does this when the Anthropic account is over its limit), aoe treats this as a non-crash terminal state rather than as a worker crash:
