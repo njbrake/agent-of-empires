@@ -579,6 +579,9 @@ impl NewSessionDialog {
         let value_style = Style::default().fg(value_color);
 
         let value = self.path.value();
+        let prefix_width = 6; // "Path: "
+        let available_width = area.width.saturating_sub(prefix_width as u16) as usize;
+
         let mut spans = vec![Span::styled("Path:", label_style), Span::raw(" ")];
 
         // Scratch mode disables this field. The undo hint lives in the
@@ -598,6 +601,7 @@ impl NewSessionDialog {
                 spans.push(Span::styled(placeholder_text, value_style));
             }
         } else if is_focused {
+            let scroll = self.path.visual_scroll(available_width);
             let cursor_pos = self.path.cursor();
             let cursor_style = if flashing_invalid {
                 Style::default().fg(theme.background).bg(theme.error)
@@ -605,26 +609,93 @@ impl NewSessionDialog {
                 Style::default().fg(theme.background).bg(theme.accent)
             };
 
-            let before: String = value.chars().take(cursor_pos).collect();
-            let cursor_char: String = value
-                .chars()
-                .nth(cursor_pos)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| " ".to_string());
-            let after: String = value.chars().skip(cursor_pos + 1).collect();
+            // Find visible start after scroll offset
+            let mut col = 0;
+            let mut visible_chars_start = 0;
+            for (i, c) in value.chars().enumerate() {
+                let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                if col >= scroll {
+                    break;
+                }
+                col += w;
+                visible_chars_start = i + 1;
+            }
 
-            if !before.is_empty() {
-                spans.push(Span::styled(before, value_style));
+            // Collect visible characters
+            let mut visible_col = 0;
+            let mut visible_before = String::new();
+            let mut visible_cursor_char = String::new();
+            let mut visible_after = String::new();
+            let mut cursor_visible = false;
+            let mut end_visible = true;
+
+            for (i, c) in value.chars().enumerate().skip(visible_chars_start) {
+                let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                if visible_col + w > available_width {
+                    end_visible = false;
+                    break;
+                }
+                if i < cursor_pos {
+                    visible_before.push(c);
+                } else if i == cursor_pos {
+                    visible_cursor_char = c.to_string();
+                    cursor_visible = true;
+                } else {
+                    visible_after.push(c);
+                }
+                visible_col += w;
             }
-            spans.push(Span::styled(cursor_char, cursor_style));
-            if !after.is_empty() {
-                spans.push(Span::styled(after, value_style));
+
+            // Cursor at end (past last char)
+            if cursor_pos >= value.chars().count() && !cursor_visible {
+                // Only show cursor space if there's room
+                if visible_col < available_width {
+                    visible_cursor_char = " ".to_string();
+                    cursor_visible = true;
+                } else {
+                    end_visible = false;
+                }
             }
-            if let Some(ghost) = self.ghost_text() {
-                spans.push(Span::styled(ghost, Style::default().fg(theme.dimmed)));
+
+            if !visible_before.is_empty() {
+                spans.push(Span::styled(visible_before, value_style));
+            }
+            if cursor_visible {
+                spans.push(Span::styled(visible_cursor_char, cursor_style));
+            }
+            if !visible_after.is_empty() {
+                spans.push(Span::styled(visible_after, value_style));
+            }
+            // Only show ghost when end of input is visible
+            if end_visible {
+                if let Some(ghost) = self.ghost_text() {
+                    spans.push(Span::styled(ghost, Style::default().fg(theme.dimmed)));
+                }
             }
         } else {
-            spans.push(Span::styled(value, value_style));
+            // Non-focused: show visible portion
+            let scroll = self.path.visual_scroll(available_width);
+            let mut col = 0;
+            let mut visible_start = 0;
+            for (i, c) in value.chars().enumerate() {
+                let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                if col >= scroll {
+                    break;
+                }
+                col += w;
+                visible_start = i + 1;
+            }
+            let mut visible_col = 0;
+            let mut visible_value = String::new();
+            for c in value.chars().skip(visible_start) {
+                let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                if visible_col + w > available_width {
+                    break;
+                }
+                visible_value.push(c);
+                visible_col += w;
+            }
+            spans.push(Span::styled(visible_value, value_style));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1186,17 +1257,52 @@ impl NewSessionDialog {
                     .as_ref()
                     .map(|g| g.ghost_text.clone());
 
+                let prefix_width = 4; // "  + " or "  > "
+                let available_width = area.width.saturating_sub(prefix_width as u16) as usize;
+
                 let make_input_line = |prefix: &'static str,
                                        val: &str,
                                        ghost: &Option<String>,
-                                       th: &Theme|
+                                       th: &Theme,
+                                       inp: &Input|
                  -> Line<'static> {
+                    let scroll = inp.visual_scroll(available_width);
+
+                    // Find visible start after scroll offset
+                    let mut col = 0;
+                    let mut visible_chars_start = 0;
+                    for (i, c) in val.chars().enumerate() {
+                        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                        if col >= scroll {
+                            break;
+                        }
+                        col += w;
+                        visible_chars_start = i + 1;
+                    }
+
+                    // Collect visible characters
+                    let mut visible_col = 0;
+                    let mut visible_value = String::new();
+                    let mut end_visible = true;
+
+                    for c in val.chars().skip(visible_chars_start) {
+                        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                        if visible_col + w > available_width {
+                            end_visible = false;
+                            break;
+                        }
+                        visible_value.push(c);
+                        visible_col += w;
+                    }
+
                     let mut spans = vec![
                         Span::styled(prefix, Style::default().fg(th.accent)),
-                        Span::styled(val.to_string(), Style::default().fg(th.accent).bold()),
+                        Span::styled(visible_value, Style::default().fg(th.accent).bold()),
                     ];
-                    if let Some(ref g) = ghost {
-                        spans.push(Span::styled(g.clone(), Style::default().fg(th.dimmed)));
+                    if end_visible {
+                        if let Some(ref g) = ghost {
+                            spans.push(Span::styled(g.clone(), Style::default().fg(th.dimmed)));
+                        }
                     }
                     spans.push(Span::styled("_", Style::default().fg(th.accent)));
                     Line::from(spans)
@@ -1214,12 +1320,24 @@ impl NewSessionDialog {
                             Style::default().fg(theme.text),
                         )));
                     }
-                    lines.push(make_input_line("  + ", input.value(), &ghost_text, theme));
+                    lines.push(make_input_line(
+                        "  + ",
+                        input.value(),
+                        &ghost_text,
+                        theme,
+                        input,
+                    ));
                     cursor_row = Some((lines.len() - 1, "  + ", input));
                 } else {
                     for (i, entry) in self.workspace_repos.iter().enumerate() {
                         if i == self.workspace_repo_selected_index {
-                            lines.push(make_input_line("  > ", input.value(), &ghost_text, theme));
+                            lines.push(make_input_line(
+                                "  > ",
+                                input.value(),
+                                &ghost_text,
+                                theme,
+                                input,
+                            ));
                             cursor_row = Some((lines.len() - 1, "  > ", input));
                         } else {
                             let prefix = "    ";

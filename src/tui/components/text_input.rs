@@ -140,6 +140,7 @@ pub fn render_text_field(
 
 /// Like `render_text_field` but with optional ghost (autocomplete) text.
 /// If `ghost_text` is provided, it is rendered after the cursor in dimmed style.
+/// Supports horizontal scrolling when text exceeds available width.
 #[allow(clippy::too_many_arguments)]
 pub fn render_text_field_with_ghost(
     frame: &mut Frame,
@@ -163,6 +164,8 @@ pub fn render_text_field_with_ghost(
     };
 
     let value = input.value();
+    let prefix_width = label.width() + 1; // label + space
+    let available_width = area.width.saturating_sub(prefix_width as u16) as usize;
 
     let mut spans = vec![Span::styled(label, label_style), Span::raw(" ")];
 
@@ -171,30 +174,98 @@ pub fn render_text_field_with_ghost(
             spans.push(Span::styled(placeholder_text, value_style));
         }
     } else if is_focused {
+        let scroll = input.visual_scroll(available_width);
         let cursor_pos = input.cursor();
         let cursor_style = Style::default().fg(theme.background).bg(theme.accent);
 
-        // Split value into: before cursor, char at cursor, after cursor
-        let before: String = value.chars().take(cursor_pos).collect();
-        let cursor_char: String = value
-            .chars()
-            .nth(cursor_pos)
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| " ".to_string());
-        let after: String = value.chars().skip(cursor_pos + 1).collect();
+        // Collect visible characters starting from scroll offset
+        let mut col = 0;
+        let mut visible_chars_start = 0;
+        for (i, c) in value.chars().enumerate() {
+            let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if col >= scroll {
+                break;
+            }
+            col += w;
+            visible_chars_start = i + 1;
+        }
 
-        if !before.is_empty() {
-            spans.push(Span::styled(before, value_style));
+        let mut visible_col = 0;
+        let mut visible_before = String::new();
+        let mut visible_cursor_char = String::new();
+        let mut visible_after = String::new();
+        let mut cursor_visible = false;
+        let mut chars_fit = true;
+
+        for (i, c) in value.chars().enumerate().skip(visible_chars_start) {
+            let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if visible_col + w > available_width {
+                chars_fit = false;
+                break;
+            }
+            if i < cursor_pos {
+                visible_before.push(c);
+            } else if i == cursor_pos {
+                visible_cursor_char = c.to_string();
+                cursor_visible = true;
+            } else {
+                visible_after.push(c);
+            }
+            visible_col += w;
         }
-        spans.push(Span::styled(cursor_char, cursor_style));
-        if !after.is_empty() {
-            spans.push(Span::styled(after, value_style));
+
+        // If cursor is at end (past last char), show space
+        if cursor_pos >= value.chars().count() && !cursor_visible && chars_fit {
+            visible_cursor_char = " ".to_string();
+            cursor_visible = true;
         }
+
+        if !visible_before.is_empty() {
+            spans.push(Span::styled(visible_before, value_style));
+        }
+        if cursor_visible {
+            spans.push(Span::styled(visible_cursor_char, cursor_style));
+        }
+        if !visible_after.is_empty() {
+            spans.push(Span::styled(visible_after, value_style));
+        }
+        // Only show ghost when end of input is visible
         if let Some(ghost) = ghost_text {
-            spans.push(Span::styled(ghost, Style::default().fg(theme.dimmed)));
+            let end_visible = value.chars().count() <= visible_chars_start || {
+                let mut col_check = 0;
+                for c in value.chars().skip(visible_chars_start) {
+                    col_check += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                }
+                col_check < available_width
+            };
+            if end_visible {
+                spans.push(Span::styled(ghost, Style::default().fg(theme.dimmed)));
+            }
         }
     } else {
-        spans.push(Span::styled(value, value_style));
+        // Non-focused: show visible portion of value
+        let scroll = input.visual_scroll(available_width);
+        let mut col = 0;
+        let mut visible_start = 0;
+        for (i, c) in value.chars().enumerate() {
+            let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if col >= scroll {
+                break;
+            }
+            col += w;
+            visible_start = i + 1;
+        }
+        let mut visible_col = 0;
+        let mut visible_value = String::new();
+        for c in value.chars().skip(visible_start) {
+            let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if visible_col + w > available_width {
+                break;
+            }
+            visible_value.push(c);
+            visible_col += w;
+        }
+        spans.push(Span::styled(visible_value, value_style));
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -224,7 +295,12 @@ pub fn set_input_cursor_position(
         return;
     }
 
-    let cursor_col = prefix_width.saturating_add(input.visual_cursor());
+    let available_width = area.width.saturating_sub(prefix_width as u16) as usize;
+    let scroll = input.visual_scroll(available_width);
+    let visual_cursor = input.visual_cursor();
+    let visible_cursor = visual_cursor.saturating_sub(scroll);
+
+    let cursor_col = prefix_width.saturating_add(visible_cursor);
     let max_col = area.width.saturating_sub(1) as usize;
     let x = area.x.saturating_add(cursor_col.min(max_col) as u16);
     frame.set_cursor_position(Position::new(x, area.y));
