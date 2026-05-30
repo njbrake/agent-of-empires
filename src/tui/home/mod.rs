@@ -567,6 +567,10 @@ pub struct HomeView {
     // dictation / stray keystrokes triggering destructive actions).
     pub(super) strict_hotkeys: bool,
 
+    // When true, pressing `q` to leave the home screen shows a quit
+    // confirmation first (guards against accidental exits, #1569).
+    pub(super) confirm_before_quit: bool,
+
     // Number of live `aoe` TUI processes (including this one), refreshed on a
     // throttle from the app loop. The footer surfaces it when >1 so the user
     // knows another instance is attached (the two clash over agent pane sizes
@@ -725,6 +729,7 @@ impl HomeView {
             .cloned()
             .unwrap_or_else(|| resolved.status_hooks.clone());
         let strict_hotkeys = resolved.session.strict_hotkeys;
+        let confirm_before_quit = resolved.session.confirm_before_quit;
         let idle_decay_window =
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
         let user_config = load_config().ok().flatten();
@@ -847,6 +852,7 @@ impl HomeView {
             status_hook_config,
             status_hook_configs,
             strict_hotkeys,
+            confirm_before_quit,
             active_tui_count: 1,
             idle_decay_window,
             settings_view: None,
@@ -2008,6 +2014,50 @@ impl HomeView {
             "A session is still being created. Quit anyway? The hook will be cancelled.",
             "quit_during_creation",
         ));
+    }
+
+    /// Whether `q` on the home screen should confirm before quitting.
+    pub fn confirm_before_quit(&self) -> bool {
+        self.confirm_before_quit
+    }
+
+    /// Show the "quit aoe?" confirmation, with a "don't warn me again"
+    /// checkbox that flips `confirm_before_quit` off when ticked (#1569).
+    pub fn show_quit_confirm(&mut self) {
+        self.confirm_dialog = Some(
+            ConfirmDialog::new(
+                "Quit Agent of Empires",
+                "Quit?\nYour sessions persist in the background.",
+                "quit",
+            )
+            .neutral()
+            .offering_dont_ask_again(),
+        );
+    }
+
+    /// Persist `confirm_before_quit = false` and update the cached flag so
+    /// the quit confirmation stops appearing. Called when the user ticks
+    /// "don't warn me again" in the quit dialog.
+    pub(super) fn disable_confirm_before_quit(&mut self) {
+        self.confirm_before_quit = false;
+        match load_config() {
+            Ok(Some(mut config)) => {
+                config.session.confirm_before_quit = false;
+                if let Err(e) = save_config(&config) {
+                    tracing::warn!(target: "tui.home", "Failed to save config: {e}");
+                }
+            }
+            Ok(None) => {
+                let mut config = crate::session::config::Config::default();
+                config.session.confirm_before_quit = false;
+                if let Err(e) = save_config(&config) {
+                    tracing::warn!(target: "tui.home", "Failed to save config: {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(target: "tui.home", "Failed to load config: {e}");
+            }
+        }
     }
 
     /// Clean up a pending creation on TUI shutdown. Waits briefly for the
@@ -3689,6 +3739,7 @@ impl HomeView {
         self.status_hook_config = config.status_hooks.clone();
         self.refresh_status_hook_config_cache();
         self.strict_hotkeys = config.session.strict_hotkeys;
+        self.confirm_before_quit = config.session.confirm_before_quit;
         self.row_tag_mode = config.session.row_tag;
         self.profile_default_attach_mode = config.session.default_attach_mode;
         self.idle_decay_window =

@@ -273,6 +273,56 @@ fn test_q_returns_quit_action() {
 
 #[test]
 #[serial]
+fn test_ctrl_q_does_not_quit_home() {
+    // #1569: Ctrl+Q is a live-mode-exit habit; on the home view it must
+    // not quit aoe. (The app-level handler swallows it; the home view
+    // itself must also never treat it as a quit.)
+    let mut env = create_test_env_empty();
+    let action = env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert_eq!(action, None);
+}
+
+#[test]
+#[serial]
+fn test_quit_confirm_dont_ask_again_persists_opt_out() {
+    let mut env = create_test_env_empty();
+    env.view.confirm_before_quit = true;
+
+    env.view.show_quit_confirm();
+    assert!(env.view.confirm_dialog.is_some());
+
+    // Tick "don't warn me again", then confirm.
+    env.view.handle_key(key(KeyCode::Char(' ')), None);
+    let action = env.view.handle_key(key(KeyCode::Char('y')), None);
+
+    assert_eq!(action, Some(Action::Quit));
+    assert!(!env.view.confirm_before_quit);
+    // The opt-out is persisted so it survives a restart.
+    let saved = crate::session::config::load_config()
+        .unwrap()
+        .expect("config should have been written");
+    assert!(!saved.session.confirm_before_quit);
+}
+
+#[test]
+#[serial]
+fn test_quit_confirm_without_opt_out_keeps_flag() {
+    let mut env = create_test_env_empty();
+    env.view.confirm_before_quit = true;
+
+    env.view.show_quit_confirm();
+    // Confirm without ticking the checkbox.
+    let action = env.view.handle_key(key(KeyCode::Char('y')), None);
+
+    assert_eq!(action, Some(Action::Quit));
+    assert!(env.view.confirm_before_quit);
+}
+
+#[test]
+#[serial]
 fn test_question_mark_opens_help() {
     let mut env = create_test_env_empty();
     assert!(!env.view.show_help);

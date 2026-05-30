@@ -630,6 +630,7 @@ impl HomeView {
                 None
             }
             "quit_during_creation" => Some(Action::Quit),
+            "quit" => Some(Action::Quit),
             _ => None,
         }
     }
@@ -727,6 +728,7 @@ impl HomeView {
                         self.settings_close_confirm = false;
                     }
                     DialogResult::Submit(()) => {
+                        let dont_ask_again = dialog.dont_ask_again();
                         self.confirm_dialog = None;
                         if self.settings_close_confirm {
                             // Discard branch: force-close settings (the
@@ -736,6 +738,9 @@ impl HomeView {
                             }
                             self.settings_view = None;
                             self.settings_close_confirm = false;
+                        }
+                        if action == "quit" && dont_ask_again {
+                            self.disable_confirm_before_quit();
                         }
                         self.pending_dialog_click_action = self.dispatch_confirm_submit(&action);
                     }
@@ -1438,7 +1443,11 @@ impl HomeView {
                 }
                 DialogResult::Submit(_) => {
                     let action = dialog.action().to_string();
+                    let dont_ask_again = dialog.dont_ask_again();
                     self.confirm_dialog = None;
+                    if action == "quit" && dont_ask_again {
+                        self.disable_confirm_before_quit();
+                    }
                     if let Some(emit) = self.dispatch_confirm_submit(&action) {
                         return Some(emit);
                     }

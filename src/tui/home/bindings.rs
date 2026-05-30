@@ -141,7 +141,11 @@ pub struct Ctx {
 }
 
 fn chord_matches(c: &Chord, key: &KeyEvent) -> bool {
-    key.code == c.code && (!c.ctrl || key.modifiers.contains(KeyModifiers::CONTROL))
+    // Match the Ctrl modifier exactly: a non-ctrl chord must NOT fire when
+    // Ctrl is held. Otherwise `k('q')` would also match Ctrl+Q (reserved for
+    // exiting live-send mode, #1569) and `k('d')` would match Ctrl+D, letting
+    // a modified chord trigger a bare-letter action.
+    key.code == c.code && key.modifiers.contains(KeyModifiers::CONTROL) == c.ctrl
 }
 
 fn context_holds(context: Context, ctx: &Ctx) -> bool {

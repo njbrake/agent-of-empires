@@ -239,8 +239,11 @@ hotkey = "Alt+t"
     );
 
     // Quit the TUI so the removal CLI can write sessions.json without
-    // racing the TUI's poller.
+    // racing the TUI's poller. `q` opens the quit confirmation (#1569),
+    // so confirm with `y` to actually exit.
     h.send_keys("q");
+    h.wait_for("Quit Agent of Empires");
+    h.send_keys("y");
     h.wait_for_exit(Duration::from_secs(5));
 
     // Remove the agent session. `perform_deletion` invokes

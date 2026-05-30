@@ -1054,8 +1054,10 @@ impl SettingsView {
             }
             // Logging is global-only for v1 (no profile overrides); the
             // "clear override" gesture is a no-op for these keys.
-            // SessionIdPollerMaxThreads is also global-only.
-            FieldKey::LoggingDefaultLevel
+            // SessionIdPollerMaxThreads and ConfirmBeforeQuit are also
+            // global-only.
+            FieldKey::ConfirmBeforeQuit
+            | FieldKey::LoggingDefaultLevel
             | FieldKey::LoggingTarget(_)
             | FieldKey::LoggingOutput
             | FieldKey::LoggingFilePath
