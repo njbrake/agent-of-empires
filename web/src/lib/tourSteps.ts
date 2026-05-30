@@ -1,0 +1,177 @@
+// Declarative source of truth for the first-run interactive tutorial.
+//
+// This module is intentionally framework/engine-independent: it knows nothing
+// about react-joyride. Steps are described as plain data keyed by typed anchor
+// ids, and a single `tourAnchor()` helper is the only sanctioned way to attach
+// an anchor to a DOM node. The CI drift guard (tourSteps.test.ts) relies on that
+// convention: every anchor must be referenced through `TOUR_ANCHORS.<key>`, never
+// as a raw `data-tour="..."` literal, so a renamed or deleted anchor fails fast.
+
+/**
+ * Every UI region the tour can point at. The string value is the literal that
+ * lands in the DOM as `data-tour="<value>"`. Keep these on stable region
+ * containers, not on volatile rows or buttons that come and go per render.
+ */
+export const TOUR_ANCHORS = {
+  topbar: "topbar",
+  topbarMore: "topbar-more",
+  sidebar: "sidebar",
+  sidebarSettings: "sidebar-settings",
+  dashboardNewSession: "dashboard-new-session",
+  rightPanel: "right-panel",
+  composer: "cockpit-composer",
+  modePicker: "cockpit-mode-picker",
+  queueSend: "cockpit-queue-send",
+} as const;
+
+export type TourAnchorId = (typeof TOUR_ANCHORS)[keyof typeof TOUR_ANCHORS];
+
+/**
+ * The dashboard, a terminal session, and a cockpit session mount mutually
+ * exclusive UI. A step declares which scopes it belongs to; the resolver never
+ * shows a step outside its scope, so a missing anchor is only ever "legitimately
+ * absent on this view", never a silently swallowed regression.
+ */
+export type TourScope = "dashboard" | "session" | "cockpit";
+
+export interface TourStep {
+  /** Stable id, also used as the react-joyride step id. */
+  id: string;
+  anchor: TourAnchorId;
+  scopes: readonly TourScope[];
+  title: string;
+  body: string;
+  /** Human-readable shortcut hints rendered under the body, e.g. "⌘K / Ctrl+K". */
+  shortcuts?: readonly string[];
+  /** Drop the step when the dashboard is in read-only mode (mutation UI absent). */
+  writableOnly?: boolean;
+  /** Drop the step on coarse-pointer / non-desktop layouts (region not shown). */
+  desktopOnly?: boolean;
+}
+
+/** The CSS selector that resolves a given anchor in the DOM. */
+export function tourSelector(anchor: TourAnchorId): string {
+  return `[data-tour="${anchor}"]`;
+}
+
+/**
+ * The only sanctioned way to attach a tour anchor to a JSX element. Spread it:
+ * `<div {...tourAnchor(TOUR_ANCHORS.sidebar)} />`. Using this instead of a raw
+ * `data-tour="..."` string keeps the CI drift guard honest.
+ */
+export function tourAnchor(anchor: TourAnchorId): { "data-tour": TourAnchorId } {
+  return { "data-tour": anchor };
+}
+
+export const TOUR_STEPS: readonly TourStep[] = [
+  {
+    id: "topbar",
+    anchor: TOUR_ANCHORS.topbar,
+    scopes: ["dashboard", "session", "cockpit"],
+    title: "Command bar",
+    body: "Jump anywhere from the command palette: switch sessions, open settings, toggle panels.",
+    shortcuts: ["⌘K / Ctrl+K opens the palette"],
+  },
+  {
+    id: "sidebar",
+    anchor: TOUR_ANCHORS.sidebar,
+    scopes: ["dashboard", "session", "cockpit"],
+    title: "Workspaces and sessions",
+    body: "Your sessions are grouped by workspace here. Pick one to open its terminal or cockpit.",
+    shortcuts: ["⌘B / Ctrl+B toggles the sidebar"],
+  },
+  {
+    id: "new-session",
+    anchor: TOUR_ANCHORS.dashboardNewSession,
+    scopes: ["dashboard"],
+    title: "Start a session",
+    body: "Launch a new agent session: pick a project, choose an agent, and go.",
+    shortcuts: ["n opens the wizard", "⌘⇧N / Ctrl+Shift+N starts a scratch session"],
+    writableOnly: true,
+  },
+  {
+    id: "settings",
+    anchor: TOUR_ANCHORS.sidebarSettings,
+    scopes: ["dashboard", "session", "cockpit"],
+    title: "Settings and profiles",
+    body: "Tune sandboxing, worktrees, sounds, devices, and per-profile overrides here.",
+    shortcuts: ["s opens settings"],
+  },
+  {
+    id: "right-panel",
+    anchor: TOUR_ANCHORS.rightPanel,
+    scopes: ["session", "cockpit"],
+    title: "Diff and review",
+    body: "Review the agent's file changes and send comments back without leaving the session.",
+    shortcuts: ["D toggles the diff", "⌘⌥B / Ctrl+Alt+B toggles the panel"],
+    desktopOnly: true,
+  },
+  {
+    id: "composer",
+    anchor: TOUR_ANCHORS.composer,
+    scopes: ["cockpit"],
+    title: "Composer",
+    body: "Write instructions to the agent here. Type / for commands and @ to reference files.",
+  },
+  {
+    id: "mode-picker",
+    anchor: TOUR_ANCHORS.modePicker,
+    scopes: ["cockpit"],
+    title: "Agent mode",
+    body: "Switch the agent's mode (plan, accept edits, and so on) before you send.",
+  },
+  {
+    id: "queue-send",
+    anchor: TOUR_ANCHORS.queueSend,
+    scopes: ["cockpit"],
+    title: "Send and queue",
+    body: "Send a message, or queue follow-ups while the agent is still working on the last one.",
+  },
+  {
+    id: "topbar-more",
+    anchor: TOUR_ANCHORS.topbarMore,
+    scopes: ["dashboard", "session", "cockpit"],
+    title: "Replay this tour any time",
+    body: "Reopen this walkthrough whenever you like from here: More, then Show tutorial.",
+  },
+] as const;
+
+export interface ResolveTourContext {
+  scope: TourScope;
+  readOnly: boolean;
+  isDesktop: boolean;
+  /**
+   * Whether the anchor currently resolves in the DOM. Defaults to a
+   * `document.querySelector` probe; injectable for tests. Steps eligible by
+   * metadata but absent from the DOM are dropped (defense in depth on top of the
+   * scope filter), so the engine never points at a node that is not painted.
+   */
+  hasAnchor?: (anchor: TourAnchorId) => boolean;
+}
+
+/** Whether a step is eligible by metadata alone (ignores DOM presence). */
+export function isStepEligible(
+  step: TourStep,
+  ctx: Pick<ResolveTourContext, "scope" | "readOnly" | "isDesktop">,
+): boolean {
+  if (!step.scopes.includes(ctx.scope)) return false;
+  if (step.writableOnly && ctx.readOnly) return false;
+  if (step.desktopOnly && !ctx.isDesktop) return false;
+  return true;
+}
+
+function defaultHasAnchor(anchor: TourAnchorId): boolean {
+  if (typeof document === "undefined") return false;
+  return document.querySelector(tourSelector(anchor)) !== null;
+}
+
+/**
+ * The steps to actually run for the current view: scope/read-only/desktop
+ * eligibility first, then DOM presence. Order follows TOUR_STEPS.
+ */
+export function resolveTourSteps(ctx: ResolveTourContext): TourStep[] {
+  const hasAnchor = ctx.hasAnchor ?? defaultHasAnchor;
+  return TOUR_STEPS.filter(
+    (step) => isStepEligible(step, ctx) && hasAnchor(step.anchor),
+  );
+}
