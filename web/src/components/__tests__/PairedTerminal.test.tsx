@@ -148,6 +148,24 @@ describe("PairedShellPane", () => {
     expect(document.querySelector('[data-term="paired"]')).not.toBeNull();
   });
 
+  it("shows an error with Retry when bootstrap fails, then recovers", async () => {
+    ensureTerminal.mockResolvedValueOnce(false);
+    render(<PairedShellPane session={session()} sessionId="sess-1" />);
+    await screen.findByText(/Couldn't start the terminal/i);
+    // Retry re-runs ensureTerminal (now succeeding) and the terminal mounts.
+    ensureTerminal.mockResolvedValue(true);
+    fireEvent.click(screen.getByRole("button", { name: /Retry/i }));
+    await waitFor(() =>
+      expect(document.querySelector('[data-term="paired"]')).not.toBeNull(),
+    );
+  });
+
+  it("shows the error state when ensureTerminal rejects", async () => {
+    ensureTerminal.mockRejectedValueOnce(new Error("boom"));
+    render(<PairedShellPane session={session()} sessionId="sess-1" />);
+    await screen.findByText(/Couldn't start the terminal/i);
+  });
+
   it("renders mobile chrome and scrollback affordance", async () => {
     mockKeyboard.current.isMobile = true;
     mockState.current.isInScrollback = true;

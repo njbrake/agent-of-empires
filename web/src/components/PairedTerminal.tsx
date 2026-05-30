@@ -53,6 +53,8 @@ function PairedTerminal({
     useMobileKeyboard();
   const [ctrlActive, setCtrlActive] = useState(false);
   const [termFocused, setTermFocused] = useState(false);
+  const [bootError, setBootError] = useState(false);
+  const [bootAttempt, setBootAttempt] = useState(0);
 
   // See TerminalView.tsx for why these syncs live in effects rather
   // than running during render.
@@ -66,13 +68,20 @@ function PairedTerminal({
   useEffect(() => {
     let cancelled = false;
     setReady(false);
-    ensureTerminal(sessionId, mode === "container").then((ok) => {
-      if (!cancelled && ok) setReady(true);
-    });
+    setBootError(false);
+    void ensureTerminal(sessionId, mode === "container")
+      .then((ok) => {
+        if (cancelled) return;
+        if (ok) setReady(true);
+        else setBootError(true);
+      })
+      .catch(() => {
+        if (!cancelled) setBootError(true);
+      });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, mode]);
+  }, [sessionId, mode, bootAttempt]);
 
   // Dispatch a window resize after keyboard transitions so anything else
   // watching layout is nudged; the hook's ResizeObserver already refits
@@ -127,6 +136,22 @@ function PairedTerminal({
     if (!ready) return;
     if (consumePendingTerminalFocus("paired")) focusSelf();
   }, [ready, focusSelf]);
+
+  if (bootError) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center gap-2 bg-surface-950 text-text-dim">
+        <span className="text-xs text-status-error">
+          Couldn't start the terminal.
+        </span>
+        <button
+          onClick={() => setBootAttempt((n) => n + 1)}
+          className="text-xs text-brand-500 cursor-pointer underline"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
 
   if (!ready) {
     return (
