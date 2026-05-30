@@ -37,6 +37,10 @@ base("wizard session step records Group", async ({ page }, testInfo) => {
       page.getByRole("heading", { name: "Name your session", exact: true }),
     ).toBeVisible({ timeout: 15_000 });
 
+    // #1514 folds the Group input behind a top-level "Advanced"
+    // disclosure that defaults closed; expand it first.
+    await page.getByRole("button", { name: "Advanced" }).click();
+
     const groupField = page.getByPlaceholder(
       "Optional, for organizing related sessions",
     );

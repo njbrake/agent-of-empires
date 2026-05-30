@@ -32,6 +32,10 @@ function renderStep(overrides: { scratch?: boolean; useWorktree?: boolean } = {}
       onChange={onChange}
     />,
   );
+  // #1514 folds the worktree controls + scratch note behind a top-level
+  // "Advanced" disclosure that defaults closed. Expand it so the branches
+  // these tests exercise actually render.
+  fireEvent.click(utils.getByRole("button", { name: "Advanced" }));
   return { onChange, ...utils };
 }
 

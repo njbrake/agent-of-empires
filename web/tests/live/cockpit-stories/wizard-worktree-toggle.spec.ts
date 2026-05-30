@@ -40,6 +40,10 @@ base("wizard worktree toggle hides and shows the branch input", async ({ page },
       page.getByRole("heading", { name: "Name your session", exact: true }),
     ).toBeVisible({ timeout: 15_000 });
 
+    // #1514 folds the worktree controls behind a top-level "Advanced"
+    // disclosure that defaults closed; expand it first.
+    await page.getByRole("button", { name: "Advanced" }).click();
+
     const branchLabel = page.getByText("Branch / worktree name");
     await expect(branchLabel).toBeVisible({ timeout: 10_000 });
 
