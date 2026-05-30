@@ -539,6 +539,18 @@
       ]
     },
     {
+      "id": "sidebar.group-reorder",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/sidebar-group-reorder.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/hooks/useRepoGroups.ts"
+      ]
+    },
+    {
       "id": "sidebar.reorder-stationary-click",
       "kind": "mocked-playwright",
       "risk": "medium",

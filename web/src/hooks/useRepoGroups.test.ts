@@ -382,3 +382,137 @@ describe("useRepoGroups stateful API", () => {
     expect(result.current.groups[0].alias).toBe("pretty-name");
   });
 });
+
+describe("useRepoGroups manual group order (#1644)", () => {
+  const ORDER_KEY = "aoe-repo-group-order-v1";
+
+  it("orders groups by the persisted group order ahead of the min-rank fallback", () => {
+    const wA = workspace("a1", "/repo-a", [session({ id: "s-a" })]);
+    const wB = workspace("b1", "/repo-b", [session({ id: "s-b" })]);
+    // Min-rank would put /repo-a first (a1 ranked before b1); the stored
+    // group order flips it.
+    window.localStorage.setItem(
+      ORDER_KEY,
+      JSON.stringify(["/repo-b", "/repo-a"]),
+    );
+    const { result } = renderHook(() =>
+      useRepoGroups([wA, wB], ["a1", "b1"], "manual"),
+    );
+    expect(result.current.groups.map((g) => g.id)).toEqual([
+      "/repo-b",
+      "/repo-a",
+    ]);
+  });
+
+  it("floats a group absent from the stored order above ranked groups", () => {
+    const wA = workspace("a1", "/repo-a", [session({ id: "s-a" })]);
+    const wB = workspace("b1", "/repo-b", [session({ id: "s-b" })]);
+    const wC = workspace("c1", "/repo-c", [session({ id: "s-c" })]);
+    // /repo-a is unranked in the stored order and a1 has the worst rank,
+    // so only "unknown sorts first" can put it at the top.
+    window.localStorage.setItem(
+      ORDER_KEY,
+      JSON.stringify(["/repo-b", "/repo-c"]),
+    );
+    const { result } = renderHook(() =>
+      useRepoGroups([wA, wB, wC], ["b1", "c1", "a1"], "manual"),
+    );
+    expect(result.current.groups.map((g) => g.id)).toEqual([
+      "/repo-a",
+      "/repo-b",
+      "/repo-c",
+    ]);
+  });
+
+  it("defaults untouched synthetic groups to the bottom (multi-repo above scratch)", () => {
+    const wReal = workspace("real", "/repo-a", [session({ id: "s-real" })]);
+    const wMulti = workspace("multi", "/repo-a", [
+      session({ id: "s-multi", workspace_repos: multiRepos }),
+    ]);
+    const wScratch = workspace("sc", "/home/u/.agent-of-empires/scratch/aaa", [
+      session({ id: "s-sc", scratch: true }),
+    ]);
+    // Stored order only ranks the real group; the synthetic groups have
+    // no stored position and sink to their default bottom.
+    window.localStorage.setItem(ORDER_KEY, JSON.stringify(["/repo-a"]));
+    const { result } = renderHook(() =>
+      useRepoGroups([wReal, wMulti, wScratch], ["real", "multi", "sc"], "manual"),
+    );
+    expect(result.current.groups.map((g) => g.id)).toEqual([
+      "/repo-a",
+      MULTI_REPO_GROUP_ID,
+      SCRATCH_GROUP_ID,
+    ]);
+  });
+
+  it("lets a synthetic group hold an explicit dragged position above a real group", () => {
+    const wReal = workspace("real", "/repo-a", [session({ id: "s-real" })]);
+    const wScratch = workspace("sc", "/home/u/.agent-of-empires/scratch/aaa", [
+      session({ id: "s-sc", scratch: true }),
+    ]);
+    // User dragged scratch above the real group; the stored order ranks
+    // it first, so it must render first rather than snapping to bottom.
+    window.localStorage.setItem(
+      ORDER_KEY,
+      JSON.stringify([SCRATCH_GROUP_ID, "/repo-a"]),
+    );
+    const { result } = renderHook(() =>
+      useRepoGroups([wReal, wScratch], ["real", "sc"], "manual"),
+    );
+    expect(result.current.groups.map((g) => g.id)).toEqual([
+      SCRATCH_GROUP_ID,
+      "/repo-a",
+    ]);
+  });
+
+  it("ignores the stored group order in lastActivity mode", () => {
+    const wA = workspace("a1", "/repo-a", [
+      session({
+        id: "s-a",
+        created_at: "2025-01-01T00:00:00Z",
+        last_accessed_at: "2025-09-01T00:00:00Z",
+      }),
+    ]);
+    const wB = workspace("b1", "/repo-b", [
+      session({ id: "s-b", created_at: "2025-01-01T00:00:00Z" }),
+    ]);
+    // Stored order asks for /repo-b first; lastActivity must override and
+    // float /repo-a (fresher) to the top.
+    window.localStorage.setItem(
+      ORDER_KEY,
+      JSON.stringify(["/repo-b", "/repo-a"]),
+    );
+    const { result } = renderHook(() =>
+      useRepoGroups([wA, wB], ["a1", "b1"], "lastActivity"),
+    );
+    expect(result.current.groups.map((g) => g.id)).toEqual([
+      "/repo-a",
+      "/repo-b",
+    ]);
+  });
+
+  it("reorderRepoGroups applies the new order and round-trips to localStorage", () => {
+    const wA = workspace("a1", "/repo-a", [session({ id: "s-a" })]);
+    const wB = workspace("b1", "/repo-b", [session({ id: "s-b" })]);
+    const { result, rerender } = renderHook(() =>
+      useRepoGroups([wA, wB], ["a1", "b1"], "manual"),
+    );
+    expect(result.current.groups.map((g) => g.id)).toEqual([
+      "/repo-a",
+      "/repo-b",
+    ]);
+
+    act(() => {
+      result.current.reorderRepoGroups(["/repo-b", "/repo-a"]);
+    });
+    rerender();
+
+    expect(result.current.groups.map((g) => g.id)).toEqual([
+      "/repo-b",
+      "/repo-a",
+    ]);
+    expect(window.localStorage.getItem(ORDER_KEY)).toBe(
+      JSON.stringify(["/repo-b", "/repo-a"]),
+    );
+  });
+});

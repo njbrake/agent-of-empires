@@ -233,11 +233,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   const [sidebarSortMode, setSidebarSortMode] = useSidebarSortMode();
 
-  const { groups, toggleRepoCollapsed, updateRepoAppearance } = useRepoGroups(
-    workspaces,
-    workspaceOrdering,
-    sidebarSortMode,
-  );
+  const { groups, toggleRepoCollapsed, updateRepoAppearance, reorderRepoGroups } =
+    useRepoGroups(workspaces, workspaceOrdering, sidebarSortMode);
 
   // Drag-end handler for the sidebar. Optimistically applies the new
   // order locally so the row snaps into place, then persists to the
@@ -1067,6 +1064,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           <WorkspaceSidebar
             groups={groups}
             onReorderWorkspaces={handleReorderWorkspaces}
+            onReorderGroups={reorderRepoGroups}
             activeId={activeWorkspace?.id ?? null}
             open={sidebarOpen}
             onToggle={() => setSidebarOpen(false)}

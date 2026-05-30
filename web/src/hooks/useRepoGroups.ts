@@ -8,6 +8,10 @@ import {
   type RepoAppearanceUpdate,
 } from "../lib/repoAppearance";
 import {
+  loadRepoGroupOrder,
+  persistRepoGroupOrder,
+} from "../lib/repoGroupOrder";
+import {
   compareWorkspacesByLastActivityDesc,
   repoGroupLastActivityMs,
   workspaceTriageTier,
@@ -55,13 +59,22 @@ export function useRepoGroups(
   groups: RepoGroup[];
   toggleRepoCollapsed: (repoId: string) => void;
   updateRepoAppearance: (repoId: string, update: RepoAppearanceUpdate) => void;
+  reorderRepoGroups: (orderedGroupIds: string[]) => void;
 } {
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
   const [appearanceMap, setAppearanceMap] = useState(loadRepoAppearances);
+  const [groupOrder, setGroupOrder] = useState<string[]>(loadRepoGroupOrder);
 
   const groups = useMemo(() => {
     const rank = new Map(workspaceOrdering.map((id, i) => [id, i] as const));
     const rankOf = (id: string) => rank.get(id) ?? Infinity;
+    // Manual per-browser group order (#1644). A group's position in this
+    // list is the primary sort key in manual mode; groups absent from it
+    // (a project added since the last reorder) sort ahead of ranked ones
+    // so brand-new projects float to the top, matching how a new
+    // workspace prepends to workspaceOrdering. Synthetic groups never
+    // appear here and stay pinned to the bottom below.
+    const groupRank = new Map(groupOrder.map((id, i) => [id, i] as const));
     // Triage tier (pinned at top, sunk at bottom) wins over every sort
     // mode, so both rank-based and activity-based comparators apply it
     // first and fall back to their respective within-tier comparison.
@@ -177,21 +190,45 @@ export function useRepoGroups(
       });
     }
 
+    const isSyntheticGroup = (id: string) =>
+      id === MULTI_REPO_GROUP_ID || id === SCRATCH_GROUP_ID;
+
     repoGroups.sort((a, b) => {
-      // Synthetic groups pin to the bottom in a stable order:
-      // real repos → multi-repo → scratch. Scratch is "most ad hoc"
-      // so it sits below multi-repo workspaces (which still
-      // represent real work).
-      if (a.id === SCRATCH_GROUP_ID) return 1;
-      if (b.id === SCRATCH_GROUP_ID) return -1;
-      if (a.id === MULTI_REPO_GROUP_ID) return 1;
-      if (b.id === MULTI_REPO_GROUP_ID) return -1;
       if (sortMode === "lastActivity") {
+        // The order is computed here, so manual group order (and group
+        // drag) does not apply; synthetic groups stay pinned to the
+        // bottom in a stable order: real repos → multi-repo → scratch.
+        if (a.id === SCRATCH_GROUP_ID) return 1;
+        if (b.id === SCRATCH_GROUP_ID) return -1;
+        if (a.id === MULTI_REPO_GROUP_ID) return 1;
+        if (b.id === MULTI_REPO_GROUP_ID) return -1;
         const ak = repoGroupLastActivityMs(a.workspaces);
         const bk = repoGroupLastActivityMs(b.workspaces);
         if (ak !== bk) return bk - ak;
         return a.repoPath.localeCompare(b.repoPath);
       }
+      // Manual mode: an explicit group order wins for any group the user
+      // has dragged, real or synthetic. A group with no stored position
+      // falls back by type, a brand-new real project floats to the top
+      // (matching new-workspace behavior), while an untouched synthetic
+      // group sinks to its default bottom. Once dragged, a synthetic
+      // group holds its chosen spot like any other. See #1644.
+      const ag = groupRank.get(a.id);
+      const bg = groupRank.get(b.id);
+      const SYNTHETIC_BOTTOM = Number.MAX_SAFE_INTEGER;
+      const keyOf = (id: string, rank: number | undefined) =>
+        rank != null ? rank : isSyntheticGroup(id) ? SYNTHETIC_BOTTOM : -1;
+      const ka = keyOf(a.id, ag);
+      const kb = keyOf(b.id, bg);
+      if (ka !== kb) return ka - kb;
+      if (ka === SYNTHETIC_BOTTOM) {
+        // Two untouched synthetic groups: multi-repo above scratch.
+        if (a.id === MULTI_REPO_GROUP_ID) return -1;
+        if (b.id === MULTI_REPO_GROUP_ID) return 1;
+        return 0;
+      }
+      // Two untouched real groups: fall back to the derived min-rank,
+      // then a deterministic repoPath tie-break.
       const am = Math.min(...a.workspaces.map((w) => rankOf(w.id)));
       const bm = Math.min(...b.workspaces.map((w) => rankOf(w.id)));
       if (am !== bm) return am - bm;
@@ -199,7 +236,14 @@ export function useRepoGroups(
     });
 
     return repoGroups;
-  }, [workspaces, workspaceOrdering, sortMode, collapsedMap, appearanceMap]);
+  }, [
+    workspaces,
+    workspaceOrdering,
+    sortMode,
+    collapsedMap,
+    appearanceMap,
+    groupOrder,
+  ]);
 
   const toggleRepoCollapsed = useCallback((repoId: string) => {
     setCollapsedMap((prev) => {
@@ -225,5 +269,18 @@ export function useRepoGroups(
     [],
   );
 
-  return { groups, toggleRepoCollapsed, updateRepoAppearance };
+  // Persist the full ordered list of real repo-group ids handed up by the
+  // sidebar drag. Synthetic ids are pinned to the bottom and never
+  // ranked, so the caller filters them out before calling this.
+  const reorderRepoGroups = useCallback((orderedGroupIds: string[]) => {
+    setGroupOrder(orderedGroupIds);
+    persistRepoGroupOrder(orderedGroupIds);
+  }, []);
+
+  return {
+    groups,
+    toggleRepoCollapsed,
+    updateRepoAppearance,
+    reorderRepoGroups,
+  };
 }
