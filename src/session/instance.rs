@@ -1870,6 +1870,7 @@ impl Instance {
                     Box::new(claude_poll_fn_sandboxed(
                         container_name,
                         self.container_workdir(),
+                        initial_known.clone(),
                     ))
                 } else {
                     Box::new(claude_poll_fn(
