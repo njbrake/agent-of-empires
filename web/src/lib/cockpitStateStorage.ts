@@ -87,8 +87,13 @@ export function setQueueCount(sessionId: string, count: number): void {
 // Drop a session's cached count (session delete / cache clear). With no
 // argument, clears the whole cache.
 export function clearQueueCount(sessionId?: string): void {
-  if (sessionId === undefined) queueCounts.clear();
-  else queueCounts.delete(sessionId);
+  if (sessionId === undefined) {
+    queueCounts.clear();
+    notify(null);
+    return;
+  }
+  queueCounts.delete(sessionId);
+  notify(sessionId);
 }
 
 // Side-effect-free read of a session's queued-prompt count. Safe to call
