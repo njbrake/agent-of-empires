@@ -135,7 +135,7 @@ fn classify_status(status: StatusCode, headers: &HeaderMap, body: &str) -> GitHu
         StatusCode::FORBIDDEN => {
             if is_rate_limited(headers) {
                 GitHubError::RateLimited
-            } else if let Some(scopes) = accepted_scopes(headers) {
+            } else if let Some(scopes) = missing_scope(headers, body) {
                 GitHubError::InsufficientScope { scopes }
             } else {
                 GitHubError::Api {
@@ -161,6 +161,18 @@ fn is_rate_limited(headers: &HeaderMap) -> bool {
         .map(|v| v.trim() == "0")
         .unwrap_or(false);
     remaining_zero || headers.contains_key("retry-after")
+}
+
+/// A 403 is only treated as a missing-scope failure when the response body
+/// actually says so. GitHub sends `X-Accepted-OAuth-Scopes` on many responses,
+/// including ones that are forbidden for unrelated reasons, so the header alone
+/// is not evidence. The named scope still comes from that header. Precise
+/// per-operation scope mapping is tracked in the scope-elevation follow-up.
+fn missing_scope(headers: &HeaderMap, body: &str) -> Option<String> {
+    if !body.to_lowercase().contains("scope") {
+        return None;
+    }
+    accepted_scopes(headers)
 }
 
 /// The scopes GitHub says the endpoint accepts, taken from
@@ -235,9 +247,13 @@ mod tests {
     }
 
     #[test]
-    fn forbidden_with_accepted_scopes_names_the_scope() {
+    fn forbidden_with_scope_error_names_the_scope() {
         let headers = headers_with(&[("x-accepted-oauth-scopes", "repo")]);
-        let err = classify_status(StatusCode::FORBIDDEN, &headers, "");
+        let err = classify_status(
+            StatusCode::FORBIDDEN,
+            &headers,
+            r#"{"message":"requires the repo scope"}"#,
+        );
         match err {
             GitHubError::InsufficientScope { scopes } => assert_eq!(scopes, "repo"),
             other => panic!("expected InsufficientScope, got {other:?}"),
@@ -247,11 +263,27 @@ mod tests {
     #[test]
     fn forbidden_with_workflow_scope_names_workflow() {
         let headers = headers_with(&[("x-accepted-oauth-scopes", "repo, workflow")]);
-        let err = classify_status(StatusCode::FORBIDDEN, &headers, "");
+        let err = classify_status(
+            StatusCode::FORBIDDEN,
+            &headers,
+            r#"{"message":"missing the workflow scope"}"#,
+        );
         match err {
             GitHubError::InsufficientScope { scopes } => assert!(scopes.contains("workflow")),
             other => panic!("expected InsufficientScope, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn forbidden_with_scope_header_but_no_scope_message_is_api() {
+        // The header alone is not evidence; many 403s carry it.
+        let headers = headers_with(&[("x-accepted-oauth-scopes", "repo")]);
+        let err = classify_status(
+            StatusCode::FORBIDDEN,
+            &headers,
+            r#"{"message":"Resource not accessible by integration"}"#,
+        );
+        assert!(matches!(err, GitHubError::Api { .. }));
     }
 
     #[test]

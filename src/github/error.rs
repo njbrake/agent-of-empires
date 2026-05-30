@@ -136,9 +136,31 @@ mod tests {
     }
 
     #[test]
-    fn network_error_is_distinct_from_auth() {
-        // The network hint must not tell the user to re-authenticate.
+    fn unauthorized_hint_mentions_reauthenticate() {
         let auth = GitHubError::Unauthorized.to_string();
         assert!(auth.contains("Re-authenticate"));
+    }
+
+    #[test]
+    fn network_hint_does_not_suggest_reauthenticating() {
+        // A GitHub outage must not tell the user to re-login. The Network
+        // variant needs a real reqwest error, so exercise it via a transport
+        // failure to a port that refuses connections.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt.block_on(async {
+            crate::github::GitHubClient::unauthenticated(crate::github::GitHubClientConfig {
+                api_base: "http://127.0.0.1:1".to_string(),
+                user_agent: "agent-of-empires-test".to_string(),
+                timeout: std::time::Duration::from_millis(200),
+            })
+            .unwrap()
+            .latest_release("o", "r")
+            .await
+            .unwrap_err()
+        });
+        assert!(!err.to_string().contains("Re-authenticate"));
     }
 }

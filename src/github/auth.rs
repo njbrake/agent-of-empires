@@ -44,6 +44,7 @@ pub struct ResolvedToken {
 pub struct GhTokenOutput {
     pub success: bool,
     pub stdout: String,
+    pub stderr: String,
 }
 
 /// Abstraction over the process environment, so token resolution is testable.
@@ -70,6 +71,7 @@ impl TokenEnvironment for SystemEnvironment {
         Ok(GhTokenOutput {
             success: output.status.success(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }
 }
@@ -79,13 +81,21 @@ impl TokenEnvironment for SystemEnvironment {
 pub fn resolve_token<E: TokenEnvironment>(
     env: &E,
 ) -> std::result::Result<ResolvedToken, GitHubAuthError> {
-    if let Some(token) = env.env_var("GITHUB_TOKEN").filter(|t| !t.trim().is_empty()) {
+    if let Some(token) = env
+        .env_var("GITHUB_TOKEN")
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
         return Ok(ResolvedToken {
             token,
             source: TokenSource::EnvGithubToken,
         });
     }
-    if let Some(token) = env.env_var("GH_TOKEN").filter(|t| !t.trim().is_empty()) {
+    if let Some(token) = env
+        .env_var("GH_TOKEN")
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+    {
         return Ok(ResolvedToken {
             token,
             source: TokenSource::EnvGhToken,
@@ -108,7 +118,17 @@ pub fn resolve_token<E: TokenEnvironment>(
                 })
             }
         }
-        Ok(_) => Err(GitHubAuthError::GhNotAuthenticated),
+        // A non-zero exit with the canonical "no oauth token" message (or no
+        // stderr at all) means the user simply is not signed in. Any other
+        // stderr is a real gh failure and must not be mislabeled as that.
+        Ok(output) => {
+            let stderr = output.stderr.trim();
+            if stderr.is_empty() || stderr.to_lowercase().contains("no oauth token") {
+                Err(GitHubAuthError::GhNotAuthenticated)
+            } else {
+                Err(GitHubAuthError::GhCommandFailed(stderr.to_string()))
+            }
+        }
         Err(e) => Err(GitHubAuthError::GhCommandFailed(e.to_string())),
     }
 }
@@ -146,6 +166,7 @@ mod tests {
                 Some(Ok(o)) => Ok(GhTokenOutput {
                     success: o.success,
                     stdout: o.stdout.clone(),
+                    stderr: o.stderr.clone(),
                 }),
                 Some(Err(e)) => Err(std::io::Error::new(e.kind(), e.to_string())),
                 None => panic!("gh_auth_token called unexpectedly"),
@@ -157,6 +178,15 @@ mod tests {
         Some(Ok(GhTokenOutput {
             success: true,
             stdout: stdout.to_string(),
+            stderr: String::new(),
+        }))
+    }
+
+    fn failed_gh(stderr: &str) -> Option<std::io::Result<GhTokenOutput>> {
+        Some(Ok(GhTokenOutput {
+            success: false,
+            stdout: String::new(),
+            stderr: stderr.to_string(),
         }))
     }
 
@@ -228,10 +258,7 @@ mod tests {
     fn gh_installed_but_not_authenticated_says_login_not_install() {
         let env = FakeEnv {
             gh_available: true,
-            gh_result: Some(Ok(GhTokenOutput {
-                success: false,
-                stdout: String::new(),
-            })),
+            gh_result: failed_gh("no oauth token found for github.com"),
             ..Default::default()
         };
         let err = resolve_token(&env).unwrap_err();
@@ -239,6 +266,41 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("gh auth login"));
         assert!(!msg.contains("brew install") && !msg.contains("install the GitHub CLI"));
+    }
+
+    #[test]
+    fn gh_nonzero_with_empty_stderr_is_not_authenticated() {
+        let env = FakeEnv {
+            gh_available: true,
+            gh_result: failed_gh(""),
+            ..Default::default()
+        };
+        assert!(matches!(
+            resolve_token(&env).unwrap_err(),
+            GitHubAuthError::GhNotAuthenticated
+        ));
+    }
+
+    #[test]
+    fn gh_nonzero_with_unexpected_stderr_is_command_failed() {
+        let env = FakeEnv {
+            gh_available: true,
+            gh_result: failed_gh("error connecting to api.github.com"),
+            ..Default::default()
+        };
+        match resolve_token(&env).unwrap_err() {
+            GitHubAuthError::GhCommandFailed(msg) => assert!(msg.contains("connecting")),
+            other => panic!("expected GhCommandFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn env_token_is_trimmed() {
+        let env = FakeEnv {
+            github_token: Some("  gho_padded  ".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(resolve_token(&env).unwrap().token, "gho_padded");
     }
 
     #[test]
