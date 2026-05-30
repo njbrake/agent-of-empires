@@ -1065,6 +1065,17 @@
       ]
     },
     {
+      "id": "cockpit.queued-prompt-expand-bounds",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/components/cockpit/QueuedPromptsStrip.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
       "id": "cockpit.todo-group-fold",
       "kind": "vitest",
       "risk": "medium",
