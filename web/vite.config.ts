@@ -36,7 +36,22 @@ export default defineConfig({
   // expects but aren't valid vitest tests, so we explicitly exclude them.
   test: {
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
-    exclude: ["tests/**", "node_modules/**", "dist/**"],
+    // Type-level tests (`*.types.test.ts`) run under the typecheck runner
+    // below, not the runtime runner, so keep them out of `include`.
+    exclude: [
+      "tests/**",
+      "node_modules/**",
+      "dist/**",
+      "src/**/*.types.test.ts",
+    ],
+    // `expectTypeOf` assertions in `*.types.test.ts` are checked by tsc.
+    // A failing assertion surfaces as a type error. Scoped to the
+    // dedicated type-test files so the rest of the suite stays fast.
+    typecheck: {
+      enabled: true,
+      include: ["src/**/*.types.test.ts"],
+      tsconfig: "./tsconfig.vitest.json",
+    },
     setupFiles: ["./src/test-setup.ts"],
     coverage: {
       provider: "v8",
