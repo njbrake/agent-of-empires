@@ -629,10 +629,20 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     onSwipe: openDiff,
   });
 
+  // Read-only mode hides mutation UI. Guard creation at the handler so every
+  // caller (keyboard shortcut, command palette) is a no-op rather than opening
+  // a wizard that 403s on submit. Caught by the live read-only-mode spec.
   const handleNewSession = useCallback(() => {
+    if (serverAbout?.read_only) return;
     setWizardPrefill(undefined);
     setShowSessionWizard(true);
-  }, []);
+  }, [serverAbout?.read_only]);
+
+  const handleNewScratch = useCallback(() => {
+    if (serverAbout?.read_only) return;
+    setWizardPrefill({ scratch: true, skipToReview: true });
+    setShowSessionWizard(true);
+  }, [serverAbout?.read_only]);
 
   const handleCloneFromUrl = useCallback(() => {
     setWizardPrefill({ initialTab: "clone" });
@@ -698,23 +708,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   useKeyboardShortcuts(
     useCallback(
       () => ({
-        onNew: () => {
-          // Read-only mode hides mutation UI. The "n" shortcut must
-          // not open the wizard or the user gets a dead-end form that
-          // 403s on submit. Caught by the live read-only-mode spec.
-          if (serverAbout?.read_only) return;
-          setWizardPrefill(undefined);
-          setShowSessionWizard(true);
-        },
-        onNewScratch: () => {
-          // Same read-only guard as `onNew`: the wizard cannot land a
-          // POST /api/sessions when the server returns 403 on every
-          // mutation, and a scratch fast-create that 403s on submit is
-          // a worse footgun than a no-op.
-          if (serverAbout?.read_only) return;
-          setWizardPrefill({ scratch: true, skipToReview: true });
-          setShowSessionWizard(true);
-        },
+        onNew: handleNewSession,
+        onNewScratch: handleNewScratch,
         onDiff: () => toggleDiff(),
         // Escape closes local UI surfaces only (dialogs, palette,
         // wizard, settings, help, file viewer). Never wire this to
@@ -752,7 +747,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         handleCloseSettings,
         navigate,
         handleToggleTerminalFocus,
-        serverAbout,
+        handleNewSession,
+        handleNewScratch,
       ],
     ),
   );
@@ -762,7 +758,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     activeSessionId,
     loginRequired,
     hasActiveSession: !!activeSession,
+    readOnly: !!serverAbout?.read_only,
     onNewSession: handleNewSession,
+    onNewScratch: handleNewScratch,
     onSelectSession: handleSelectSession,
     onToggleDiff: toggleDiff,
     onOpenSettings: handleOpenSettings,
