@@ -230,8 +230,15 @@ aoe serve --daemon
 - **Multi-profile** support (shows sessions from all profiles)
 - **Connected Devices** view in Settings > Security
 - **Push notifications** on Waiting / Idle / Error transitions, with per-session overrides ([guide](push-notifications.md))
+- **First-run tutorial** highlighting the major UI regions and their shortcuts (see below)
 
-### Mobile layout
+### First-run tutorial
+
+The first time you open the dashboard in a browser, an interactive walkthrough launches automatically and highlights the major regions: the command bar, the workspace sidebar, how to start a session, settings, and (inside a session) the diff panel and composer. Each step lists the keyboard shortcuts that apply to it, and every step has a **Skip** button so you can dismiss the whole tour in one click.
+
+Completing or skipping the tour records that you have seen it (a per-browser `aoe-tour-seen` flag in `localStorage`), so it does not launch again on reload. Because the flag is per origin, a debug build on port 8081 and a release build on port 8080 each track it separately.
+
+To replay it at any time, open the overflow menu (the three-dot **More options** button in the top bar) and choose **Show tutorial**. Re-triggering it adapts to where you are: on the dashboard it covers the dashboard regions; inside a session it also covers the composer, agent mode picker, and send/queue controls. The tutorial does not auto-launch on touch devices, where it is available only from the menu.
 
 On phones (below the `md` breakpoint) the dashboard shows a single full-viewport pane rather than the desktop side-by-side split. The right-panel button in the top bar opens a picker that swaps the main pane between three views: the **Agent terminal**, the **Diff** (changed files and review), and the **Paired terminal** (host or container shell). A back chip in the top-left of the diff and paired views returns you to the agent terminal.
 
