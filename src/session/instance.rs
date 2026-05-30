@@ -743,11 +743,15 @@ impl Instance {
     }
 
     /// Reconcile `agent_session_id` against the disk-authoritative value
-    /// before a restart that would re-persist it. The daemon's in-memory
-    /// instances only catch up to disk on the next `status_poll_loop` tick
-    /// (~2s); inside that window a CLI `aoe session set-session-id` (or
-    /// `--clear`) has already written `sessions.json` while this clone still
-    /// holds the old sid. Restarting from the stale clone resumes the wrong
+    /// before a restart that would re-persist it. A long-running daemon (the
+    /// `aoe serve` REST `ensure_session` path, or a standalone `aoe -p ...`
+    /// TUI) mirrors `agent_session_id` in memory but never reloads it from
+    /// disk on its own: it is not a `merge_from_tui` field, so the TUI save
+    /// loop leaves it alone, and the serve poller only catches up on its next
+    /// `status_poll_loop` tick (~2s). Inside that window a CLI
+    /// `aoe session set-session-id` (or `--clear`) from another terminal has
+    /// already written `sessions.json` while this in-memory instance still
+    /// holds the old sid. Restarting off the stale value resumes the wrong
     /// conversation and re-persists the old sid back over the user's change.
     /// Re-reading from disk here closes that window. No-op when the instance
     /// is absent from storage or the read fails, leaving the in-memory value.
