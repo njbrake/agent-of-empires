@@ -407,4 +407,54 @@ describe("ToolCards failed-card folding (#1467)", () => {
     );
     expect(container.textContent).not.toContain("tool failed");
   });
+
+  // The MemoryRecall and Schedule cards previously gated their toggle on
+  // `hasBody` alone, so a failed card with no normal body had an
+  // unclickable header. They now include `status === "err"` in the
+  // predicate; exercise each failed-and-foldable so that branch (and the
+  // shared hook call site) stays covered.
+  const errToggleKinds: Array<[string, () => unknown]> = [
+    ["memoryRecall", () => fixtures.memoryRecallList],
+    ["scheduleWakeup", () => fixtures.scheduleWakeup],
+  ];
+
+  it.each(errToggleKinds)(
+    "auto-opens and folds a failed %s card",
+    (_label, getTool) => {
+      const { container, getAllByRole } = render(
+        <Wrap toolKey="claude">
+          <ToolCard
+            tool={getTool() as never}
+            result={makeError({ text: "kind-specific boom" })}
+          />
+        </Wrap>,
+      );
+      // Auto-open on failure: the rose error block is visible with no click.
+      expect(container.textContent).toContain("tool failed");
+      // The header is the card's first button; clicking it folds the body.
+      fireEvent.click(getAllByRole("button")[0]);
+      expect(container.textContent).not.toContain("tool failed");
+    },
+  );
+
+  it("auto-opens and folds a failed memory-file card", () => {
+    // A Read on a path under Claude's per-project memory dir dispatches
+    // to the dedicated MemoryCard, which shares the same hook.
+    const tool = makeToolCall({
+      id: "mem-1",
+      name: "Read",
+      kind: "read",
+      args_preview: JSON.stringify({
+        file_path: "/Users/test/.claude/projects/foo/memory/feedback_testing.md",
+      }),
+    });
+    const { container, getAllByRole } = render(
+      <Wrap toolKey="claude">
+        <ToolCard tool={tool} result={makeError({ text: "memory read boom" })} />
+      </Wrap>,
+    );
+    expect(container.textContent).toContain("tool failed");
+    fireEvent.click(getAllByRole("button")[0]);
+    expect(container.textContent).not.toContain("tool failed");
+  });
 });
