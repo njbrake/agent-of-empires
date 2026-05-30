@@ -1231,6 +1231,7 @@ mod tests {
         let repo = RepoConfig {
             sandbox: Some(SandboxConfigOverride {
                 enabled_by_default: Some(true),
+                default_image: Some("ghcr.io/example/custom:latest".to_string()),
                 volume_ignores: Some(vec!["node_modules".to_string()]),
                 ..Default::default()
             }),
@@ -1238,6 +1239,12 @@ mod tests {
         };
         let merged = merge_repo_config(config, &repo);
         assert!(merged.sandbox.enabled_by_default);
+        // `aoe add --sandbox` reads `config.sandbox.default_image` as its
+        // fallback image, so the repo override must land here (see #1651).
+        assert_eq!(
+            merged.sandbox.default_image,
+            "ghcr.io/example/custom:latest"
+        );
         assert_eq!(merged.sandbox.volume_ignores, vec!["node_modules"]);
     }
 

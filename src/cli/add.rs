@@ -590,11 +590,11 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             }
 
             let container_name = containers::DockerContainer::generate_name(&instance.id);
-            let image = args
-                .sandbox_image
-                .as_ref()
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|| runtime.effective_default_image());
+            let image = resolve_sandbox_image(
+                args.sandbox_image.as_deref(),
+                &config.sandbox.default_image,
+                runtime.default_sandbox_image(),
+            );
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,
                 container_id: None,
@@ -1019,4 +1019,58 @@ fn resolve_named_tool(tool: &str, config: &crate::session::Config) -> Result<Nam
         "Unknown tool: {name}\nSupported built-in and configured custom agents: {}",
         safe_names.join(", ")
     )
+}
+
+/// Resolve the sandbox image for a new session.
+///
+/// Precedence: the explicit `--sandbox-image` flag, then the merged
+/// `[sandbox] default_image` from `config` (which `resolve_config_with_repo_or_warn`
+/// already layers repo over profile/global, see #1651), then the runtime's
+/// hardcoded default. The merged value already carries the global config, so
+/// there is no need to reload it from disk for the empty-fallback case.
+fn resolve_sandbox_image(
+    flag: Option<&str>,
+    merged_default: &str,
+    hardcoded_default: &str,
+) -> String {
+    if let Some(flag) = flag {
+        return flag.trim().to_string();
+    }
+    let merged = merged_default.trim();
+    if merged.is_empty() {
+        hardcoded_default.to_string()
+    } else {
+        merged.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_sandbox_image;
+
+    const HARDCODED: &str = "ghcr.io/agent-of-empires/aoe-sandbox:latest";
+
+    #[test]
+    fn flag_overrides_everything() {
+        let image = resolve_sandbox_image(Some(" custom:flag "), "repo:merged", HARDCODED);
+        assert_eq!(image, "custom:flag");
+    }
+
+    #[test]
+    fn merged_default_used_when_no_flag() {
+        let image = resolve_sandbox_image(None, "ghcr.io/example/custom:latest", HARDCODED);
+        assert_eq!(image, "ghcr.io/example/custom:latest");
+    }
+
+    #[test]
+    fn whitespace_merged_falls_back_to_hardcoded() {
+        let image = resolve_sandbox_image(None, "   ", HARDCODED);
+        assert_eq!(image, HARDCODED);
+    }
+
+    #[test]
+    fn empty_merged_falls_back_to_hardcoded() {
+        let image = resolve_sandbox_image(None, "", HARDCODED);
+        assert_eq!(image, HARDCODED);
+    }
 }
