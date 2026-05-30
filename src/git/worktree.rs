@@ -1809,15 +1809,15 @@ mod tests {
             .unwrap();
 
         // Try creating again at a different path but same branch - git won't
-        // allow two worktrees to check out the same branch.
+        // allow two worktrees to check out the same branch. This is the
+        // branch-already-checked-out case, so it maps to the typed
+        // BranchAlreadyCheckedOut error naming the branch.
         let wt_path2 = dir.path().join("fail-worktree-2");
         let result = git_wt.create_worktree("fail-branch", &wt_path2, false, None);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("worktree command failed"),
-            "Expected WorktreeCommandFailed error, got: {err_msg}"
-        );
+        match result {
+            Err(GitError::BranchAlreadyCheckedOut(branch)) => assert_eq!(branch, "fail-branch"),
+            other => panic!("Expected BranchAlreadyCheckedOut error, got: {other:?}"),
+        }
     }
 
     // ---- Full worktree creation flow tests for regular repos ----
