@@ -8,8 +8,9 @@ use rattles::presets::prelude as spinners;
 
 use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH};
 use crate::tui::components::{
-    profile_cycler_spans, render_text_field, render_text_field_with_ghost,
-    set_prefixed_input_cursor_position, tool_cycler_spans,
+    focused_input_spans, input_scroll, profile_cycler_spans, render_text_field,
+    render_text_field_with_ghost, set_prefixed_input_cursor_position, tool_cycler_spans,
+    visible_slice,
 };
 use crate::tui::styles::Theme;
 
@@ -601,71 +602,21 @@ impl NewSessionDialog {
                 spans.push(Span::styled(placeholder_text, value_style));
             }
         } else if is_focused {
-            let scroll = self.path.visual_scroll(available_width);
-            let cursor_pos = self.path.cursor();
+            let scroll = input_scroll(&self.path, available_width);
             let cursor_style = if flashing_invalid {
                 Style::default().fg(theme.background).bg(theme.error)
             } else {
                 Style::default().fg(theme.background).bg(theme.accent)
             };
-
-            // Find visible start after scroll offset
-            let mut col = 0;
-            let mut visible_chars_start = 0;
-            for (i, c) in value.chars().enumerate() {
-                let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                if col >= scroll {
-                    break;
-                }
-                col += w;
-                visible_chars_start = i + 1;
-            }
-
-            // Collect visible characters
-            let mut visible_col = 0;
-            let mut visible_before = String::new();
-            let mut visible_cursor_char = String::new();
-            let mut visible_after = String::new();
-            let mut cursor_visible = false;
-            let mut end_visible = true;
-
-            for (i, c) in value.chars().enumerate().skip(visible_chars_start) {
-                let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                if visible_col + w > available_width {
-                    end_visible = false;
-                    break;
-                }
-                if i < cursor_pos {
-                    visible_before.push(c);
-                } else if i == cursor_pos {
-                    visible_cursor_char = c.to_string();
-                    cursor_visible = true;
-                } else {
-                    visible_after.push(c);
-                }
-                visible_col += w;
-            }
-
-            // Cursor at end (past last char)
-            if cursor_pos >= value.chars().count() && !cursor_visible {
-                // Only show cursor space if there's room
-                if visible_col < available_width {
-                    visible_cursor_char = " ".to_string();
-                    cursor_visible = true;
-                } else {
-                    end_visible = false;
-                }
-            }
-
-            if !visible_before.is_empty() {
-                spans.push(Span::styled(visible_before, value_style));
-            }
-            if cursor_visible {
-                spans.push(Span::styled(visible_cursor_char, cursor_style));
-            }
-            if !visible_after.is_empty() {
-                spans.push(Span::styled(visible_after, value_style));
-            }
+            let (field_spans, end_visible) = focused_input_spans(
+                value,
+                self.path.cursor(),
+                scroll,
+                available_width,
+                value_style,
+                cursor_style,
+            );
+            spans.extend(field_spans);
             // Only show ghost when end of input is visible
             if end_visible {
                 if let Some(ghost) = self.ghost_text() {
@@ -673,29 +624,9 @@ impl NewSessionDialog {
                 }
             }
         } else {
-            // Non-focused: show visible portion
-            let scroll = self.path.visual_scroll(available_width);
-            let mut col = 0;
-            let mut visible_start = 0;
-            for (i, c) in value.chars().enumerate() {
-                let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                if col >= scroll {
-                    break;
-                }
-                col += w;
-                visible_start = i + 1;
-            }
-            let mut visible_col = 0;
-            let mut visible_value = String::new();
-            for c in value.chars().skip(visible_start) {
-                let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                if visible_col + w > available_width {
-                    break;
-                }
-                visible_value.push(c);
-                visible_col += w;
-            }
-            spans.push(Span::styled(visible_value, value_style));
+            let scroll = input_scroll(&self.path, available_width);
+            let (visible, _) = visible_slice(value, scroll, available_width);
+            spans.push(Span::styled(visible, value_style));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1266,34 +1197,8 @@ impl NewSessionDialog {
                                        th: &Theme,
                                        inp: &Input|
                  -> Line<'static> {
-                    let scroll = inp.visual_scroll(available_width);
-
-                    // Find visible start after scroll offset
-                    let mut col = 0;
-                    let mut visible_chars_start = 0;
-                    for (i, c) in val.chars().enumerate() {
-                        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                        if col >= scroll {
-                            break;
-                        }
-                        col += w;
-                        visible_chars_start = i + 1;
-                    }
-
-                    // Collect visible characters
-                    let mut visible_col = 0;
-                    let mut visible_value = String::new();
-                    let mut end_visible = true;
-
-                    for c in val.chars().skip(visible_chars_start) {
-                        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-                        if visible_col + w > available_width {
-                            end_visible = false;
-                            break;
-                        }
-                        visible_value.push(c);
-                        visible_col += w;
-                    }
+                    let scroll = input_scroll(inp, available_width);
+                    let (visible_value, end_visible) = visible_slice(val, scroll, available_width);
 
                     let mut spans = vec![
                         Span::styled(prefix, Style::default().fg(th.accent)),
