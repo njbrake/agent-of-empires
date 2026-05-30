@@ -68,3 +68,31 @@ test("sandbox advanced knob edits persist after expanding the fold", async ({
   await page.getByRole("button", { name: /Advanced/ }).first().click();
   await expect(cpuInput).toHaveValue(newValue, { timeout: 5_000 });
 });
+
+// The other three folded tabs (Worktree, Cockpit, Logging) each render their
+// advanced fields only once the fold is expanded. Drive each one in the
+// browser so the relocated field markup is exercised end to end (the unit
+// suite asserts the same hide/expand behavior; this is the real-DOM pass).
+test("worktree, cockpit, and logging advanced folds expand in the browser", async ({
+  serve,
+  page,
+}) => {
+  const cases: Array<{ tab: string; anchor: string; field: RegExp }> = [
+    { tab: "worktree", anchor: "Worktrees enabled", field: /^Bare repo path template$/ },
+    { tab: "cockpit", anchor: "Cockpit master switch", field: /^Replay buffer bytes$/ },
+    { tab: "logging", anchor: "Default level", field: /^Output$/ },
+  ];
+
+  for (const { tab, anchor, field } of cases) {
+    await page.goto(`${serve.baseUrl}/settings/${tab}`);
+    await expect(page.getByText(anchor).first()).toBeVisible({ timeout: 10_000 });
+
+    // Folded away by default.
+    await expect(page.locator("label", { hasText: field })).toHaveCount(0);
+
+    await page.getByRole("button", { name: /Advanced/ }).first().click();
+    await expect(page.locator("label", { hasText: field })).toBeVisible({
+      timeout: 5_000,
+    });
+  }
+});
