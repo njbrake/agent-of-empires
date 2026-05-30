@@ -13,6 +13,10 @@ pub struct ConfirmDialog {
     message: String,
     action: String,
     selected: bool, // true = Yes, false = No
+    /// When set, the dialog shows a "don't warn me again" checkbox the
+    /// user can toggle with Space. The caller reads `dont_ask_again()`
+    /// on Submit to persist the opt-out. `None` hides the checkbox.
+    dont_ask_again: Option<bool>,
     yes_button_area: Rect,
     no_button_area: Rect,
 }
@@ -24,9 +28,23 @@ impl ConfirmDialog {
             message: message.to_string(),
             action: action.to_string(),
             selected: false,
+            dont_ask_again: None,
             yes_button_area: Rect::default(),
             no_button_area: Rect::default(),
         }
+    }
+
+    /// Offer a "don't warn me again" checkbox (unchecked to start). The
+    /// caller inspects `dont_ask_again()` after a Submit to act on it.
+    pub fn offering_dont_ask_again(mut self) -> Self {
+        self.dont_ask_again = Some(false);
+        self
+    }
+
+    /// Whether the user ticked "don't warn me again". Always false when
+    /// the checkbox wasn't offered.
+    pub fn dont_ask_again(&self) -> bool {
+        self.dont_ask_again.unwrap_or(false)
     }
 
     /// Route a left-click. `Some(Submit)` for `[Yes]`, `Some(Cancel)`
@@ -67,6 +85,10 @@ impl ConfirmDialog {
                 }
             }
             KeyCode::Char('y') | KeyCode::Char('Y') => DialogResult::Submit(()),
+            KeyCode::Char(' ') if self.dont_ask_again.is_some() => {
+                self.dont_ask_again = Some(!self.dont_ask_again.unwrap_or(false));
+                DialogResult::Continue
+            }
             KeyCode::Left | KeyCode::Char('h') => {
                 self.selected = true;
                 DialogResult::Continue
@@ -84,7 +106,9 @@ impl ConfirmDialog {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let dialog_area = super::centered_rect(area, 50, 8);
+        // The checkbox row adds a line, so grow the dialog when offered.
+        let height = if self.dont_ask_again.is_some() { 9 } else { 8 };
+        let dialog_area = super::centered_rect(area, 50, height);
 
         frame.render_widget(Clear, dialog_area);
 
@@ -98,10 +122,19 @@ impl ConfirmDialog {
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
+        let constraints: &[Constraint] = if self.dont_ask_again.is_some() {
+            &[
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(2),
+            ]
+        } else {
+            &[Constraint::Min(1), Constraint::Length(2)]
+        };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)
-            .constraints([Constraint::Min(1), Constraint::Length(2)])
+            .constraints(constraints)
             .split(inner);
 
         // Message
@@ -110,7 +143,17 @@ impl ConfirmDialog {
             .wrap(Wrap { trim: true });
         frame.render_widget(message, chunks[0]);
 
-        let (yes, no) = render_yes_no(frame, chunks[1], theme, self.selected);
+        let buttons_chunk = if let Some(checked) = self.dont_ask_again {
+            let mark = if checked { "x" } else { " " };
+            let checkbox = Paragraph::new(format!("[{mark}] Don't warn me again (space)"))
+                .style(Style::default().fg(theme.dimmed));
+            frame.render_widget(checkbox, chunks[1]);
+            chunks[2]
+        } else {
+            chunks[1]
+        };
+
+        let (yes, no) = render_yes_no(frame, buttons_chunk, theme, self.selected);
         self.yes_button_area = yes;
         self.no_button_area = no;
     }
@@ -234,5 +277,37 @@ mod tests {
         let mut dialog = ConfirmDialog::new("Test", "Message", "action");
         let result = dialog.handle_key(key(KeyCode::Char('x')));
         assert!(matches!(result, DialogResult::Continue));
+    }
+
+    #[test]
+    fn dont_ask_again_defaults_false_when_not_offered() {
+        let mut dialog = ConfirmDialog::new("Test", "Message", "action");
+        assert!(!dialog.dont_ask_again());
+        // Space is inert when the checkbox isn't offered.
+        let result = dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(matches!(result, DialogResult::Continue));
+        assert!(!dialog.dont_ask_again());
+    }
+
+    #[test]
+    fn space_toggles_dont_ask_again_when_offered() {
+        let mut dialog = ConfirmDialog::new("Quit", "Quit?", "quit").offering_dont_ask_again();
+        assert!(!dialog.dont_ask_again());
+
+        let result = dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(matches!(result, DialogResult::Continue));
+        assert!(dialog.dont_ask_again());
+
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.dont_ask_again());
+    }
+
+    #[test]
+    fn dont_ask_again_survives_into_submit() {
+        let mut dialog = ConfirmDialog::new("Quit", "Quit?", "quit").offering_dont_ask_again();
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        let result = dialog.handle_key(key(KeyCode::Char('y')));
+        assert!(matches!(result, DialogResult::Submit(())));
+        assert!(dialog.dont_ask_again());
     }
 }

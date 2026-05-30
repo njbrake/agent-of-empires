@@ -1604,6 +1604,38 @@ fn poll_update_receiver(
     }
 }
 
+/// What a `q` key press at the home screen should do. Factored out of the
+/// key handler so the quit policy is unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+enum QuitIntent {
+    /// Don't quit. Ctrl+Q lands here: it's reserved for exiting live-send
+    /// mode and must never close aoe from the home view (#1569).
+    Ignore,
+    /// A session is mid-creation; confirm before cancelling it.
+    ConfirmDuringCreation,
+    /// Confirm-before-quit is enabled; show the quit confirmation.
+    Confirm,
+    /// Quit immediately.
+    Quit,
+}
+
+fn quit_intent(
+    modifiers: KeyModifiers,
+    creation_pending: bool,
+    confirm_before_quit: bool,
+) -> QuitIntent {
+    if modifiers.contains(KeyModifiers::CONTROL) {
+        return QuitIntent::Ignore;
+    }
+    if creation_pending {
+        return QuitIntent::ConfirmDuringCreation;
+    }
+    if confirm_before_quit {
+        return QuitIntent::Confirm;
+    }
+    QuitIntent::Quit
+}
+
 impl App {
     async fn handle_key(
         &mut self,
@@ -1624,12 +1656,23 @@ impl App {
                 self.should_quit = true;
                 return Ok(());
             }
-            (KeyCode::Char('q'), _) if !self.home.has_dialog() => {
-                if self.home.is_creation_pending() {
-                    self.home.show_quit_during_creation_confirm();
-                    return Ok(());
+            (KeyCode::Char('q'), modifiers) if !self.home.has_dialog() => {
+                match quit_intent(
+                    modifiers,
+                    self.home.is_creation_pending(),
+                    self.home.confirm_before_quit(),
+                ) {
+                    QuitIntent::Ignore => {}
+                    QuitIntent::ConfirmDuringCreation => {
+                        self.home.show_quit_during_creation_confirm();
+                    }
+                    QuitIntent::Confirm => {
+                        self.home.show_quit_confirm();
+                    }
+                    QuitIntent::Quit => {
+                        self.should_quit = true;
+                    }
                 }
-                self.should_quit = true;
                 return Ok(());
             }
             // Ctrl+x dismisses the update bar / status toast. Gated on
@@ -2271,6 +2314,51 @@ pub enum Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctrl_q_never_quits() {
+        // The whole point of #1569: Ctrl+Q is a live-mode-exit habit and
+        // must not close aoe from the home view, regardless of the other
+        // flags.
+        for creation_pending in [false, true] {
+            for confirm in [false, true] {
+                assert_eq!(
+                    quit_intent(KeyModifiers::CONTROL, creation_pending, confirm),
+                    QuitIntent::Ignore,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plain_q_quits_when_confirm_disabled() {
+        assert_eq!(
+            quit_intent(KeyModifiers::NONE, false, false),
+            QuitIntent::Quit,
+        );
+    }
+
+    #[test]
+    fn plain_q_confirms_when_enabled() {
+        assert_eq!(
+            quit_intent(KeyModifiers::NONE, false, true),
+            QuitIntent::Confirm,
+        );
+    }
+
+    #[test]
+    fn creation_pending_confirms_before_anything_else() {
+        // Creation-in-progress takes precedence over the quit confirm so
+        // the user is warned the hook will be cancelled.
+        assert_eq!(
+            quit_intent(KeyModifiers::NONE, true, true),
+            QuitIntent::ConfirmDuringCreation,
+        );
+        assert_eq!(
+            quit_intent(KeyModifiers::NONE, true, false),
+            QuitIntent::ConfirmDuringCreation,
+        );
+    }
 
     #[test]
     fn test_action_enum() {

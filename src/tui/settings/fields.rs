@@ -97,6 +97,7 @@ pub enum FieldKey {
     // Session
     DefaultTool,
     StrictHotkeys,
+    ConfirmBeforeQuit,
     SnoozeDurationMinutes,
     RestartWakeMessage,
     RowTag,
@@ -1721,6 +1722,16 @@ fn build_session_fields(
 
     if scope == SettingsScope::Global {
         fields.push(SettingField {
+            key: FieldKey::ConfirmBeforeQuit,
+            label: "Confirm Before Quit",
+            description: "Warn before quitting aoe when you press `q` on the home screen \
+                          (the dialog can also turn this off). Ctrl+C always force-quits.",
+            value: FieldValue::Bool(global.session.confirm_before_quit),
+            category: SettingsCategory::Session,
+            has_override: false,
+            inherited_display: None,
+        });
+        fields.push(SettingField {
             key: FieldKey::SessionIdPollerMaxThreads,
             label: "Max Session-ID Poller Threads",
             description:
@@ -2575,6 +2586,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
         (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => config.session.strict_hotkeys = *v,
+        (FieldKey::ConfirmBeforeQuit, FieldValue::Bool(v)) => {
+            config.session.confirm_before_quit = *v
+        }
         (FieldKey::SnoozeDurationMinutes, FieldValue::Number(v)) => {
             config.session.snooze_duration_minutes = *v as u32;
         }

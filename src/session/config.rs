@@ -652,6 +652,14 @@ pub struct SessionConfig {
     /// `default_attach_mode` regardless of this setting.
     #[serde(default)]
     pub click_action: ClickAction,
+
+    /// Show a "quit aoe?" confirmation when the user presses `q` to leave
+    /// the home screen, guarding against accidental exits (e.g. a Ctrl+Q
+    /// live-mode-exit habit landing on the home view). On by default;
+    /// the dialog offers a "don't warn me again" option that flips this
+    /// off. Ctrl+C still force-quits without a prompt.
+    #[serde(default = "default_true")]
+    pub confirm_before_quit: bool,
 }
 
 /// What a single mouse click on a session row does in the Agent view.
@@ -732,6 +740,7 @@ impl Default for SessionConfig {
             new_session_attach_mode: NewSessionAttachMode::default(),
             default_attach_mode: NewSessionAttachMode::default(),
             click_action: ClickAction::default(),
+            confirm_before_quit: true,
         }
     }
 }
@@ -2087,6 +2096,21 @@ mod tests {
             Some(&"--port 8080".to_string()),
             "agent_extra_args should survive roundtrip"
         );
+    }
+
+    #[test]
+    fn test_session_config_confirm_before_quit_defaults_on() {
+        // Default-on so existing users get the accidental-exit guard
+        // without opting in (#1569).
+        assert!(SessionConfig::default().confirm_before_quit);
+    }
+
+    #[test]
+    fn test_confirm_before_quit_absent_from_toml_defaults_on() {
+        // An older config.toml with no `confirm_before_quit` key must
+        // deserialize to the enabled default, not false.
+        let session: SessionConfig = toml::from_str("").unwrap();
+        assert!(session.confirm_before_quit);
     }
 
     #[test]
