@@ -196,6 +196,48 @@ describe("SessionConfigControls", () => {
     expect(other.disabled).toBe(false);
   });
 
+  // #1562: an unknown category arrives on the wire as a bare string
+  // (the Rust `Other(String)` arm is `#[serde(untagged)]`). The picker
+  // filters by string equality, so an unknown-category option must not
+  // break the model / effort lookup and gets no widget of its own.
+  it("ignores an unknown-category option and still finds the known ones", () => {
+    const unknown: ConfigOptionDescriptor = {
+      id: "future",
+      name: "Future Selector",
+      category: "future_category",
+      current_value: "a",
+      options: [{ value: "a", name: "A" }],
+    };
+    render(
+      <SessionConfigControls
+        configOptions={[unknown, modelOption(), effortOption()]}
+        pendingConfigOption={null}
+        onSetConfigOption={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("config-option-model")).toBeTruthy();
+    expect(screen.getByTestId("config-option-effort")).toBeTruthy();
+    expect(screen.queryByTestId("config-option-future")).toBeNull();
+  });
+
+  it("renders nothing when only an unknown-category option is present", () => {
+    const unknown: ConfigOptionDescriptor = {
+      id: "future",
+      name: "Future Selector",
+      category: "future_category",
+      current_value: "a",
+      options: [{ value: "a", name: "A" }],
+    };
+    const { container } = render(
+      <SessionConfigControls
+        configOptions={[unknown]}
+        pendingConfigOption={null}
+        onSetConfigOption={vi.fn()}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
   it("truncates long model labels in the chip", () => {
     const longModel: ConfigOptionDescriptor = {
       ...modelOption(),
