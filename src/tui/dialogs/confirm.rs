@@ -6,13 +6,25 @@ use ratatui::widgets::*;
 
 use super::DialogResult;
 use crate::tui::components::buttons::render_yes_no;
+use crate::tui::components::checkbox::{checkbox_line, CheckboxStyle};
 use crate::tui::styles::Theme;
+
+/// The dialog's emphasis color. Destructive confirmations (delete, stop,
+/// cancel-a-running-hook) alarm in red; neutral ones (quitting, with
+/// sessions left running) use the calmer "heads-up" amber so a routine
+/// prompt doesn't read like a data-loss warning.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Destructive,
+    Neutral,
+}
 
 pub struct ConfirmDialog {
     title: String,
     message: String,
     action: String,
     selected: bool, // true = Yes, false = No
+    tone: Tone,
     /// When set, the dialog shows a "don't warn me again" checkbox the
     /// user can toggle with Space. The caller reads `dont_ask_again()`
     /// on Submit to persist the opt-out. `None` hides the checkbox.
@@ -28,10 +40,18 @@ impl ConfirmDialog {
             message: message.to_string(),
             action: action.to_string(),
             selected: false,
+            tone: Tone::Destructive,
             dont_ask_again: None,
             yes_button_area: Rect::default(),
             no_button_area: Rect::default(),
         }
+    }
+
+    /// Render with the calmer "heads-up" emphasis instead of the default
+    /// destructive red. For confirmations that aren't about losing data.
+    pub fn neutral(mut self) -> Self {
+        self.tone = Tone::Neutral;
+        self
     }
 
     /// Offer a "don't warn me again" checkbox (unchecked to start). The
@@ -106,56 +126,78 @@ impl ConfirmDialog {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        // The checkbox row adds a line, so grow the dialog when offered.
-        let height = if self.dont_ask_again.is_some() { 9 } else { 8 };
-        let dialog_area = super::centered_rect(area, 50, height);
+        // Spacer rows separate message / checkbox / buttons so the dialog
+        // breathes; grow the height (and a touch of width) to fit them when
+        // the checkbox is shown.
+        let (width, height) = if self.dont_ask_again.is_some() {
+            (56, 11)
+        } else {
+            (50, 8)
+        };
+        let dialog_area = super::centered_rect(area, width, height);
 
         frame.render_widget(Clear, dialog_area);
 
+        let emphasis = match self.tone {
+            Tone::Destructive => theme.error,
+            Tone::Neutral => theme.waiting,
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.error))
+            .border_style(Style::default().fg(emphasis))
             .title(format!(" {} ", self.title))
-            .title_style(Style::default().fg(theme.error).bold());
+            .title_style(Style::default().fg(emphasis).bold());
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
 
-        let constraints: &[Constraint] = if self.dont_ask_again.is_some() {
-            &[
-                Constraint::Min(1),
-                Constraint::Length(1),
-                Constraint::Length(2),
-            ]
-        } else {
-            &[Constraint::Min(1), Constraint::Length(2)]
-        };
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .margin(1)
-            .constraints(constraints)
-            .split(inner);
+        if let Some(checked) = self.dont_ask_again {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([
+                    Constraint::Min(1),    // message
+                    Constraint::Length(1), // spacer
+                    Constraint::Length(1), // checkbox
+                    Constraint::Length(1), // spacer
+                    Constraint::Length(2), // buttons
+                ])
+                .split(inner);
 
-        // Message
+            self.render_message(frame, chunks[0], theme);
+            let line = checkbox_line(
+                theme,
+                "Don't warn me again",
+                Some("space"),
+                0,
+                checked,
+                false,
+                CheckboxStyle::confirm(theme),
+            );
+            frame.render_widget(Paragraph::new(line), chunks[2]);
+            let (yes, no) = render_yes_no(frame, chunks[4], theme, self.selected);
+            self.yes_button_area = yes;
+            self.no_button_area = no;
+        } else {
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([Constraint::Min(1), Constraint::Length(2)])
+                .split(inner);
+
+            self.render_message(frame, chunks[0], theme);
+            let (yes, no) = render_yes_no(frame, chunks[1], theme, self.selected);
+            self.yes_button_area = yes;
+            self.no_button_area = no;
+        }
+    }
+
+    fn render_message(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let message = Paragraph::new(&*self.message)
             .style(Style::default().fg(theme.text))
             .wrap(Wrap { trim: true });
-        frame.render_widget(message, chunks[0]);
-
-        let buttons_chunk = if let Some(checked) = self.dont_ask_again {
-            let mark = if checked { "x" } else { " " };
-            let checkbox = Paragraph::new(format!("[{mark}] Don't warn me again (space)"))
-                .style(Style::default().fg(theme.dimmed));
-            frame.render_widget(checkbox, chunks[1]);
-            chunks[2]
-        } else {
-            chunks[1]
-        };
-
-        let (yes, no) = render_yes_no(frame, buttons_chunk, theme, self.selected);
-        self.yes_button_area = yes;
-        self.no_button_area = no;
+        frame.render_widget(message, area);
     }
 }
 
@@ -300,6 +342,60 @@ mod tests {
 
         dialog.handle_key(key(KeyCode::Char(' ')));
         assert!(!dialog.dont_ask_again());
+    }
+
+    /// Render the quit dialog and return the foreground color of the cell
+    /// under a given character of the "Don't warn me again" label, plus the
+    /// top-border color. Guards the styling: the label must read as normal
+    /// text (not the disabled-looking `dimmed`), and the border must use the
+    /// neutral heads-up tone rather than destructive red.
+    #[test]
+    fn quit_dialog_label_is_readable_and_border_is_neutral() {
+        use crate::tui::styles::load_theme;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut dialog = ConfirmDialog::new("Quit", "Quit aoe?", "quit")
+            .neutral()
+            .offering_dont_ask_again();
+        let theme = load_theme("empire");
+        let backend = TestBackend::new(70, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| dialog.render(f, f.area(), &theme))
+            .unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Find the checkbox row and the column where the label "D" starts.
+        let mut label_fg = None;
+        let mut border_fg = None;
+        for y in 0..buf.area.height {
+            let row: String = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+            if border_fg.is_none() && row.contains('╭') {
+                let bx = row.find('╭').unwrap() as u16;
+                border_fg = Some(buf[(bx, y)].fg);
+            }
+            if let Some(idx) = row.find("Don't warn") {
+                label_fg = Some(buf[(idx as u16, y)].fg);
+            }
+        }
+
+        assert_eq!(
+            label_fg,
+            Some(theme.text),
+            "checkbox label should use normal text color, not dimmed/disabled"
+        );
+        assert_ne!(
+            label_fg,
+            Some(theme.dimmed),
+            "checkbox label must not be dimmed"
+        );
+        assert_eq!(
+            border_fg,
+            Some(theme.waiting),
+            "neutral quit dialog should use the heads-up tone, not destructive red"
+        );
+        assert_ne!(border_fg, Some(theme.error));
     }
 
     #[test]

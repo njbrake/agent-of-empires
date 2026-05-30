@@ -2027,9 +2027,10 @@ impl HomeView {
         self.confirm_dialog = Some(
             ConfirmDialog::new(
                 "Quit Agent of Empires",
-                "Quit aoe? Your sessions keep running in the background.",
+                "Quit?\nYour sessions persist in the background.",
                 "quit",
             )
+            .neutral()
             .offering_dont_ask_again(),
         );
     }
