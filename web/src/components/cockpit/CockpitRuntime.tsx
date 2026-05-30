@@ -589,7 +589,10 @@ type GroupChildPayload = {
   toolCallId: string;
   toolName: string;
   argsText: string;
-  result?: { content: string };
+  // `endedAt` rides along from DraftPart.result (set in completeToolCall)
+  // and CockpitView's pickEndedAt reads it to compute durations; keep it
+  // on the type so a future rebuild of `result` doesn't drop it.
+  result?: { content: string; endedAt?: string };
   isError?: boolean;
 };
 
