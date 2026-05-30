@@ -10,7 +10,15 @@ import {
   type MutableRefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { Archive, Clock, ListOrdered, Moon, Pencil, Pin } from "lucide-react";
+import {
+  Archive,
+  Clock,
+  GripVertical,
+  ListOrdered,
+  Moon,
+  Pencil,
+  Pin,
+} from "lucide-react";
 import {
   DndContext,
   MouseSensor,
@@ -18,6 +26,7 @@ import {
   useSensor,
   useSensors,
   closestCenter,
+  type CollisionDetection,
   type DragEndEvent,
 } from "@dnd-kit/core";
 import {
@@ -106,9 +115,27 @@ function closeOtherContextMenus() {
   menuBus.dispatchEvent(new Event("close"));
 }
 
+// Group headers and session rows are both sortable inside the one
+// sidebar DndContext, so a header drag must not collide with a session
+// droppable (or vice versa). dnd-kit registers every sortable in a
+// single droppable registry per context; without filtering, closestCenter
+// would happily report a workspace row as the drop target while dragging a
+// group. Restrict candidates to droppables whose `data.type` matches the
+// dragged item, then defer to closestCenter within that subset. See #1644.
+const typedClosestCenter: CollisionDetection = (args) => {
+  const activeType = args.active.data.current?.type;
+  return closestCenter({
+    ...args,
+    droppableContainers: args.droppableContainers.filter(
+      (container) => container.data.current?.type === activeType,
+    ),
+  });
+};
+
 interface Props {
   groups: RepoGroup[];
   onReorderWorkspaces: (newOrder: string[]) => void;
+  onReorderGroups: (orderedGroupIds: string[]) => void;
   activeId: string | null;
   open: boolean;
   onToggle: () => void;
@@ -392,7 +419,11 @@ function SortableSessionRow(props: {
   // triggers a drag.
   const dragOff = !!props.readOnly || !!props.dragDisabled;
   const { listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: props.workspace.id, disabled: dragOff });
+    useSortable({
+      id: props.workspace.id,
+      disabled: dragOff,
+      data: { type: "workspace" },
+    });
   useEffect(() => {
     if (isDragging) {
       // Keep extending the window while dragging so a slow drag still
@@ -440,6 +471,58 @@ function SortableSessionRow(props: {
       }
     >
       <SessionRow {...props} indented />
+    </div>
+  );
+}
+
+// Props handed to the grip element so RepoGroupHeader can wire a dedicated
+// drag handle. The whole header is NOT draggable: it already owns an
+// expand/collapse click, a context menu, a rename input, and a new-session
+// button, so a header-wide drag would smother them. The grip is the sole
+// activator. See #1644.
+type DragHandleProps = {
+  setActivatorNodeRef: (el: HTMLElement | null) => void;
+  attributes: ReturnType<typeof useSortable>["attributes"];
+  listeners: ReturnType<typeof useSortable>["listeners"];
+};
+
+// Sortable wrapper around an entire repo-group block (header + its rows),
+// so the group moves as a unit. Only real repo groups are wrapped;
+// synthetic Multi-repo/Scratch groups render plainly and stay pinned.
+function SortableRepoGroup({
+  groupId,
+  disabled,
+  children,
+}: {
+  groupId: string;
+  disabled: boolean;
+  children: (handle: DragHandleProps) => React.ReactNode;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: groupId, disabled, data: { type: "group" } });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    position: "relative",
+    zIndex: isDragging ? 20 : "auto",
+  } as const;
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={
+        "transition-shadow duration-150 " +
+        (isDragging ? "ring-2 ring-inset ring-brand-500 shadow-lg" : "")
+      }
+    >
+      {children({ setActivatorNodeRef, attributes, listeners })}
     </div>
   );
 }
@@ -1354,6 +1437,7 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
   onNewSession,
   onUpdateAppearance,
   offline,
+  dragHandle,
 }: {
   group: RepoGroup;
   hasActiveChild: boolean;
@@ -1361,6 +1445,7 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
   onNewSession: () => void;
   onUpdateAppearance: (repoId: string, update: RepoAppearanceUpdate) => void;
   offline: boolean;
+  dragHandle?: DragHandleProps;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -1472,6 +1557,19 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
         }`}
         style={headerStyle}
       >
+        {dragHandle && (
+          <button
+            ref={dragHandle.setActivatorNodeRef}
+            type="button"
+            aria-label={`Reorder project ${group.displayName}`}
+            data-testid="sidebar-group-drag-handle"
+            className="shrink-0 -ml-1 flex h-5 w-4 items-center justify-center text-text-dim hover:text-text-secondary cursor-grab active:cursor-grabbing touch-none"
+            {...dragHandle.attributes}
+            {...dragHandle.listeners}
+          >
+            <GripVertical className="h-3.5 w-3.5" />
+          </button>
+        )}
         <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
         <button
           onClick={onClick}
@@ -1606,6 +1704,7 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
 export function WorkspaceSidebar({
   groups,
   onReorderWorkspaces,
+  onReorderGroups,
   activeId,
   open,
   onToggle,
@@ -1666,9 +1765,31 @@ export function WorkspaceSidebar({
       const { active, over } = e;
       if (!over || active.id === over.id) return;
 
-      // Drag is constrained to within a single repo group (each group
-      // has its own SortableContext), so finding the active group and
-      // reordering inside it is sufficient.
+      // Two sortable layers share this context: group headers and session
+      // rows. Branch on the typed `data` payload, not on the id shape
+      // (repo paths vs uuid-like ids), so the dispatch stays robust if
+      // either id domain changes. Typed collision detection already keeps
+      // a header drag from landing on a row; the guard here is belt and
+      // braces. See #1644.
+      if (active.data.current?.type === "group") {
+        if (over.data.current?.type !== "group") return;
+        // Reorder only the real (sortable) groups; synthetic groups are
+        // pinned to the bottom and never enter the group SortableContext.
+        const orderedIds = groups
+          .map((g) => g.id)
+          .filter(
+            (id) => id !== MULTI_REPO_GROUP_ID && id !== SCRATCH_GROUP_ID,
+          );
+        const oldIndex = orderedIds.indexOf(String(active.id));
+        const newIndex = orderedIds.indexOf(String(over.id));
+        if (oldIndex < 0 || newIndex < 0) return;
+        onReorderGroups(arrayMove(orderedIds, oldIndex, newIndex));
+        return;
+      }
+
+      // Workspace-row drag is constrained to within a single repo group
+      // (each group has its own SortableContext), so finding the active
+      // group and reordering inside it is sufficient.
       const groupIndex = groups.findIndex((g) =>
         g.workspaces.some((w) => w.id === active.id),
       );
@@ -1690,7 +1811,7 @@ export function WorkspaceSidebar({
       });
       onReorderWorkspaces(flat);
     },
-    [groups, onReorderWorkspaces],
+    [groups, onReorderWorkspaces, onReorderGroups],
   );
 
   const q = filterQuery.trim().toLowerCase();
@@ -1882,75 +2003,123 @@ export function WorkspaceSidebar({
           <DragSuppressContext.Provider value={dragSuppressRef}>
           <DndContext
             sensors={sensors}
-            collisionDetection={closestCenter}
+            collisionDetection={typedClosestCenter}
             onDragEnd={dragDisabled ? undefined : handleDragEnd}
           >
-            {filteredGroups.filter(repoGroupHasLiveWorkspace).map((group) => {
-              const showExpanded = q ? true : !group.collapsed;
-              const hasActiveChild = group.workspaces.some(
-                (ws) => ws.id === displayedActiveId,
+            {(() => {
+              const liveGroups = filteredGroups.filter(
+                repoGroupHasLiveWorkspace,
               );
+              // Real repo groups are sortable; the synthetic Multi-repo /
+              // Scratch groups are pinned to the bottom and stay out of
+              // the group SortableContext so they cannot be dragged or
+              // become a drop target. Group drag is also off while a
+              // filter is active (the visible list is a partial
+              // projection) or whenever row drag is off (read-only or
+              // last-activity sort). See #1644.
+              const sortableGroupIds = liveGroups
+                .filter(
+                  (g) =>
+                    g.id !== MULTI_REPO_GROUP_ID &&
+                    g.id !== SCRATCH_GROUP_ID,
+                )
+                .map((g) => g.id);
+              const groupDragDisabled = dragDisabled || q.length > 0;
+
+              const renderGroupBody = (
+                group: RepoGroup,
+                dragHandle?: DragHandleProps,
+              ) => {
+                const showExpanded = q ? true : !group.collapsed;
+                const hasActiveChild = group.workspaces.some(
+                  (ws) => ws.id === displayedActiveId,
+                );
+                return (
+                  <>
+                    <RepoGroupHeader
+                      group={{ ...group, collapsed: !showExpanded }}
+                      hasActiveChild={!showExpanded && hasActiveChild}
+                      onClick={() => !q && onToggleRepo(group.id)}
+                      onUpdateAppearance={onUpdateRepoAppearance}
+                      onNewSession={() =>
+                        group.id === MULTI_REPO_GROUP_ID ||
+                        group.id === SCRATCH_GROUP_ID
+                          ? onNew()
+                          : onCreateSession(group.repoPath)
+                      }
+                      offline={offline}
+                      dragHandle={dragHandle}
+                    />
+                    {showExpanded &&
+                      (() => {
+                        // Each group renders only its live tier. Sunk
+                        // workspaces (archived or actively snoozed across
+                        // every session) are pulled out into a single
+                        // global "Snoozed & archived" section at the very
+                        // bottom of the sidebar, rather than one footer
+                        // per repo group. See #1581.
+                        const liveWorkspaces = group.workspaces.filter(
+                          (ws) => !workspaceIsSunk(ws),
+                        );
+                        return (
+                          <SortableContext
+                            items={liveWorkspaces.map((ws) => ws.id)}
+                            strategy={verticalListSortingStrategy}
+                          >
+                            {liveWorkspaces.map((ws) => (
+                              <SortableSessionRow
+                                key={ws.id}
+                                workspace={ws}
+                                isActive={ws.id === displayedActiveId}
+                                onClick={() => {
+                                  setOptimisticActive({
+                                    id: ws.id,
+                                    fromActiveId: activeId,
+                                  });
+                                  onSelect(ws.id);
+                                }}
+                                onDelete={onDeleteSession}
+                                readOnly={readOnly}
+                                // Drag is disabled when the tier
+                                // comparator already controls placement:
+                                // lastActivity mode has no manual
+                                // concept, pinned rows always float to
+                                // the top of their group. See #1581.
+                                dragDisabled={
+                                  sortMode === "lastActivity" ||
+                                  workspaceIsPinned(ws)
+                                }
+                              />
+                            ))}
+                          </SortableContext>
+                        );
+                      })()}
+                  </>
+                );
+              };
+
               return (
-                <div key={group.id}>
-                  <RepoGroupHeader
-                    group={{ ...group, collapsed: !showExpanded }}
-                    hasActiveChild={!showExpanded && hasActiveChild}
-                    onClick={() => !q && onToggleRepo(group.id)}
-                    onUpdateAppearance={onUpdateRepoAppearance}
-                    onNewSession={() =>
-                      group.id === MULTI_REPO_GROUP_ID ||
-                      group.id === SCRATCH_GROUP_ID
-                        ? onNew()
-                        : onCreateSession(group.repoPath)
-                    }
-                    offline={offline}
-                  />
-                  {showExpanded && (() => {
-                    // Each group renders only its live tier. Sunk
-                    // workspaces (archived or actively snoozed across
-                    // every session) are pulled out into a single
-                    // global "Snoozed & archived" section at the very
-                    // bottom of the sidebar, rather than one footer
-                    // per repo group. See #1581.
-                    const liveWorkspaces = group.workspaces.filter(
-                      (ws) => !workspaceIsSunk(ws),
-                    );
-                    return (
-                      <SortableContext
-                        items={liveWorkspaces.map((ws) => ws.id)}
-                        strategy={verticalListSortingStrategy}
+                <SortableContext
+                  items={sortableGroupIds}
+                  strategy={verticalListSortingStrategy}
+                >
+                  {liveGroups.map((group) =>
+                    group.id === MULTI_REPO_GROUP_ID ||
+                    group.id === SCRATCH_GROUP_ID ? (
+                      <div key={group.id}>{renderGroupBody(group)}</div>
+                    ) : (
+                      <SortableRepoGroup
+                        key={group.id}
+                        groupId={group.id}
+                        disabled={groupDragDisabled}
                       >
-                        {liveWorkspaces.map((ws) => (
-                          <SortableSessionRow
-                            key={ws.id}
-                            workspace={ws}
-                            isActive={ws.id === displayedActiveId}
-                            onClick={() => {
-                              setOptimisticActive({
-                                id: ws.id,
-                                fromActiveId: activeId,
-                              });
-                              onSelect(ws.id);
-                            }}
-                            onDelete={onDeleteSession}
-                            readOnly={readOnly}
-                            // Drag is disabled when the tier comparator
-                            // already controls placement: lastActivity
-                            // mode has no manual concept, pinned rows
-                            // always float to the top of their group.
-                            // See #1581.
-                            dragDisabled={
-                              sortMode === "lastActivity" ||
-                              workspaceIsPinned(ws)
-                            }
-                          />
-                        ))}
-                      </SortableContext>
-                    );
-                  })()}
-                </div>
+                        {(handle) => renderGroupBody(group, handle)}
+                      </SortableRepoGroup>
+                    ),
+                  )}
+                </SortableContext>
               );
-            })}
+            })()}
           </DndContext>
           </DragSuppressContext.Provider>
           {(() => {
