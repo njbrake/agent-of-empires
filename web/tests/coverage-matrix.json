@@ -2312,6 +2312,32 @@
       "components": [
         "web/src/components/cockpit/CockpitView.tsx"
       ]
+    },
+    {
+      "id": "onboarding.first-run-tutorial",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/tutorial.spec.ts"
+      ],
+      "components": [
+        "web/src/components/tour/TourRunner.tsx",
+        "web/src/components/TopBar.tsx",
+        "web/src/components/OverflowMenu.tsx"
+      ]
+    },
+    {
+      "id": "onboarding.tour-drift-guard",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/lib/__tests__/tourSteps.test.ts",
+        "src/hooks/__tests__/useTour.test.ts",
+        "src/components/__tests__/Dashboard.tour.test.tsx"
+      ],
+      "components": [
+        "web/src/components/Dashboard.tsx"
+      ]
     }
   ]
 }
