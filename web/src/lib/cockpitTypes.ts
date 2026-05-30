@@ -524,6 +524,7 @@ export interface ActivityRow {
     | "tool_start"
     | "tool_complete"
     | "tool_error"
+    | "tool_stopped"
     | "message"
     | "thinking"
     | "user_prompt"
@@ -937,6 +938,7 @@ export function applyEvent(
     // optimistic message above any still-arriving prior-turn agent
     // chunks. See #1170.
     next.inFlightTool = null;
+    sweepOpenToolCalls(next, frame.seq);
     next.lastStoppedSeq = Math.min(
       next.lastStoppedSeq + 1,
       next.pendingUserPromptSeq,
@@ -1031,6 +1033,7 @@ export function applyEvent(
     // `startupError` so legacy status logic still flips into Error.
     next.incompatibleAgent = event.IncompatibleAgent.detail;
     next.inFlightTool = null;
+    sweepOpenToolCalls(next, frame.seq);
     next.agentUnresponsive = false;
     next.lastStoppedSeq = Math.min(
       next.lastStoppedSeq + 1,
@@ -1042,6 +1045,7 @@ export function applyEvent(
   if ("AgentStartupError" in event) {
     next.startupError = event.AgentStartupError.message;
     next.inFlightTool = null;
+    sweepOpenToolCalls(next, frame.seq);
     // A failed respawn supersedes any in-progress unresponsive
     // escalation; the user sees the startup error banner instead.
     next.agentUnresponsive = false;
@@ -1228,6 +1232,9 @@ export function applyEvent(
     next.agent = to;
     next.rateLimit = null;
     next.inFlightTool = null;
+    // Close any tool the prior backend left open before appending the
+    // divider, so the transcript order is start -> stopped -> divider.
+    sweepOpenToolCalls(next, frame.seq);
     next.thinking = false;
     next.pendingApprovals = [];
     next.sessionUsage = null;
@@ -1310,6 +1317,65 @@ function pushActivity(rows: ActivityRow[], row: ActivityRow): ActivityRow[] {
     return next.slice(next.length - activityLimit);
   }
   return next;
+}
+
+/** Close any `tool_start` rows that never received a matching terminal
+ *  row by synthesizing a `tool_stopped` row for each. Called from the
+ *  turn-ending reducer arms (`Stopped`, `AgentSwitched`,
+ *  `IncompatibleAgent`, `AgentStartupError`): once the turn ends, no
+ *  tool that was part of it can still be running, yet the card status
+ *  is derived from the paired terminal row (see ToolCards `statusFor`),
+ *  not from the `inFlightTool` pointer the arms already null. Without
+ *  this sweep an interrupted tool's card sticks on "running" with a
+ *  live-ticking timer forever, live and on reload (the trailing
+ *  `Stopped` is persisted and replayed through this same reducer). The
+ *  case is reason-independent: even a `prompt_complete` with a dangling
+ *  open tool (the agent forgot to emit a completion) is "stopped", not
+ *  "done" or "failed", because the tool's real outcome was never
+ *  reported. Any text streamed via `ToolCallContent` before the stop is
+ *  drained into the synthesized row so it is not lost. See #1646. */
+function sweepOpenToolCalls(next: CockpitState, frameSeq: number): void {
+  const terminal = new Set<string>();
+  for (const row of next.activity) {
+    if (
+      (row.kind === "tool_complete" ||
+        row.kind === "tool_error" ||
+        row.kind === "tool_stopped") &&
+      row.toolCallId
+    ) {
+      terminal.add(row.toolCallId);
+    }
+  }
+  const now = new Date().toISOString();
+  let activity = next.activity;
+  let outputs = next.toolOutputs;
+  let drained = false;
+  // Iterate the pre-sweep snapshot; `pushActivity` returns fresh arrays
+  // assigned to the local `activity`, so the loop never sees the rows it
+  // appends. Dedupe by `toolCallId` because pre-fix stores can carry
+  // duplicate `tool_start` rows for one call.
+  for (const row of next.activity) {
+    if (row.kind !== "tool_start" || !row.toolCallId) continue;
+    const id = row.toolCallId;
+    if (terminal.has(id)) continue;
+    terminal.add(id);
+    const buffered = outputs[id] ?? "";
+    if (buffered) {
+      const { [id]: _drop, ...rest } = outputs;
+      void _drop;
+      outputs = rest;
+      drained = true;
+    }
+    activity = pushActivity(activity, {
+      id: `stopped-${id}-${frameSeq}`,
+      kind: "tool_stopped",
+      text: buffered,
+      toolCallId: id,
+      at: now,
+    });
+  }
+  next.activity = activity;
+  if (drained) next.toolOutputs = outputs;
 }
 
 /** Derived `turnActive` from the prompt / stop seq counters. Exported

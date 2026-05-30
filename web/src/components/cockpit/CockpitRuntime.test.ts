@@ -443,3 +443,81 @@ describe("activityToThreadMessages; tool-call grouping (#1057)", () => {
     }
   });
 });
+
+function toolStopped(id: string, text = ""): ActivityRow {
+  return {
+    id: `stopped-${id}-9`,
+    kind: "tool_stopped",
+    text,
+    toolCallId: id,
+    at: "2026-05-12T00:00:02Z",
+  };
+}
+
+describe("activityToThreadMessages; stopped status threading (#1646)", () => {
+  it("carries stopped onto a top-level tool-call part's result", () => {
+    const messages = activityToThreadMessages(
+      [userRow("go"), toolStart("t1"), toolStopped("t1")],
+      false,
+    );
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      result?: { stopped?: boolean };
+      isError?: boolean;
+    }>;
+    const tool = parts.find((p) => p.type === "tool-call")!;
+    expect(tool.result?.stopped).toBe(true);
+    // Stopped is not an error; assistant-ui's isError stays falsy.
+    expect(tool.isError).toBeFalsy();
+  });
+
+  it("preserves stopped on a subagent child through the payload round-trip", () => {
+    const parent: ToolCall = {
+      id: "task-1",
+      name: "Task",
+      kind: "think",
+      args_preview: JSON.stringify({ _aoe_title: "Task" }),
+      started_at: "2026-05-12T00:00:00Z",
+    };
+    const parentRow: ActivityRow = {
+      id: "start-task-1",
+      kind: "tool_start",
+      text: "Task",
+      toolCallId: "task-1",
+      tool: parent,
+      at: "2026-05-12T00:00:00Z",
+    };
+    const child: ToolCall = {
+      id: "ch-1",
+      name: "Read",
+      kind: "read",
+      args_preview: JSON.stringify({ path: "/x" }),
+      started_at: "2026-05-12T00:00:01Z",
+      parent_tool_call_id: "task-1",
+    };
+    const childRow: ActivityRow = {
+      id: "start-ch-1",
+      kind: "tool_start",
+      text: "Read",
+      toolCallId: "ch-1",
+      tool: child,
+      at: "2026-05-12T00:00:01Z",
+    };
+    const messages = activityToThreadMessages(
+      [userRow("go"), parentRow, childRow, toolStopped("ch-1")],
+      false,
+    );
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      toolName?: string;
+      argsText?: string;
+    }>;
+    const subagent = parts.find(
+      (p) => p.type === "tool-call" && p.toolName === SUBAGENT_TASK_NAME,
+    )!;
+    const payload = JSON.parse(subagent.argsText!);
+    expect(payload.children[0].result.stopped).toBe(true);
+  });
+});

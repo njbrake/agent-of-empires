@@ -620,9 +620,7 @@ function AssistantToolCall(props: ToolCallProps) {
     props.result !== undefined
       ? {
           id: `done-${props.toolCallId}`,
-          kind: props.isError
-            ? ("tool_error" as const)
-            : ("tool_complete" as const),
+          kind: resultRowKind(props.isError, pickStopped(props.result)),
           text: resultContent,
           toolCallId: props.toolCallId,
           at: endedAt,
@@ -673,11 +671,34 @@ function pickEndedAt(result: unknown): string | null {
   return null;
 }
 
+/** Read the smuggled `stopped` flag set by AssistantBuilder.completeToolCall
+ *  for a tool closed by the reducer's turn-end sweep (#1646), so the
+ *  reconstructed row carries the distinct `tool_stopped` kind. */
+function pickStopped(result: unknown): boolean {
+  return (
+    !!result &&
+    typeof result === "object" &&
+    (result as { stopped?: unknown }).stopped === true
+  );
+}
+
+/** Map a completed tool's flags to its activity-row kind. Error wins
+ *  over stopped (a tool that errored before the turn ended is a real
+ *  failure); stopped wins over complete. See #1646. */
+function resultRowKind(
+  isError: boolean | undefined,
+  stopped: boolean,
+): "tool_error" | "tool_stopped" | "tool_complete" {
+  if (isError) return "tool_error";
+  if (stopped) return "tool_stopped";
+  return "tool_complete";
+}
+
 interface GroupChild {
   toolCallId: string;
   toolName: string;
   argsText: string;
-  result?: { content: string; endedAt?: string };
+  result?: { content: string; endedAt?: string; stopped?: boolean };
   isError?: boolean;
 }
 
@@ -728,9 +749,7 @@ function groupChildToItem(c: GroupChild): {
     c.result !== undefined
       ? {
           id: `done-${c.toolCallId}`,
-          kind: c.isError
-            ? ("tool_error" as const)
-            : ("tool_complete" as const),
+          kind: resultRowKind(c.isError, c.result.stopped === true),
           text: c.result.content,
           toolCallId: c.toolCallId,
           at: endedAt,
@@ -800,9 +819,7 @@ function AssistantSubagentTask({ argsText }: { argsText?: string }) {
       c.result !== undefined
         ? {
             id: `done-${c.toolCallId}`,
-            kind: c.isError
-              ? ("tool_error" as const)
-              : ("tool_complete" as const),
+            kind: resultRowKind(c.isError, c.result.stopped === true),
             text: c.result.content,
             toolCallId: c.toolCallId,
             at: endedAt,

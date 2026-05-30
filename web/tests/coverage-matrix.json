@@ -1124,6 +1124,34 @@
       ]
     },
     {
+      "id": "cockpit.tool-stopped-sweep",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": [
+        "src/lib/cockpitStopSweep.test.ts",
+        "src/components/cockpit/CockpitRuntime.test.ts",
+        "src/components/cockpit/ToolCards.render.test.tsx"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitRuntime.tsx",
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/ToolCards.tsx",
+        "web/src/components/cockpit/ToolErrorBody.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.stop-tool-card-terminal",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/stop-tool-card-terminal.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/ToolCards.tsx"
+      ]
+    },
+    {
       "id": "cockpit.todo-group-fold",
       "kind": "vitest",
       "risk": "medium",

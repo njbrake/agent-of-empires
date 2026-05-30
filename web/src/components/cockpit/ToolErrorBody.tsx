@@ -18,7 +18,7 @@ import {
 } from "../../lib/toolErrorParse";
 
 interface Props {
-  status: "running" | "ok" | "err";
+  status: "running" | "ok" | "err" | "stopped";
   /** Raw `result.text` from the completion row. claude-agent-acp wraps
    *  Claude's tool errors in `<tool_use_error>...</tool_use_error>`;
    *  the parser peels the wrapper and surfaces it as a label outside

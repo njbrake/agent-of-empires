@@ -35,6 +35,7 @@ import {
   fixtures,
   makeCompletion,
   makeError,
+  makeStopped,
   makeToolCall,
 } from "./__fixtures__/toolCalls";
 
@@ -159,6 +160,38 @@ describe("ToolCards dispatch", () => {
     );
     expect(container.textContent).toContain("done");
   });
+
+  it("renders the 'stopped' badge on tool_stopped results, not running/failed/done", () => {
+    const { container } = render(
+      <Wrap>
+        <ToolCard tool={fixtures.bash} result={makeStopped()} />
+      </Wrap>,
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("stopped");
+    expect(text).not.toContain("running");
+    expect(text).not.toContain("failed");
+    expect(text).not.toContain("done");
+  });
+
+  it("freezes the duration on a tool_stopped result (endedAt is set)", () => {
+    // A stopped card carries a terminal `at`, so the duration is a fixed
+    // span rather than a live-ticking elapsed timer. started_at
+    // 00:00:00 -> at 00:00:01 == 1.0s. See #1646.
+    const { container } = render(
+      <Wrap>
+        <ToolCard
+          tool={makeToolCall({
+            id: "bash-1",
+            kind: "execute",
+            started_at: "2026-05-21T00:00:00Z",
+          })}
+          result={makeStopped({ at: "2026-05-21T00:00:01Z" })}
+        />
+      </Wrap>,
+    );
+    expect(container.textContent).toContain("1.0s");
+  });
 });
 
 describe("ToolCards profile-gated dispatch (claude)", () => {
@@ -264,6 +297,32 @@ describe("TodoGroupCard fold (#1468)", () => {
     expect(container.textContent).not.toContain("Broken plan");
     // The header surfaces the failed latest attempt rather than looking clean.
     expect(container.textContent).toContain("failed");
+  });
+
+  it("surfaces a stopped header when the latest snapshot was interrupted (#1646)", () => {
+    const stoppedTail = {
+      tool: makeToolCall({
+        id: "td4",
+        name: "TodoWrite",
+        kind: "other",
+        args_preview: JSON.stringify({
+          todos: [{ content: "Interrupted plan", status: "in_progress" }],
+        }),
+      }),
+      result: makeStopped({ id: "stopped-td4", toolCallId: "td4" }),
+    };
+    const { container } = render(
+      <Wrap toolKey="claude">
+        <TodoGroupCard items={[...items, stoppedTail]} />
+      </Wrap>,
+    );
+    // Collapsed preview falls back to the last good snapshot, not the
+    // interrupted one.
+    expect(container.textContent).toContain("Step Charlie");
+    expect(container.textContent).not.toContain("Interrupted plan");
+    // The header reads "stopped", not the misleading "done".
+    expect(container.textContent).toContain("stopped");
+    expect(container.textContent).not.toContain("done");
   });
 });
 

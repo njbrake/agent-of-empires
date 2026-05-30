@@ -297,10 +297,15 @@ export function activityToThreadMessages(
       currentAssistant.appendText(row.text);
     } else if (row.kind === "tool_start" && row.tool) {
       currentAssistant.appendToolCall(row.tool);
-    } else if (row.kind === "tool_complete" || row.kind === "tool_error") {
+    } else if (
+      row.kind === "tool_complete" ||
+      row.kind === "tool_error" ||
+      row.kind === "tool_stopped"
+    ) {
       currentAssistant.completeToolCall(
-        row.toolCallId ?? row.id.replace(/^done-/, ""),
+        row.toolCallId ?? row.id.replace(/^(done|stopped)-/, ""),
         row.kind === "tool_error",
+        row.kind === "tool_stopped",
         row.text,
         row.at,
       );
@@ -357,7 +362,7 @@ type DraftPart =
       toolCallId: string;
       toolName: string;
       argsText: string;
-      result?: { content: string; endedAt?: string };
+      result?: { content: string; endedAt?: string; stopped?: boolean };
       isError?: boolean;
     };
 
@@ -419,12 +424,13 @@ class AssistantBuilder {
   completeToolCall(
     toolCallId: string,
     isError: boolean,
+    stopped: boolean,
     resultText: string,
     endedAt: string,
   ) {
     for (const part of this.parts) {
       if (part.type === "tool-call" && part.toolCallId === toolCallId) {
-        part.result = { content: resultText, endedAt };
+        part.result = { content: resultText, endedAt, stopped: stopped || undefined };
         part.isError = isError || undefined;
         return;
       }
@@ -591,8 +597,10 @@ type GroupChildPayload = {
   argsText: string;
   // `endedAt` rides along from DraftPart.result (set in completeToolCall)
   // and CockpitView's pickEndedAt reads it to compute durations; keep it
-  // on the type so a future rebuild of `result` doesn't drop it.
-  result?: { content: string; endedAt?: string };
+  // on the type so a future rebuild of `result` doesn't drop it. `stopped`
+  // rides the same way so grouped/subagent children reconstruct as the
+  // distinct "stopped" terminal state instead of "done" (#1646).
+  result?: { content: string; endedAt?: string; stopped?: boolean };
   isError?: boolean;
 };
 
