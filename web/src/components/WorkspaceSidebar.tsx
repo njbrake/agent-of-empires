@@ -56,6 +56,7 @@ import {
 import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { useClampedMenuPosition } from "../lib/menuPosition";
 import { useHasDraftForSessions } from "../lib/cockpitDrafts";
+import { useQueuedCountForSessions } from "../hooks/useCockpitQueueCount";
 import { reportError } from "../lib/toastBus";
 import {
   repoGroupHasLiveWorkspace,
@@ -520,6 +521,11 @@ export const SessionRow = memo(function SessionRow({
     [workspace.sessions],
   );
   const hasDraft = useHasDraftForSessions(sessionIds);
+  // Queued cockpit follow-up prompts waiting to fire when the current
+  // turn ends. Summed across the workspace's sessions, mirroring how
+  // `hasDraft` ORs the same set. Lets a user juggling sessions see at a
+  // glance which rows have prompts pending without opening the cockpit.
+  const queuedCount = useQueuedCountForSessions(sessionIds);
 
   const setNotifyPreset = async (preset: NotifyPreset) => {
     setContextMenu(null);
@@ -856,6 +862,15 @@ export const SessionRow = memo(function SessionRow({
                   className="inline-flex shrink-0"
                 >
                   <Pencil className="h-3 w-3 text-amber-400/90" />
+                </span>
+              )}
+              {queuedCount > 0 && (
+                <span
+                  title={`${queuedCount} queued prompt${queuedCount === 1 ? "" : "s"}`}
+                  aria-label={`${queuedCount} queued`}
+                  className="inline-flex shrink-0 items-center rounded border border-sky-700/40 bg-sky-950/30 px-1 text-[10px] font-mono font-medium tabular-nums text-sky-300"
+                >
+                  {queuedCount}
                 </span>
               )}
               {effectiveArchived && (
