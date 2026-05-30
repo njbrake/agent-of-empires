@@ -175,6 +175,13 @@ const PAGES = [
       "Canonical inventory of every Agent of Empires feature, grouped by surface and capability, with links to each guide.",
   },
   {
+    source: "docs/github-integration.md",
+    dest: "docs/github-integration.md",
+    title: "GitHub Integration",
+    description:
+      "How Agent of Empires resolves a GitHub token, the per-failure hints it shows, and what is deferred to follow-ups.",
+  },
+  {
     source: "docs/guides/podman.md",
     dest: "guides/podman.md",
     title: "Podman",
@@ -241,6 +248,7 @@ const URL_MAP = {
   "docs/sounds.md": "/docs/sounds/",
   "docs/push-notifications.md": "/docs/push-notifications/",
   "docs/features.md": "/docs/features/",
+  "docs/github-integration.md": "/docs/github-integration/",
   "docs/development.md": "/docs/development/",
   "docs/development/adding-agents.md": "/docs/development/adding-agents/",
   "docs/development/logging.md": "/docs/development/logging/",
