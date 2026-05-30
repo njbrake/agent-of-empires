@@ -8,8 +8,9 @@ use rattles::presets::prelude as spinners;
 
 use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH};
 use crate::tui::components::{
-    profile_cycler_spans, render_text_field, render_text_field_with_ghost,
-    set_prefixed_input_cursor_position, tool_cycler_spans,
+    focused_input_spans, input_scroll, profile_cycler_spans, render_text_field,
+    render_text_field_with_ghost, set_prefixed_input_cursor_position, tool_cycler_spans,
+    visible_slice,
 };
 use crate::tui::styles::Theme;
 
@@ -579,6 +580,9 @@ impl NewSessionDialog {
         let value_style = Style::default().fg(value_color);
 
         let value = self.path.value();
+        let prefix_width = 6; // "Path: "
+        let available_width = area.width.saturating_sub(prefix_width as u16) as usize;
+
         let mut spans = vec![Span::styled("Path:", label_style), Span::raw(" ")];
 
         // Scratch mode disables this field. The undo hint lives in the
@@ -598,33 +602,31 @@ impl NewSessionDialog {
                 spans.push(Span::styled(placeholder_text, value_style));
             }
         } else if is_focused {
-            let cursor_pos = self.path.cursor();
+            let scroll = input_scroll(&self.path, available_width);
             let cursor_style = if flashing_invalid {
                 Style::default().fg(theme.background).bg(theme.error)
             } else {
                 Style::default().fg(theme.background).bg(theme.accent)
             };
-
-            let before: String = value.chars().take(cursor_pos).collect();
-            let cursor_char: String = value
-                .chars()
-                .nth(cursor_pos)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| " ".to_string());
-            let after: String = value.chars().skip(cursor_pos + 1).collect();
-
-            if !before.is_empty() {
-                spans.push(Span::styled(before, value_style));
-            }
-            spans.push(Span::styled(cursor_char, cursor_style));
-            if !after.is_empty() {
-                spans.push(Span::styled(after, value_style));
-            }
-            if let Some(ghost) = self.ghost_text() {
-                spans.push(Span::styled(ghost, Style::default().fg(theme.dimmed)));
+            let (field_spans, end_visible) = focused_input_spans(
+                value,
+                self.path.cursor(),
+                scroll,
+                available_width,
+                value_style,
+                cursor_style,
+            );
+            spans.extend(field_spans);
+            // Only show ghost when end of input is visible
+            if end_visible {
+                if let Some(ghost) = self.ghost_text() {
+                    spans.push(Span::styled(ghost, Style::default().fg(theme.dimmed)));
+                }
             }
         } else {
-            spans.push(Span::styled(value, value_style));
+            let scroll = input_scroll(&self.path, available_width);
+            let (visible, _) = visible_slice(value, scroll, available_width);
+            spans.push(Span::styled(visible, value_style));
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -1186,17 +1188,26 @@ impl NewSessionDialog {
                     .as_ref()
                     .map(|g| g.ghost_text.clone());
 
+                let prefix_width = 4; // "  + " or "  > "
+                let available_width = area.width.saturating_sub(prefix_width as u16) as usize;
+
                 let make_input_line = |prefix: &'static str,
                                        val: &str,
                                        ghost: &Option<String>,
-                                       th: &Theme|
+                                       th: &Theme,
+                                       inp: &Input|
                  -> Line<'static> {
+                    let scroll = input_scroll(inp, available_width);
+                    let (visible_value, end_visible) = visible_slice(val, scroll, available_width);
+
                     let mut spans = vec![
                         Span::styled(prefix, Style::default().fg(th.accent)),
-                        Span::styled(val.to_string(), Style::default().fg(th.accent).bold()),
+                        Span::styled(visible_value, Style::default().fg(th.accent).bold()),
                     ];
-                    if let Some(ref g) = ghost {
-                        spans.push(Span::styled(g.clone(), Style::default().fg(th.dimmed)));
+                    if end_visible {
+                        if let Some(ref g) = ghost {
+                            spans.push(Span::styled(g.clone(), Style::default().fg(th.dimmed)));
+                        }
                     }
                     spans.push(Span::styled("_", Style::default().fg(th.accent)));
                     Line::from(spans)
@@ -1214,12 +1225,24 @@ impl NewSessionDialog {
                             Style::default().fg(theme.text),
                         )));
                     }
-                    lines.push(make_input_line("  + ", input.value(), &ghost_text, theme));
+                    lines.push(make_input_line(
+                        "  + ",
+                        input.value(),
+                        &ghost_text,
+                        theme,
+                        input,
+                    ));
                     cursor_row = Some((lines.len() - 1, "  + ", input));
                 } else {
                     for (i, entry) in self.workspace_repos.iter().enumerate() {
                         if i == self.workspace_repo_selected_index {
-                            lines.push(make_input_line("  > ", input.value(), &ghost_text, theme));
+                            lines.push(make_input_line(
+                                "  > ",
+                                input.value(),
+                                &ghost_text,
+                                theme,
+                                input,
+                            ));
                             cursor_row = Some((lines.len() - 1, "  > ", input));
                         } else {
                             let prefix = "    ";
