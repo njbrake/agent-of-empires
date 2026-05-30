@@ -4,6 +4,7 @@ import { CommentsBanner } from "./diff/comments/CommentsBanner";
 import { PairedShellPane } from "./PairedTerminal";
 import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 import type { RepoBase, RichDiffFile, SessionResponse } from "../lib/types";
+import { TOUR_ANCHORS, tourAnchor } from "../lib/tourSteps";
 
 const VSPLIT_STORAGE_KEY = "aoe-right-vsplit";
 const DEFAULT_TOP_RATIO = 0.5;
@@ -133,7 +134,7 @@ export function RightPanel({
   }, []);
 
   return (
-    <div ref={containerRef} className="flex-1 flex flex-col min-h-0 overflow-hidden md:bg-surface-800 md:pb-1.5">
+    <div ref={containerRef} {...tourAnchor(TOUR_ANCHORS.rightPanel)} className="flex-1 flex flex-col min-h-0 overflow-hidden md:bg-surface-800 md:pb-1.5">
       {/* Upper: file list */}
       <div
         style={{ flexBasis: `${topRatio * 100}%` }}

@@ -65,6 +65,8 @@ import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
 import { ProjectsView } from "./components/ProjectsView";
 import { HelpOverlay } from "./components/HelpOverlay";
+import { useTour } from "./hooks/useTour";
+import type { TourScope } from "./lib/tourSteps";
 import { SessionWizard } from "./components/session-wizard/SessionWizard";
 import type { WizardPrefill } from "./components/session-wizard/SessionWizard";
 import type { SessionResponse } from "./lib/types";
@@ -457,10 +459,17 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [wizardPrefill, setWizardPrefill] = useState<WizardPrefill | undefined>(undefined);
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
   const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
+  // `serverAbout === null` conflates "not fetched yet" with "fetch failed", so
+  // the tour gates auto-launch on an explicit loaded flag instead.
+  const [serverAboutLoaded, setServerAboutLoaded] = useState(false);
 
   const refreshServerAbout = useCallback(async () => {
-    const about = await fetchAbout();
-    if (about) setServerAbout(about);
+    try {
+      const about = await fetchAbout();
+      if (about) setServerAbout(about);
+    } finally {
+      setServerAboutLoaded(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -1004,6 +1013,31 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     ],
   );
 
+  const tourScope: TourScope =
+    !activeWorkspace || !activeSession
+      ? "dashboard"
+      : activeSession.cockpit_mode
+        ? "cockpit"
+        : "session";
+  // Only auto-launch on a settled, unobstructed dashboard. Any open overlay or
+  // an in-flight session route defers it (the flag stays unset until then).
+  const tourAutoLaunchReady =
+    serverAboutLoaded &&
+    sessionsLoaded &&
+    !activeSessionId &&
+    !showSettings &&
+    !showProjects &&
+    !showSessionWizard &&
+    !showHelp &&
+    !showAbout &&
+    !showPalette;
+  const tour = useTour({
+    scope: tourScope,
+    readOnly: !!serverAbout?.read_only,
+    isDesktop: !isCoarse,
+    autoLaunchReady: tourAutoLaunchReady,
+  });
+
   return (
     <CockpitPrefsProvider value={cockpitPrefs}>
     <div
@@ -1019,6 +1053,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         diffCollapsed={diffCollapsed}
         onOpenHelp={handleOpenHelp}
         onOpenAbout={handleOpenAbout}
+        onStartTutorial={tour.startTour}
         onLogout={onLogout}
         loginRequired={loginRequired}
         isOffline={!!error}
@@ -1074,6 +1109,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           }
         />
       )}
+
+      {tour.tourElement}
 
       {showHelp && <HelpOverlay onClose={() => setShowHelp(false)} />}
 

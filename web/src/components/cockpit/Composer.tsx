@@ -30,6 +30,7 @@ import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
 import { SessionConfigControls } from "./SessionConfigControls";
 import type { CockpitState } from "../../lib/cockpitTypes";
 import { getDraft, setDraft } from "../../lib/cockpitDrafts";
+import { TOUR_ANCHORS, tourAnchor } from "../../lib/tourSteps";
 import { useMobileKeyboard } from "../../hooks/useMobileKeyboard";
 import { useAgentProfile } from "../../lib/agentProfileContext";
 import { useFocusTerminalTarget } from "../../hooks/useFocusTerminalTarget";
@@ -452,7 +453,7 @@ export function Composer({
   const wrapperLayout = composerWrapperLayout({ keyboardOpen });
   return (
     <div className={wrapperLayout.className} style={wrapperLayout.style}>
-      <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
+      <div {...tourAnchor(TOUR_ANCHORS.composer)} className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
         <ComposerPrimitive.Unstable_TriggerPopoverRoot>
           <ComposerPrimitive.Root
             className={[
@@ -935,7 +936,7 @@ function ModePicker({
   };
 
   return (
-    <div ref={ref} className="relative">
+    <div ref={ref} {...tourAnchor(TOUR_ANCHORS.modePicker)} className="relative">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -1138,6 +1139,7 @@ function QueueSendButton({
     <button
       type="button"
       aria-label="Queue follow-up message"
+      {...tourAnchor(TOUR_ANCHORS.queueSend)}
       title={title}
       onClick={onSend}
       className={[

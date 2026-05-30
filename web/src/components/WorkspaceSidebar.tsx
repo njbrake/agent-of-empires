@@ -46,6 +46,7 @@ import {
   isSessionActive,
 } from "../lib/session";
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
+import { TOUR_ANCHORS, tourAnchor } from "../lib/tourSteps";
 import {
   renameSession,
   setSessionArchive,
@@ -1761,6 +1762,7 @@ export function WorkspaceSidebar({
         onClick={onToggle}
       />
       <div
+        {...tourAnchor(TOUR_ANCHORS.sidebar)}
         style={{ width }}
         className={`fixed top-12 bottom-0 left-0 z-40 md:static md:z-auto bg-surface-800 flex flex-col md:h-full shrink-0 transition-transform duration-300 ease-in-out md:transition-none ${
           open ? "translate-x-0" : "-translate-x-full md:hidden"
@@ -2047,6 +2049,7 @@ export function WorkspaceSidebar({
           </button>
           <button
             onClick={onSettings}
+            {...tourAnchor(TOUR_ANCHORS.sidebarSettings)}
             className="w-8 h-8 flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"
             title="Settings"
             aria-label="Settings"

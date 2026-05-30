@@ -39,6 +39,7 @@ function renderTopBar(
       diffCollapsed={true}
       onOpenHelp={vi.fn()}
       onOpenAbout={vi.fn()}
+      onStartTutorial={vi.fn()}
       onLogout={vi.fn()}
       loginRequired={false}
       isOffline={overrides.isOffline ?? false}
