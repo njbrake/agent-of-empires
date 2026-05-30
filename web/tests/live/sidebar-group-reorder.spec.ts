@@ -51,7 +51,10 @@ base.describe("sidebar group-header reorder (#1644)", () => {
       await page.goto(`${serve.baseUrl}/`);
 
       const grips = page.locator("[data-testid='sidebar-group-drag-handle']");
-      await expect(grips).toHaveCount(2, { timeout: 10_000 });
+      // Cold-start under load can lag past Playwright's default; the
+      // other live sidebar specs bump first-paint waits for the same
+      // reason. 15s covers a heavily-loaded CI worker.
+      await expect(grips).toHaveCount(2, { timeout: 15_000 });
 
       const before = await readGroupNames(page);
       expect(before).toHaveLength(2);
@@ -83,7 +86,10 @@ base.describe("sidebar group-header reorder (#1644)", () => {
 
       // The order is client-only; a reload re-reads it from localStorage.
       await page.reload();
-      await expect(grips).toHaveCount(2, { timeout: 10_000 });
+      // Cold-start under load can lag past Playwright's default; the
+      // other live sidebar specs bump first-paint waits for the same
+      // reason. 15s covers a heavily-loaded CI worker.
+      await expect(grips).toHaveCount(2, { timeout: 15_000 });
       await expect
         .poll(() => readGroupNames(page), { timeout: 4_000 })
         .toEqual(expected);
@@ -108,7 +114,10 @@ base.describe("sidebar group-header reorder (#1644)", () => {
       await page.goto(`${serve.baseUrl}/`);
 
       const grips = page.locator("[data-testid='sidebar-group-drag-handle']");
-      await expect(grips).toHaveCount(2, { timeout: 10_000 });
+      // Cold-start under load can lag past Playwright's default; the
+      // other live sidebar specs bump first-paint waits for the same
+      // reason. 15s covers a heavily-loaded CI worker.
+      await expect(grips).toHaveCount(2, { timeout: 15_000 });
 
       // Flip to last-activity sort; the order is computed there, so the
       // grips disappear, matching how within-group row drag is gated.

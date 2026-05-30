@@ -2113,7 +2113,16 @@ export function WorkspaceSidebar({
                         groupId={group.id}
                         disabled={groupDragDisabled}
                       >
-                        {(handle) => renderGroupBody(group, handle)}
+                        {(handle) =>
+                          // Hide the grip when group drag is off (the
+                          // visible order is computed or filtered) so
+                          // there is no dead affordance, mirroring how
+                          // session rows drop their drag wiring.
+                          renderGroupBody(
+                            group,
+                            groupDragDisabled ? undefined : handle,
+                          )
+                        }
                       </SortableRepoGroup>
                     ),
                   )}
