@@ -449,6 +449,20 @@
       ]
     },
     {
+      "id": "palette.new-scratch-session",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/palette-scratch-launch.spec.ts",
+        "src/hooks/__tests__/useCommandActions.test.tsx"
+      ],
+      "components": [
+        "web/src/App.tsx",
+        "web/src/components/command-palette/CommandPalette.tsx",
+        "web/src/components/HelpOverlay.tsx"
+      ]
+    },
+    {
       "id": "sidebar.scratch-group",
       "kind": "live-playwright",
       "risk": "medium",

@@ -62,6 +62,11 @@ wizard with scratch already enabled and jumped to the Review step.
 A follow-up `Cmd+Enter` / `Ctrl+Enter` launches the session, so two
 keystrokes is enough to spin up a fresh scratch session.
 
+**Command palette.** The same flow is reachable from the command
+palette (`Cmd+K` / `Ctrl+K`): search for "New scratch session" and
+run it to open the wizard prefilled for a scratch session. In
+read-only mode the creation commands are hidden from the palette.
+
 **Sidebar grouping.** Every scratch session has its own
 `scratch/<id>/` directory on disk, so the dashboard sidebar would
 otherwise render each one as its own one-session group. Scratch

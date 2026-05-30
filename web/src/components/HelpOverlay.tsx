@@ -25,12 +25,15 @@ export function HelpOverlay({ onClose }: Props) {
 
   const optKey = IS_MAC ? "⌥" : "Alt";
 
+  const shiftKey = IS_MAC ? "⇧" : "Shift";
+
   const shortcuts = [
     { key: `${modKey}K`, desc: "Open command palette" },
     { key: `${modKey}B`, desc: "Toggle left sidebar" },
     { key: `${modKey}${optKey}B`, desc: "Toggle right panel" },
     { key: `${modKey}\``, desc: "Toggle agent / shell terminal focus" },
     { key: "n", desc: "New session" },
+    { key: `${modKey}${shiftKey}N`, desc: "New scratch session" },
     { key: "D", desc: "Toggle diff panel" },
     { key: "s", desc: "Toggle settings" },
     { key: "Esc", desc: "Close dialog" },
