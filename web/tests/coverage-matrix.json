@@ -708,6 +708,38 @@
       ]
     },
     {
+      "id": "right-panel.mobile-picker",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/mobile-right-panel-picker.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileRightPanelPicker.tsx",
+        "web/src/components/MobileMainPane.tsx",
+        "web/src/components/PairedTerminal.tsx",
+        "web/src/components/ContentSplit.tsx",
+        "web/src/components/RightPanel.tsx"
+      ]
+    },
+    {
+      "id": "right-panel.mobile-picker-units",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": [
+        "src/components/__tests__/MobileMainPane.test.tsx",
+        "src/components/__tests__/MobileRightPanelPicker.test.tsx",
+        "src/components/__tests__/PairedTerminal.test.tsx",
+        "src/hooks/__tests__/useIsWideViewport.test.tsx"
+      ],
+      "components": [
+        "web/src/components/MobileMainPane.tsx",
+        "web/src/components/MobileRightPanelPicker.tsx",
+        "web/src/components/PairedTerminal.tsx",
+        "web/src/hooks/useIsWideViewport.ts"
+      ]
+    },
+    {
       "id": "right-panel.diff-line-visibility",
       "kind": "vitest",
       "risk": "high",

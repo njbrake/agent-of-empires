@@ -41,9 +41,9 @@ async function focusKind(page: Page, kind: "agent" | "paired") {
       .focus();
     return;
   }
-  // Pick the visible paired panel: on desktop the inline copy
-  // (md:flex), on mobile the slide-in (md:hidden by default desktop).
-  // Filter by visibility so we hit whichever the user would actually use.
+  // The paired panel renders once (the inline desktop split copy); on
+  // mobile it is promoted into the single pane. Filter by visibility to
+  // hit whichever instance the user would actually use.
   const visiblePaired = page.locator('[data-term="paired"]:visible').first();
   await visiblePaired.locator("textarea").focus();
 }
@@ -69,7 +69,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
     await mockTerminalApis(page);
     await page.goto("/");
     await openSession(page);
-    await expect(page.locator('[data-term="paired"]')).toHaveCount(2);
+    await expect(page.locator('[data-term="paired"]')).toHaveCount(1);
 
     await focusKind(page, "agent");
     await expect.poll(() => focusedKind(page)).toBe("agent");
@@ -112,7 +112,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
 
     await focusKind(page, "agent");
     await page.keyboard.press("ControlOrMeta+`");
-    await expect(page.locator('[data-term="paired"]')).toHaveCount(2);
+    await expect(page.locator('[data-term="paired"]')).toHaveCount(1);
     await expect.poll(() => focusedKind(page)).toBe("paired");
     await shot(page, "05-expanded-paired-focused.png");
   });
@@ -262,17 +262,14 @@ test.describe("Cmd/Ctrl+` mobile", () => {
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
     await openSession(page);
 
-    // Right panel starts collapsed on mobile; expand it via the existing
-    // shortcut so the slide-in mounts.
-    await page.keyboard.press("ControlOrMeta+Alt+b");
-    await expect(page.locator('[data-term="paired"]')).toHaveCount(2);
-
-    // Focus the visible paired (mobile slide-in). On a mobile viewport
-    // the desktop-inline copy has md:flex hidden, so :visible filters to
-    // the slide-in instance.
-    await focusKind(page, "paired");
+    // Single full-viewport pane on mobile (#1452). Cmd+` promotes and
+    // focuses the paired shell, mounting it lazily; there is exactly one
+    // paired instance, no slide-in copy.
+    await page.keyboard.press("ControlOrMeta+`");
+    await expect(page.locator('[data-term="paired"]')).toHaveCount(1);
     await expect.poll(() => focusedKind(page)).toBe("paired");
 
+    // Pressing again returns to the agent terminal.
     await page.keyboard.press("ControlOrMeta+`");
     await expect.poll(() => focusedKind(page)).toBe("agent");
 
