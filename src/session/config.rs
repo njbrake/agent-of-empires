@@ -155,12 +155,41 @@ fn default_modifiers() -> crossterm::event::KeyModifiers {
     crossterm::event::KeyModifiers::NONE
 }
 
+/// Strip the redundant `SHIFT` bit from a runtime key event when the
+/// code is already an uppercase character. See `KeyBinding::matches`
+/// for the rationale; this is the runtime-side mirror of
+/// `sanitize_modifiers` in `src/tui/dialogs/capture_key.rs`.
+fn normalize_event_modifiers(
+    mods: crossterm::event::KeyModifiers,
+    code: &crossterm::event::KeyCode,
+) -> crossterm::event::KeyModifiers {
+    let mut out = mods;
+    if let crossterm::event::KeyCode::Char(c) = code {
+        if c.is_uppercase() {
+            out.remove(crossterm::event::KeyModifiers::SHIFT);
+        }
+    }
+    out
+}
+
 impl KeyBinding {
     /// True when the given crossterm key event matches this binding,
     /// modifier-exact. Mirrors `bindings.rs::chord_matches` so a
     /// modified key never silently triggers a bare-letter binding.
+    ///
+    /// Cross-platform note: on Windows (and on Linux since crossterm
+    /// 0.29's "Add shift modifier to uppercase char events on unix"
+    /// change) `KeyCode::Char('D') + KeyModifiers::SHIFT` is emitted
+    /// for Shift+letter, while on older Linux/macOS terminals the same
+    /// physical key arrives as `Char('D') + NONE`. The capture dialog
+    /// strips the redundant Shift bit on uppercase chars at storage
+    /// time (`sanitize_modifiers` in `capture_key.rs`), so we apply
+    /// the same normalization to the incoming event before comparing.
+    /// Without this, a binding captured on one platform would silently
+    /// stop matching on the other.
     pub fn matches(&self, event: &crossterm::event::KeyEvent) -> bool {
-        self.key.matches(&event.code) && event.modifiers == self.modifiers
+        self.key.matches(&event.code)
+            && normalize_event_modifiers(event.modifiers, &event.code) == self.modifiers
     }
 
     /// Render the chord as a `Ctrl+/`, `Shift+F5`, `a` style label for
@@ -1811,6 +1840,60 @@ mod tests {
         assert_eq!(config.default_profile, "custom");
         // Other fields should have defaults
         assert!(!config.worktree.enabled);
+    }
+
+    // Tests for KeyBinding cross-platform matching
+    #[test]
+    fn test_keybinding_matches_uppercase_char_with_or_without_shift() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // Binding captured/stored as "uppercase D with no extra modifiers"
+        // (the capture dialog strips the redundant SHIFT bit at write
+        // time). The runtime event must match whether the underlying
+        // terminal reported the SHIFT bit (Windows / newer Unix crossterm)
+        // or not (older Unix / legacy paths).
+        let binding = KeyBinding {
+            key: KeyCodeRepr::Char('D'),
+            modifiers: KeyModifiers::NONE,
+        };
+        let without_shift = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE);
+        let with_shift = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT);
+        assert!(binding.matches(&without_shift));
+        assert!(binding.matches(&with_shift));
+    }
+
+    #[test]
+    fn test_keybinding_matches_ctrl_shift_uppercase_normalizes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // Ctrl+Shift+D: capture stores `code=Char('D'), mods=CTRL` after
+        // stripping the redundant SHIFT bit. The runtime event from a
+        // crossterm version that includes SHIFT (CTRL|SHIFT) must still
+        // match the stored CTRL-only form.
+        let binding = KeyBinding {
+            key: KeyCodeRepr::Char('D'),
+            modifiers: KeyModifiers::CONTROL,
+        };
+        let ctrl_only = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::CONTROL);
+        let ctrl_with_shift = KeyEvent::new(
+            KeyCode::Char('D'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert!(binding.matches(&ctrl_only));
+        assert!(binding.matches(&ctrl_with_shift));
+    }
+
+    #[test]
+    fn test_keybinding_lowercase_char_modifier_exact() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // A bare lowercase chord must not silently match the modified
+        // form: a binding on `n` should not fire on Ctrl+n. The
+        // uppercase-normalization only strips redundant SHIFT, never
+        // CTRL or ALT.
+        let binding = KeyBinding {
+            key: KeyCodeRepr::Char('n'),
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(binding.matches(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)));
+        assert!(!binding.matches(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)));
     }
 
     // Tests for ThemeConfig

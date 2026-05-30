@@ -14,8 +14,11 @@ use crate::session::config::{HomeKeybinds, SortOrder};
 use crate::tui::styles::Theme;
 
 /// Width of the key column, in cells. 11 fits the longest key strings
-/// in either keymap (`Home/End/G`, `Shift+drag` = 10 cells) with one
-/// cell of padding before the description.
+/// in the stock keymap (`Home/End/G`, `Shift+drag` = 10 cells) with one
+/// cell of padding before the description. Rebinds (via the Keybinds
+/// settings tab) can produce wider chords; `key_field_width` lifts the
+/// floor at runtime so a longer user chord doesn't crash into the
+/// description.
 const KEY_FIELD_WIDTH: usize = 11;
 /// Cells of left indent before each shortcut row.
 const ROW_INDENT: usize = 2;
@@ -154,16 +157,32 @@ fn section_height(section: &HelpSection) -> usize {
     1 + section.rows.len()
 }
 
+/// Effective key-column width for the current section set. Floors at the
+/// `KEY_FIELD_WIDTH` constant so the stock layout is unchanged, but lifts
+/// when a user-configured chord (e.g. `Ctrl+Shift+F1`) is wider than the
+/// static budget. Layout (`min_column_width`) and rendering
+/// (`render_column_lines`) MUST share the same value or the description
+/// column will be misaligned.
+fn key_field_width(sections: &[HelpSection]) -> usize {
+    sections
+        .iter()
+        .flat_map(|s| s.rows.iter().map(|(key, _)| key.width()))
+        .max()
+        .unwrap_or(0)
+        .max(KEY_FIELD_WIDTH)
+}
+
 /// Minimum width a column needs to render every row of every section
 /// without truncating the description.
 fn min_column_width(sections: &[HelpSection]) -> u16 {
+    let key_width = key_field_width(sections);
     let row_width = sections
         .iter()
         .flat_map(|s| s.rows.iter().map(|(_, d)| d.width()))
         .max()
         .unwrap_or(0)
         + ROW_INDENT
-        + KEY_FIELD_WIDTH;
+        + key_width;
     let title_width = sections.iter().map(|s| s.title.width()).max().unwrap_or(0);
     row_width.max(title_width) as u16
 }
@@ -219,6 +238,9 @@ fn render_column_lines(
     indices: &[usize],
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    // Must agree with `min_column_width` so the description column lines
+    // up with the layout budget; both feed off the same function.
+    let key_width = key_field_width(sections);
     let mut lines: Vec<Line> = Vec::new();
     for (i, &si) in indices.iter().enumerate() {
         let section = &sections[si];
@@ -227,7 +249,7 @@ fn render_column_lines(
             Style::default().fg(theme.accent).bold(),
         )));
         for (key, desc) in &section.rows {
-            let pad = KEY_FIELD_WIDTH.saturating_sub(key.width());
+            let pad = key_width.saturating_sub(key.width());
             let key_cell = format!("{}{}{}", " ".repeat(ROW_INDENT), key, " ".repeat(pad));
             lines.push(Line::from(vec![
                 Span::styled(key_cell, Style::default().fg(theme.waiting)),

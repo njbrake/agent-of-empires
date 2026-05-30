@@ -171,11 +171,11 @@ pub fn resolve(
     ctx: &Ctx,
     overrides: &HomeKeybinds,
 ) -> Option<ActionId> {
-    if overrides.search.matches(key) {
-        return Some(ActionId::SearchStart);
-    }
     for b in BINDINGS {
         if b.id == ActionId::SearchStart {
+            if overrides.search.matches(key) {
+                return Some(ActionId::SearchStart);
+            }
             continue;
         }
         let chords = if strict { b.strict } else { b.non_strict };
@@ -913,5 +913,41 @@ mod tests {
         assert_eq!(resolve(&key('/'), false, &c, &b), None);
         // Label reflects the rebound chord.
         assert_eq!(label(ActionId::SearchStart, false, &b), "\\");
+    }
+
+    #[test]
+    fn search_override_yields_to_context_gated_bindings() {
+        // Regression for the bindings.rs:174 precedence bug flagged on
+        // PR #1682: if the user rebinds search to a chord that a
+        // context-gated binding ahead of SearchStart in the BINDINGS
+        // table also owns (e.g. `n` for SearchNext while a search is
+        // active), the context-gated binding must still win. Without
+        // the in-loop override check, rebinding search to `n` made
+        // SearchStart shadow SearchNext during active searches.
+        let mut c = ctx();
+        c.has_search = true;
+        let b = HomeKeybinds {
+            search: KeyBinding {
+                key: KeyCodeRepr::Char('n'),
+                modifiers: KeyModifiers::NONE,
+            },
+        };
+        for strict in [false, true] {
+            assert_eq!(
+                resolve(&key('n'), strict, &c, &b),
+                Some(ActionId::SearchNext),
+                "strict={strict}: SearchNext must beat overridden SearchStart while search is active",
+            );
+        }
+        // Without an active search, the SearchNext context fails, so the
+        // override at SearchStart's table position is reached. SearchStart
+        // is listed ahead of NewSession in BINDINGS so the override wins
+        // over NewSession (an acceptable rebind conflict the user opts
+        // into by picking `n`).
+        c.has_search = false;
+        assert_eq!(
+            resolve(&key('n'), false, &c, &b),
+            Some(ActionId::SearchStart)
+        );
     }
 }

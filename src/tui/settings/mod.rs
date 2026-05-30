@@ -286,7 +286,13 @@ impl SettingsView {
 
         push_section(&mut rows, "Appearance");
         push_tab(&mut rows, SettingsCategory::Theme);
-        push_tab(&mut rows, SettingsCategory::Keybinds);
+        // Keybinds are global-only in v1: the non-Global apply path no-ops
+        // FieldKey::Keybind (see src/tui/settings/fields.rs), so showing the
+        // tab in Profile / Repo scope would let users edit and save with no
+        // persisted effect.
+        if scope == SettingsScope::Global {
+            push_tab(&mut rows, SettingsCategory::Keybinds);
+        }
 
         push_section(&mut rows, "Sessions");
         push_tab(&mut rows, SettingsCategory::Session);
@@ -566,6 +572,7 @@ impl SettingsView {
         self.editing_input.is_some()
             || self.list_edit_state.is_some()
             || self.custom_instruction_dialog.is_some()
+            || self.capture_key_dialog.is_some()
             || self.search_input.is_some()
     }
 
