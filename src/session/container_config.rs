@@ -3687,4 +3687,18 @@ volume_ignores = ["target"]
         let b = named_volume_for("sess-1", path2);
         assert_ne!(a, b);
     }
+
+    #[test]
+    fn test_named_volume_for_prefix_does_not_match_longer_session_id() {
+        // "sess1" must not match volumes belonging to "sess10".
+        // The cleanup prefix is "aoe-vi-{session_id}-" (trailing dash), so a volume
+        // named "aoe-vi-sess10-..." must NOT start with "aoe-vi-sess1-".
+        let vol_sess10 = named_volume_for("sess10", "/workspace/node_modules");
+        let prefix_sess1 = format!("aoe-vi-{}-", "sess1");
+        assert!(
+            !vol_sess10.starts_with(&prefix_sess1),
+            "Volume for sess10 must not match the cleanup prefix for sess1: {}",
+            vol_sess10
+        );
+    }
 }
