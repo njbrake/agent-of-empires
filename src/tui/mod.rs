@@ -145,8 +145,8 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     // when present, fall back to the terminal's native scroll regardless of
     // AOE_MOUSE_CAPTURE so the user can select text without aoe eating events.
     let mosh_active = std::env::var_os("MOSH_CONNECTION").is_some();
-    // Resolve once for the enable/disable bookends; `App` re-resolves on its
-    // own reload cadence so a mid-session settings toggle still applies.
+    // Resolve once for the startup enable; `App` re-resolves on its own reload
+    // cadence so a mid-session settings toggle still applies.
     let startup_session_config = crate::session::resolve_config(profile)
         .map(|c| c.session)
         .unwrap_or_default();
@@ -197,7 +197,10 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
         LeaveAlternateScreen,
         DisableBracketedPaste
     )?;
-    if mouse_capture_requested(&startup_session_config) && !mosh_active {
+    // Always disable on teardown (except Mosh, where we never enabled): a
+    // mid-session Settings toggle can turn capture on after startup, so gating
+    // disable on the startup snapshot would leave capture stuck on at exit.
+    if !mosh_active {
         execute!(terminal.backend_mut(), DisableMouseCapture)?;
     }
     terminal.show_cursor()?;
