@@ -4185,8 +4185,13 @@ impl HomeView {
         match repo_config::check_hook_trust(std::path::Path::new(&data.path)) {
             Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
                 use crate::tui::dialogs::HookTrustDialog;
-                self.hook_trust_dialog =
-                    Some(HookTrustDialog::new(hooks, hooks_hash, data.path.clone()));
+                let merged_hooks = repo_config::merge_hooks_for_display(&data.profile, &hooks);
+                self.hook_trust_dialog = Some(HookTrustDialog::new(
+                    hooks,
+                    merged_hooks,
+                    hooks_hash,
+                    data.path.clone(),
+                ));
                 self.pending_hook_trust_data = Some(data);
                 None
             }

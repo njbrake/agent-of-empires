@@ -933,6 +933,14 @@ fn test_cli_add_workspace_repo_hooks_execute() {
         "should print hook completion message.\nstdout: {}",
         stdout
     );
+    // #596: the merged hook commands should be printed before they run so the
+    // user (especially with --trust-hooks) sees exactly what executes.
+    assert!(
+        stdout.contains("Running on_create hooks:")
+            && stdout.contains(&format!("touch {}", hook_marker.display())),
+        "should print the merged on_create command list.\nstdout: {}",
+        stdout
+    );
     assert!(
         hook_marker.exists(),
         "hook marker file should exist, proving on_create hooks ran"
@@ -993,6 +1001,13 @@ on_create = ["touch {}"]
     assert!(
         stdout.contains("on_create hooks completed"),
         "should print hook completion message for global hooks.\nstdout: {}",
+        stdout
+    );
+    // #596: the merged list should surface the global fallback command too.
+    assert!(
+        stdout.contains("Running on_create hooks:")
+            && stdout.contains(&format!("touch {}", hook_marker.display())),
+        "should print the merged on_create command list for global hooks.\nstdout: {}",
         stdout
     );
     assert!(

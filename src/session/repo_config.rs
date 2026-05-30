@@ -533,6 +533,31 @@ pub fn merge_hooks_with_config(profile: &str, repo_hooks: HooksConfig) -> Option
     }
 }
 
+/// Apply repo hooks onto a base (global/profile) hooks config, mirroring how hooks
+/// actually resolve: repo overrides global per type. Unlike `merge_hooks_with_config`
+/// this keeps `on_destroy` and never collapses to `None`, since it feeds the trust
+/// dialog rather than execution gating.
+fn apply_repo_hook_overrides(mut base: HooksConfig, repo_hooks: &HooksConfig) -> HooksConfig {
+    if !repo_hooks.on_create.is_empty() {
+        base.on_create = repo_hooks.on_create.clone();
+    }
+    if !repo_hooks.on_launch.is_empty() {
+        base.on_launch = repo_hooks.on_launch.clone();
+    }
+    if !repo_hooks.on_destroy.is_empty() {
+        base.on_destroy = repo_hooks.on_destroy.clone();
+    }
+    base
+}
+
+/// Resolve the full merged hook set for display in the trust dialog: global/profile
+/// hooks overlaid by the repo's per-type overrides. Lets the user see every command
+/// that will actually run, not just the repo-defined ones (#596).
+pub fn merge_hooks_for_display(profile: &str, repo_hooks: &HooksConfig) -> HooksConfig {
+    let base = super::profile_config::resolve_config_or_warn(profile).hooks;
+    apply_repo_hook_overrides(base, repo_hooks)
+}
+
 // ---------------------------------------------------------------------------
 // Hook execution
 // ---------------------------------------------------------------------------
@@ -1273,6 +1298,60 @@ mod tests {
     fn test_load_repo_config_nonexistent() {
         let result = load_repo_config(Path::new("/nonexistent/path")).unwrap();
         assert!(result.is_none());
+    }
+
+    fn global_hooks_fixture() -> HooksConfig {
+        HooksConfig {
+            on_create: vec!["global-create".to_string()],
+            on_launch: vec!["global-launch".to_string()],
+            on_destroy: vec!["global-destroy".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_apply_repo_hook_overrides_replaces_not_appends() {
+        // A repo-defined type fully replaces the global list (per-field override,
+        // never append): the global command must NOT survive in the merged list.
+        let repo = HooksConfig {
+            on_create: vec!["repo-create-a".to_string(), "repo-create-b".to_string()],
+            on_launch: vec!["repo-launch".to_string()],
+            on_destroy: vec!["repo-destroy".to_string()],
+        };
+        let merged = apply_repo_hook_overrides(global_hooks_fixture(), &repo);
+        assert_eq!(
+            merged.on_create,
+            vec!["repo-create-a".to_string(), "repo-create-b".to_string()]
+        );
+        assert_eq!(merged.on_launch, vec!["repo-launch".to_string()]);
+        assert_eq!(merged.on_destroy, vec!["repo-destroy".to_string()]);
+        assert!(
+            !merged.on_create.iter().any(|c| c.starts_with("global")),
+            "global on_create should be replaced, not appended"
+        );
+    }
+
+    #[test]
+    fn test_apply_repo_hook_overrides_falls_through_to_global() {
+        // Types the repo leaves empty fall through to the global/profile values.
+        let repo = HooksConfig::default();
+        let merged = apply_repo_hook_overrides(global_hooks_fixture(), &repo);
+        assert_eq!(merged.on_create, vec!["global-create".to_string()]);
+        assert_eq!(merged.on_launch, vec!["global-launch".to_string()]);
+        assert_eq!(merged.on_destroy, vec!["global-destroy".to_string()]);
+    }
+
+    #[test]
+    fn test_apply_repo_hook_overrides_mixed_per_type() {
+        // Override and fall-through coexist: repo defines only on_create, so
+        // on_launch/on_destroy keep the global values.
+        let repo = HooksConfig {
+            on_create: vec!["repo-create".to_string()],
+            ..Default::default()
+        };
+        let merged = apply_repo_hook_overrides(global_hooks_fixture(), &repo);
+        assert_eq!(merged.on_create, vec!["repo-create".to_string()]);
+        assert_eq!(merged.on_launch, vec!["global-launch".to_string()]);
+        assert_eq!(merged.on_destroy, vec!["global-destroy".to_string()]);
     }
 
     #[test]

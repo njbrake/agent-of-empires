@@ -668,7 +668,13 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
         if let Some(hooks) = resolved_hooks {
             if !hooks.on_create.is_empty() {
-                println!("Running on_create hooks...");
+                // Show the final merged hook list (repo hooks override global/profile
+                // per type) so the user can see exactly what runs, especially when
+                // `--trust-hooks` skipped the interactive approval prompt (#596).
+                println!("Running on_create hooks:");
+                for cmd in &hooks.on_create {
+                    println!("  {}", cmd);
+                }
                 let hook_env = repo_config::lifecycle_env_vars(&instance);
                 repo_config::execute_hooks(&hooks.on_create, &path, &hook_env)?;
                 println!("✓ on_create hooks completed");
