@@ -232,11 +232,13 @@ function SubagentChildWrap({ children }: { children: ReactNode }) {
 
 /* ── Shared header bits ──────────────────────────────────────────── */
 
-type Status = "running" | "ok" | "err";
+type Status = "running" | "ok" | "err" | "stopped";
 
 function statusFor(result?: ActivityRow): Status {
   if (!result) return "running";
-  return result.kind === "tool_error" ? "err" : "ok";
+  if (result.kind === "tool_error") return "err";
+  if (result.kind === "tool_stopped") return "stopped";
+  return "ok";
 }
 
 // Per-card expand state for tool cards. Failed cards auto-open so the
@@ -272,7 +274,7 @@ function StatusDot({ status, neutral }: { status: Status; neutral?: boolean }) {
   const cls =
     status === "running"
       ? "bg-brand-400 animate-pulse"
-      : neutral
+      : neutral || status === "stopped"
         ? "bg-text-dim/60"
         : status === "ok"
           ? "bg-status-running"
@@ -291,6 +293,12 @@ function StatusBadge({ status }: { status: Status }) {
   }
   if (status === "err") {
     return <span className="text-[11px] text-status-error">failed</span>;
+  }
+  if (status === "stopped") {
+    // `--color-status-stopped` fails WCAG AA for text (it is a dot-only
+    // decorative token); the muted dot already differentiates from the
+    // green "done" dot, so keep the label on the legible dim slot.
+    return <span className="text-[11px] text-text-dim">stopped</span>;
   }
   return <span className="text-[11px] text-text-dim">done</span>;
 }
@@ -1134,13 +1142,19 @@ export function TodoGroupCard({ items }: { items: TodoGroupChild[] }) {
   if (snapshots.length === 0) return null;
 
   // The collapsed preview shows the latest *successful* snapshot, since
-  // a TodoWrite that ended in tool_error never became the live state.
-  // The header still reflects the latest attempt so a failed trailing
-  // update surfaces as an error rather than looking clean. See #1468.
+  // a TodoWrite that ended in tool_error (or was interrupted by a stop,
+  // tool_stopped; see #1646) never became the live state. The header
+  // still reflects the latest attempt so a failed trailing update
+  // surfaces as an error rather than looking clean. See #1468.
   const latestAttempt = snapshots[snapshots.length - 1]!;
   const latestSuccessful =
-    [...snapshots].reverse().find((s) => s.result?.kind !== "tool_error") ??
-    null;
+    [...snapshots]
+      .reverse()
+      .find(
+        (s) =>
+          s.result?.kind !== "tool_error" &&
+          s.result?.kind !== "tool_stopped",
+      ) ?? null;
   const previewSnapshot = latestSuccessful ?? latestAttempt;
   const latestFailed = latestAttempt.result?.kind === "tool_error";
   const breakdown = todoBreakdown(todoCounts(previewSnapshot.todos));
