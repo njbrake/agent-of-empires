@@ -1382,6 +1382,28 @@
       ]
     },
     {
+      "id": "story.sidebar-queued-count",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-queued-count.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "sidebar.queued-count-hook",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/hooks/__tests__/useCockpitQueueCount.test.tsx"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
       "id": "story.sidebar-select-focuses-input",
       "kind": "live-playwright",
       "risk": "medium",
