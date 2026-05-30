@@ -350,6 +350,32 @@ fn passphrase_wall_entry_action(path: &str, client_ip: IpAddr) -> PassphraseWall
     PassphraseWallEntryAction::Continue
 }
 
+/// Emit the passphrase-only loopback-bypass event. This fires on every
+/// request a local caller makes (the TUI / dashboard poll `/api/*`
+/// continuously), so it is a frequent, expected control-flow event and
+/// belongs at `debug`, not `info`. See #1647. Extracted so the level is
+/// assertable with a tracing capture layer without standing up the full
+/// middleware.
+fn log_loopback_bypass_passphrase(client_ip: IpAddr, path: &str) {
+    tracing::debug!(
+        target: "auth.passphrase",
+        ip = %client_ip,
+        path = %path,
+        "loopback bypass: skipping passphrase factor in passphrase-only mode"
+    );
+}
+
+/// Emit the token-mode loopback-bypass event. Same per-request frequency
+/// and rationale as [`log_loopback_bypass_passphrase`]; see #1647.
+fn log_loopback_bypass_token(client_ip: IpAddr, path: &str) {
+    tracing::debug!(
+        target: "auth",
+        ip = %client_ip,
+        path = %path,
+        "loopback bypass: valid token + loopback peer; skipping passphrase factor"
+    );
+}
+
 /// Whether a request path + method needs an elevated login session
 /// (step-up auth, 15-minute passphrase confirmation window).
 ///
@@ -516,12 +542,7 @@ async fn run_passphrase_wall(
     match passphrase_wall_entry_action(&path, client_ip) {
         PassphraseWallEntryAction::BypassExempt => return next.run(request).await,
         PassphraseWallEntryAction::BypassLoopback => {
-            tracing::info!(
-                target: "auth.passphrase",
-                ip = %client_ip,
-                path = %path,
-                "loopback bypass: skipping passphrase factor in passphrase-only mode"
-            );
+            log_loopback_bypass_passphrase(client_ip, &path);
             return next.run(request).await;
         }
         PassphraseWallEntryAction::Continue => {}
@@ -823,12 +844,7 @@ pub async fn auth_middleware(
     match post_token_auth_action(login_enabled, login_exempt, client_ip) {
         PostTokenAuthAction::Bypass => {
             if login_enabled && !login_exempt && is_local_trusted(client_ip) {
-                tracing::info!(
-                    target: "auth",
-                    ip = %client_ip,
-                    path = %path,
-                    "loopback bypass: valid token + loopback peer; skipping passphrase factor"
-                );
+                log_loopback_bypass_token(client_ip, &path);
             }
         }
         PostTokenAuthAction::RequireLogin => {
@@ -948,6 +964,57 @@ async fn handle_session_authenticated(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Records (level, target) for every event so the loopback-bypass
+    // helpers' log level is assertable without standing up the full
+    // axum middleware (AppState is too heavy to build in a unit test).
+    #[derive(Clone, Default)]
+    struct LevelCapture(std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LevelCapture {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let meta = event.metadata();
+            self.0
+                .lock()
+                .unwrap()
+                .push((*meta.level(), meta.target().to_string()));
+        }
+    }
+
+    fn capture_events(f: impl FnOnce()) -> Vec<(tracing::Level, String)> {
+        use tracing_subscriber::layer::SubscriberExt;
+        let capture = LevelCapture::default();
+        let events = capture.0.clone();
+        let subscriber = tracing_subscriber::registry::Registry::default().with(capture);
+        tracing::subscriber::with_default(subscriber, f);
+        let recorded = events.lock().unwrap();
+        recorded.clone()
+    }
+
+    // #1647: the loopback bypass fires on essentially every local
+    // request, so it must log at debug, not info, to keep the
+    // default-level log readable.
+    #[test]
+    fn loopback_bypass_passphrase_logs_at_debug() {
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let events = capture_events(|| log_loopback_bypass_passphrase(loopback, "/api/sessions"));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, tracing::Level::DEBUG);
+        assert_eq!(events[0].1, "auth.passphrase");
+    }
+
+    #[test]
+    fn loopback_bypass_token_logs_at_debug() {
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let events = capture_events(|| log_loopback_bypass_token(loopback, "/api/sessions"));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, tracing::Level::DEBUG);
+        assert_eq!(events[0].1, "auth");
+    }
 
     #[test]
     fn constant_time_eq_matching() {
