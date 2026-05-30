@@ -24,6 +24,13 @@ import { isClearAlias } from "../lib/agentProfiles";
 import { useAgentProfile } from "../lib/agentProfileContext";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { safeSetItem } from "../lib/safeStorage";
+import {
+  STORAGE_KEY_PREFIX,
+  STATE_TTL_MS,
+  clearQueueCount,
+  setQueueCount,
+  type PersistedEntry,
+} from "../lib/cockpitStateStorage";
 import { getToken } from "../lib/token";
 import { setSessionArchive, setSessionSnooze } from "../lib/api";
 
@@ -79,14 +86,7 @@ export type Action =
 // session-delete handler and logout flow can drop stale entries
 // instead of waiting for them to age out.
 const STATE_CACHE_CAP = 32;
-const STORAGE_KEY_PREFIX = "aoe:cockpit-state:v1:";
-const STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const stateCache = new Map<string, CockpitState>();
-
-interface PersistedEntry {
-  savedAt: number;
-  state: CockpitState;
-}
 
 function storageKey(sessionId: string): string {
   return STORAGE_KEY_PREFIX + sessionId;
@@ -141,13 +141,18 @@ function evictOldestPersistedCockpitState(currentKey: string): boolean {
 function persistState(sessionId: string, state: CockpitState): void {
   const key = storageKey(sessionId);
   const body = JSON.stringify({ savedAt: Date.now(), state } satisfies PersistedEntry);
-  if (safeSetItem(key, body)) return;
+  if (safeSetItem(key, body)) {
+    setQueueCount(sessionId, state.queuedPrompts.length);
+    return;
+  }
   // Storage write failed (likely QuotaExceeded). Evict a single oldest
   // cockpit cache entry and retry exactly once. On a second failure the
   // cache is best-effort: the next reload replays from the server, so
   // we stay silent here per the deliberate UX choice for cache writes.
   if (!evictOldestPersistedCockpitState(key)) return;
-  safeSetItem(key, body);
+  if (safeSetItem(key, body)) {
+    setQueueCount(sessionId, state.queuedPrompts.length);
+  }
 }
 
 // Test-only exports so the eviction policy can be exercised without
@@ -300,9 +305,11 @@ export function clearCockpitCache(sessionId?: string): void {
   if (sessionId === undefined) {
     stateCache.clear();
     dropAllPersistedState();
+    clearQueueCount();
   } else {
     stateCache.delete(sessionId);
     dropPersistedState(sessionId);
+    clearQueueCount(sessionId);
   }
 }
 
