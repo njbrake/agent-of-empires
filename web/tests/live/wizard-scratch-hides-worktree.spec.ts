@@ -33,6 +33,11 @@ base("scratch hides the worktree section on the Session step", async ({ page }, 
       wizard.getByRole("heading", { name: "Name your session", exact: true }),
     ).toBeVisible({ timeout: 10_000 });
 
+    // #1514 folds the worktree section (and, for scratch, the
+    // explanatory note that replaces it) behind a top-level "Advanced"
+    // disclosure that defaults closed; expand it first.
+    await wizard.getByRole("button", { name: "Advanced" }).click();
+
     // Explanatory note appears in place of the worktree controls.
     await expect(
       wizard.getByText(/Scratch sessions do not use git worktrees/),
