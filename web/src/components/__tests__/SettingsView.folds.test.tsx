@@ -12,6 +12,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { SettingsView } from "../SettingsView";
+import * as api from "../../lib/api";
 
 const PROFILES = [
   { name: "main", is_default: true },
@@ -58,6 +59,24 @@ function expandAdvanced(container: HTMLElement) {
   ) as HTMLButtonElement;
   expect(trigger).toBeTruthy();
   fireEvent.click(trigger);
+}
+
+function fieldInputByLabel(
+  container: HTMLElement,
+  label: string,
+  type: "number" | "text",
+): HTMLInputElement {
+  const labels = Array.from(container.querySelectorAll("label"));
+  const match = labels.find((l) => l.textContent === label);
+  const input = match?.parentElement?.querySelector(`input[type="${type}"]`);
+  expect(input).toBeTruthy();
+  return input as HTMLInputElement;
+}
+
+function commit(input: HTMLInputElement, value: string) {
+  fireEvent.focus(input);
+  fireEvent.change(input, { target: { value } });
+  fireEvent.blur(input);
 }
 
 // The profile picker is the only <select> carrying the "work" option.
@@ -127,6 +146,54 @@ describe("Settings Advanced fold", () => {
     );
     await screen.findByText("Sandbox enabled by default");
     expect(screen.queryByText("CPU limit")).toBeNull();
+  });
+
+  it("saves an edited cockpit advanced knob through the normal path", async () => {
+    const { container } = renderView("cockpit");
+    await waitFor(() => expect(screen.getByText("Queue drain mode")).toBeTruthy());
+
+    expandAdvanced(container);
+    commit(fieldInputByLabel(container, "Replay buffer bytes", "number"), "4096");
+
+    await waitFor(() =>
+      expect(vi.mocked(api.updateProfileSettings)).toHaveBeenCalledWith(
+        "main",
+        { cockpit: { replay_bytes: 4096 } },
+      ),
+    );
+  });
+
+  it("expands the worktree fold and saves an advanced field", async () => {
+    const { container } = renderView("worktree");
+    await screen.findByText("Worktrees enabled");
+
+    expect(screen.queryByText("Workspace path template")).toBeNull();
+    expandAdvanced(container);
+    expect(screen.getByText("Workspace path template")).toBeTruthy();
+
+    commit(
+      fieldInputByLabel(container, "Workspace path template", "text"),
+      "../wt-{branch}",
+    );
+    await waitFor(() =>
+      expect(vi.mocked(api.updateProfileSettings)).toHaveBeenCalledWith("main", {
+        worktree: { workspace_path_template: "../wt-{branch}" },
+      }),
+    );
+  });
+
+  it("saves an edited sandbox advanced field through the normal path", async () => {
+    const { container } = renderView("sandbox");
+    await screen.findByText("Sandbox enabled by default");
+
+    expandAdvanced(container);
+    commit(fieldInputByLabel(container, "CPU limit", "text"), "4");
+
+    await waitFor(() =>
+      expect(vi.mocked(api.updateProfileSettings)).toHaveBeenCalledWith("main", {
+        sandbox: { cpu_limit: "4" },
+      }),
+    );
   });
 
   it("collapses the fold when switching profiles (#4)", async () => {
