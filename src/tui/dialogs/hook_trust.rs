@@ -5,7 +5,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 
 use super::DialogResult;
-use crate::session::HooksConfig;
+use crate::session::{repo_config, HooksConfig};
 use crate::tui::styles::Theme;
 
 pub struct HookTrustDialog {
@@ -129,45 +129,18 @@ impl HookTrustDialog {
     }
 
     fn build_hook_lines(&self) -> Vec<Line<'_>> {
-        // Render the merged set (what actually runs). Each type is sourced wholly
-        // from the repo or wholly from global config, since the merge overrides
-        // per type; label the source so it's clear which commands the repo added.
-        let groups: [(&str, &[String], &[String]); 3] = [
-            (
-                "on_create",
-                &self.merged_hooks.on_create,
-                &self.hooks.on_create,
-            ),
-            (
-                "on_launch",
-                &self.merged_hooks.on_launch,
-                &self.hooks.on_launch,
-            ),
-            (
-                "on_destroy",
-                &self.merged_hooks.on_destroy,
-                &self.hooks.on_destroy,
-            ),
-        ];
-
+        // Render the merged set (what actually runs) with per-type source labels,
+        // sharing the grouping logic with the CLI trust prompt.
         let mut lines = Vec::new();
-        for (name, merged, repo) in groups {
-            if merged.is_empty() {
-                continue;
-            }
+        for group in repo_config::hook_display_groups(&self.merged_hooks, &self.hooks, true) {
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-            let source = if repo.is_empty() {
-                " (from global config)"
-            } else {
-                " (from repo)"
-            };
             lines.push(Line::from(vec![
-                Span::styled(format!("{}:", name), Style::default().bold()),
-                Span::styled(source, Style::default().dim()),
+                Span::styled(format!("{}:", group.name), Style::default().bold()),
+                Span::styled(group.source_label(), Style::default().dim()),
             ]));
-            for cmd in merged {
+            for cmd in &group.commands {
                 lines.push(Line::from(format!("  {}", cmd)));
             }
         }
@@ -431,6 +404,50 @@ mod tests {
         assert!(
             text.contains("global-launch"),
             "missing global cmd: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn test_merged_display_renders_on_destroy_with_source() {
+        // on_create falls through to global; on_destroy is repo-defined. Both must
+        // render with the correct source label, exercising the on_destroy path.
+        let repo = HooksConfig {
+            on_destroy: vec!["repo-destroy".to_string()],
+            ..Default::default()
+        };
+        let merged = HooksConfig {
+            on_create: vec!["global-create".to_string()],
+            on_destroy: vec!["repo-destroy".to_string()],
+            ..Default::default()
+        };
+        let dialog = HookTrustDialog::new(
+            repo,
+            merged,
+            "hash".to_string(),
+            "/home/user/project".to_string(),
+        );
+        let text = lines_text(&dialog);
+        assert!(text.contains("on_create:"), "missing on_create: {}", text);
+        assert!(
+            text.contains("global-create"),
+            "missing global cmd: {}",
+            text
+        );
+        assert!(text.contains("on_destroy:"), "missing on_destroy: {}", text);
+        assert!(
+            text.contains("repo-destroy"),
+            "missing destroy cmd: {}",
+            text
+        );
+        assert!(
+            text.contains("(from global config)"),
+            "on_create should be labeled global: {}",
+            text
+        );
+        assert!(
+            text.contains("(from repo)"),
+            "on_destroy should be labeled repo: {}",
             text
         );
     }

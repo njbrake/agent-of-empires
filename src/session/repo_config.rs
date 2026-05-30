@@ -558,6 +558,55 @@ pub fn merge_hooks_for_display(profile: &str, repo_hooks: &HooksConfig) -> Hooks
     apply_repo_hook_overrides(base, repo_hooks)
 }
 
+/// One hook type's resolved commands plus where they came from, for display in the
+/// CLI trust prompt and the TUI trust dialog. `from_repo` is true when the repo
+/// defined this type (and thus overrode global); false means the commands fell
+/// through to global/profile config.
+pub struct HookDisplayGroup {
+    pub name: &'static str,
+    pub from_repo: bool,
+    pub commands: Vec<String>,
+}
+
+impl HookDisplayGroup {
+    /// Human-readable source suffix, e.g. ` (from repo)`. Shared so the CLI and TUI
+    /// render the exact same wording.
+    pub fn source_label(&self) -> &'static str {
+        if self.from_repo {
+            " (from repo)"
+        } else {
+            " (from global config)"
+        }
+    }
+}
+
+/// Build the per-type display groups for a merged hook set, labeling each type by
+/// source and dropping types with no commands. `include_destroy` controls whether
+/// `on_destroy` is listed: callers that only run the create lifecycle can omit it,
+/// while the trust surfaces show every type the user is trusting.
+pub fn hook_display_groups(
+    merged: &HooksConfig,
+    repo: &HooksConfig,
+    include_destroy: bool,
+) -> Vec<HookDisplayGroup> {
+    let mut types: Vec<(&'static str, &[String], &[String])> = vec![
+        ("on_create", &merged.on_create, &repo.on_create),
+        ("on_launch", &merged.on_launch, &repo.on_launch),
+    ];
+    if include_destroy {
+        types.push(("on_destroy", &merged.on_destroy, &repo.on_destroy));
+    }
+    types
+        .into_iter()
+        .filter(|(_, merged_cmds, _)| !merged_cmds.is_empty())
+        .map(|(name, merged_cmds, repo_cmds)| HookDisplayGroup {
+            name,
+            from_repo: !repo_cmds.is_empty(),
+            commands: merged_cmds.to_vec(),
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Hook execution
 // ---------------------------------------------------------------------------
@@ -1352,6 +1401,57 @@ mod tests {
         assert_eq!(merged.on_create, vec!["repo-create".to_string()]);
         assert_eq!(merged.on_launch, vec!["global-launch".to_string()]);
         assert_eq!(merged.on_destroy, vec!["global-destroy".to_string()]);
+    }
+
+    #[test]
+    fn test_hook_display_groups_labels_source_and_filters_empty() {
+        // Repo overrides on_create; on_launch falls through to global; on_destroy
+        // has no commands and must be dropped from the display groups.
+        let repo = HooksConfig {
+            on_create: vec!["repo-create".to_string()],
+            ..Default::default()
+        };
+        let merged = HooksConfig {
+            on_create: vec!["repo-create".to_string()],
+            on_launch: vec!["global-launch".to_string()],
+            on_destroy: vec![],
+        };
+        let groups = hook_display_groups(&merged, &repo, true);
+        assert_eq!(groups.len(), 2, "empty on_destroy should be filtered out");
+
+        assert_eq!(groups[0].name, "on_create");
+        assert!(groups[0].from_repo);
+        assert_eq!(groups[0].source_label(), " (from repo)");
+        assert_eq!(groups[0].commands, vec!["repo-create".to_string()]);
+
+        assert_eq!(groups[1].name, "on_launch");
+        assert!(!groups[1].from_repo);
+        assert_eq!(groups[1].source_label(), " (from global config)");
+        assert_eq!(groups[1].commands, vec!["global-launch".to_string()]);
+    }
+
+    #[test]
+    fn test_hook_display_groups_include_destroy_toggle() {
+        // on_destroy only appears when the caller opts in (e.g. the trust surfaces),
+        // not for create-lifecycle callers.
+        let repo = HooksConfig {
+            on_destroy: vec!["repo-destroy".to_string()],
+            ..Default::default()
+        };
+        let merged = HooksConfig {
+            on_destroy: vec!["repo-destroy".to_string()],
+            ..Default::default()
+        };
+        assert!(
+            hook_display_groups(&merged, &repo, false).is_empty(),
+            "on_destroy should be hidden when include_destroy is false"
+        );
+
+        let groups = hook_display_groups(&merged, &repo, true);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name, "on_destroy");
+        assert!(groups[0].from_repo);
+        assert_eq!(groups[0].commands, vec!["repo-destroy".to_string()]);
     }
 
     #[test]

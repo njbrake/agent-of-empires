@@ -623,16 +623,16 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                     let should_trust = if args.trust_hooks {
                         true
                     } else {
-                        println!("\nRepository hooks detected in .agent-of-empires/config.toml:");
-                        if !hooks.on_create.is_empty() {
-                            println!("  on_create:");
-                            for cmd in &hooks.on_create {
-                                println!("    {}", cmd);
-                            }
-                        }
-                        if !hooks.on_launch.is_empty() {
-                            println!("  on_launch:");
-                            for cmd in &hooks.on_launch {
+                        // Show the final merged set (repo overrides global/profile
+                        // per type) with source labels, mirroring the TUI trust
+                        // dialog, so the prompt reflects exactly what will run (#596).
+                        println!(
+                            "\nHooks for this session (repo overrides global config per type):"
+                        );
+                        let merged = repo_config::merge_hooks_for_display(profile, &hooks);
+                        for group in repo_config::hook_display_groups(&merged, &hooks, true) {
+                            println!("  {}:{}", group.name, group.source_label());
+                            for cmd in &group.commands {
                                 println!("    {}", cmd);
                             }
                         }
