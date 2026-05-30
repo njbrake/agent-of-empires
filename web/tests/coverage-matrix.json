@@ -2007,6 +2007,19 @@
       ]
     },
     {
+      "id": "cockpit.story.edit-card-diff-scroll",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/edit-card-diff-scroll.spec.ts",
+        "src/components/diff/__tests__/StringDiff.test.tsx"
+      ],
+      "components": [
+        "web/src/components/diff/StringDiff.tsx",
+        "web/src/components/cockpit/ToolCards.tsx"
+      ]
+    },
+    {
       "id": "cockpit.story.queue-follow-up-with-nav",
       "kind": "live-playwright",
       "risk": "high",

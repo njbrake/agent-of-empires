@@ -31,7 +31,12 @@ export function StringDiff({ oldText, newText, filePath }: Props) {
   const lineTokens = tokens?.[0];
 
   return (
-    <div className="leading-[1.6]">
+    // `overflow-x-auto` gives long diff lines a horizontal scroll context.
+    // The embedding `CardChrome` clips with `overflow-hidden` and `DiffLine`
+    // content is `whitespace-pre`, so without this the right side of any line
+    // wider than the card is unreachable on a narrow viewport. Mirrors the
+    // full-size `DiffFileViewer` scroll wrapper. See #1568.
+    <div data-testid="string-diff" className="leading-[1.6] overflow-x-auto">
       {hunk.lines.map((line, i) => (
         <DiffLine
           key={`${line.old_line_num ?? "_"}-${line.new_line_num ?? "_"}-${i}`}
