@@ -105,14 +105,16 @@ export interface AvailableCommand {
 /** Semantic category for a session configuration option, mirroring
  *  ACP's `SessionConfigOptionCategory`. The cockpit UI uses this to
  *  pick the right widget per category (model dropdown, effort
- *  segmented control). Unknown categories preserve their string
- *  payload so the broadcast frame stays forward-compatible. See
- *  #1403. */
+ *  segmented control). The Rust `Other(String)` arm is
+ *  `#[serde(untagged)]`, so an unknown category arrives on the wire as
+ *  a bare string, not a `{ Other: string }` object. Modeling it as a
+ *  catch-all string keeps the broadcast frame forward-compatible while
+ *  preserving autocomplete on the known literals. See #1403, #1562. */
 export type ConfigOptionCategory =
   | "mode"
   | "model"
   | "thought_level"
-  | { Other: string };
+  | (string & {});
 
 /** One choice in a `Select`-kind ConfigOptionDescriptor. */
 export interface ConfigOptionChoice {
