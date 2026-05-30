@@ -120,7 +120,10 @@ logged so you can find it later.
 
 The wizard's **Recent projects** tab filters scratch sessions out
 once they exist, so a deleted scratch directory does not appear as a
-reusable recent project.
+reusable recent project. Multi-repo workspace sessions are filtered out
+of the same list, since the project step cannot rebuild a workspace from
+a single path; picking one would start a plain single-repo session and
+silently drop the other repos.
 
 ## Compatibility
 

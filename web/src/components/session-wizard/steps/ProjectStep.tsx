@@ -68,6 +68,11 @@ function collectRecentProjects(sessions: SessionResponse[]): RecentProject[] {
     // in to keeping the dir). They must not appear in the Recent list,
     // where they would be re-selectable as a project.
     if (s.scratch) continue;
+    // Multi-repo workspaces collapse to a single `main_repo_path` here, so
+    // picking one from Recent would start a plain single-repo session and
+    // silently drop the other repos. The project step cannot reconstruct a
+    // workspace from one path, so keep them out of the list entirely.
+    if (s.workspace_repos.length > 0) continue;
     const path = s.main_repo_path || s.project_path;
     if (!path) continue;
     const existing = map.get(path);
