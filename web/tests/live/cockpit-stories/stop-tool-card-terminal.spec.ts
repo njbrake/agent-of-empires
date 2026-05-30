@@ -42,6 +42,16 @@ const SCRIPT = {
   ],
 };
 
+// The tool card whose primary title is "Slow tool". Anchored on the
+// exact title span (the prompt echo "run a slow tool" and the spinner
+// "Operating Slow tool…" are not exact matches), then walked up to the
+// card root so badge text reads only inside this card.
+function cardFor(page: import("@playwright/test").Page) {
+  return page
+    .getByText("Slow tool", { exact: true })
+    .locator("xpath=ancestor::div[contains(@class,'rounded-md')][1]");
+}
+
 test("stopping mid-tool settles the card and survives reload", async ({ page }, testInfo) => {
   let serveHandle: { home: string } | undefined;
   let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
@@ -73,10 +83,14 @@ test("stopping mid-tool settles the card and survives reload", async ({ page }, 
     await composer.fill("run a slow tool");
     await composer.press("Enter");
 
-    // The running tool card mounts; the badge is "running" until the
-    // turn ends.
-    await expect(page.getByText("Slow tool")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText("running", { exact: true })).toBeVisible({
+    // The running tool card mounts; its badge is "running" until the
+    // turn ends. Scope assertions to the card so the badge text does not
+    // match the prompt echo ("run a slow tool") or the working spinner
+    // ("Operating Slow tool…"); `exact` title resolves to the card's
+    // primary span alone.
+    const card = cardFor(page);
+    await expect(card).toBeVisible({ timeout: 10_000 });
+    await expect(card.getByText("running", { exact: true })).toBeVisible({
       timeout: 10_000,
     });
 
@@ -85,23 +99,23 @@ test("stopping mid-tool settles the card and survives reload", async ({ page }, 
     await stopButton.click();
 
     // The card settles to the distinct terminal "stopped" state instead
-    // of staying "running" forever. `exact` so the lowercase badge does
-    // not match an unrelated "Stopped" banner.
-    await expect(page.getByText("stopped", { exact: true })).toBeVisible({
+    // of staying "running" forever.
+    await expect(card.getByText("stopped", { exact: true })).toBeVisible({
       timeout: 10_000,
     });
-    await expect(page.getByText("running", { exact: true })).toBeHidden();
+    await expect(card.getByText("running", { exact: true })).toBeHidden();
 
     // The stuck state was persisted before the fix, so a reload must
     // still show the card terminal: the trailing Stopped replays through
     // the same reducer sweep.
     await page.reload();
     await waitForCockpitView(page);
-    await expect(page.getByText("Slow tool")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText("stopped", { exact: true })).toBeVisible({
+    const cardAfter = cardFor(page);
+    await expect(cardAfter).toBeVisible({ timeout: 10_000 });
+    await expect(cardAfter.getByText("stopped", { exact: true })).toBeVisible({
       timeout: 10_000,
     });
-    await expect(page.getByText("running", { exact: true })).toBeHidden();
+    await expect(cardAfter.getByText("running", { exact: true })).toBeHidden();
   } finally {
     try {
       if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
