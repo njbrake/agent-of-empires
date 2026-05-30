@@ -10,28 +10,16 @@ use tracing::warn;
 
 use crate::session::{get_app_dir, get_update_settings};
 
-const DEFAULT_GITHUB_API_BASE: &str = "https://api.github.com";
+const GITHUB_OWNER: &str = "agent-of-empires";
+const GITHUB_REPO: &str = "agent-of-empires";
 
 /// Resolve the GitHub API base URL, honoring `AOE_UPDATE_API_BASE` for
 /// hermetic tests. The override mirrors `AOE_UPDATE_BASE_URL` (which
 /// covers tarball downloads); tests that need to exercise the CLI
 /// without rate-limiting GitHub set both.
 fn github_api_base() -> String {
-    std::env::var("AOE_UPDATE_API_BASE").unwrap_or_else(|_| DEFAULT_GITHUB_API_BASE.to_string())
-}
-
-fn github_api_latest_url() -> String {
-    format!(
-        "{}/repos/agent-of-empires/agent-of-empires/releases/latest",
-        github_api_base()
-    )
-}
-
-fn github_api_releases_url() -> String {
-    format!(
-        "{}/repos/agent-of-empires/agent-of-empires/releases?per_page=20",
-        github_api_base()
-    )
+    std::env::var("AOE_UPDATE_API_BASE")
+        .unwrap_or_else(|_| crate::github::DEFAULT_GITHUB_API_BASE.to_string())
 }
 
 /// Public release-page URL for a given version tag. Stable enough to
@@ -61,14 +49,6 @@ pub struct ReleaseInfo {
     pub version: String,
     pub body: String,
     pub published_at: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubRelease {
-    tag_name: String,
-    #[serde(default)]
-    body: Option<String>,
-    published_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -142,10 +122,11 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
         }
     }
 
-    let client = reqwest::Client::builder()
-        .user_agent("agent-of-empires")
-        .timeout(std::time::Duration::from_secs(5))
-        .build()?;
+    let client = crate::github::GitHubClient::unauthenticated(crate::github::GitHubClientConfig {
+        api_base: github_api_base(),
+        user_agent: crate::github::DEFAULT_USER_AGENT.to_string(),
+        timeout: std::time::Duration::from_secs(5),
+    })?;
 
     // Fetch all releases (includes body/release notes)
     let releases = match fetch_releases(&client).await {
@@ -162,19 +143,10 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
         .unwrap_or_default();
 
     if latest_version.is_empty() {
-        // Fall back to latest endpoint if releases fetch failed
-        let response = client.get(github_api_latest_url()).send().await?;
-        if !response.status().is_success() {
-            anyhow::bail!("Failed to check for updates: HTTP {}", response.status());
-        }
-        let release: GitHubRelease = response.json().await?;
-        let version = release.tag_name.trim_start_matches('v').to_string();
-
-        let release_info = ReleaseInfo {
-            version: version.clone(),
-            body: release.body.unwrap_or_default(),
-            published_at: release.published_at,
-        };
+        // Fall back to the latest-release endpoint if the releases list failed.
+        let release = client.latest_release(GITHUB_OWNER, GITHUB_REPO).await?;
+        let release_info = release_info_from(release);
+        let version = release_info.version.clone();
 
         let cache = UpdateCache {
             checked_at: chrono::Utc::now(),
@@ -218,34 +190,17 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
 }
 
 #[tracing::instrument(target = "update.fetch", skip_all)]
-async fn fetch_releases(client: &reqwest::Client) -> Result<Vec<ReleaseInfo>> {
-    let url = github_api_releases_url();
-    tracing::debug!(target: "update.fetch", %url, "GET releases");
-    let response = client.get(&url).send().await?;
-    let status = response.status();
-    tracing::debug!(
-        target: "update.fetch",
-        status = %status,
-        content_length = ?response.content_length(),
-        "releases response"
-    );
+async fn fetch_releases(client: &crate::github::GitHubClient) -> Result<Vec<ReleaseInfo>> {
+    let releases = client.list_releases(GITHUB_OWNER, GITHUB_REPO, 20).await?;
+    Ok(releases.into_iter().map(release_info_from).collect())
+}
 
-    if !status.is_success() {
-        anyhow::bail!("Failed to fetch releases: HTTP {}", status);
+fn release_info_from(release: crate::github::GitHubRelease) -> ReleaseInfo {
+    ReleaseInfo {
+        version: release.tag_name.trim_start_matches('v').to_string(),
+        body: release.body.unwrap_or_default(),
+        published_at: release.published_at,
     }
-
-    let github_releases: Vec<GitHubRelease> = response.json().await?;
-
-    let releases = github_releases
-        .into_iter()
-        .map(|r| ReleaseInfo {
-            version: r.tag_name.trim_start_matches('v').to_string(),
-            body: r.body.unwrap_or_default(),
-            published_at: r.published_at,
-        })
-        .collect();
-
-    Ok(releases)
 }
 
 /// Get cached release notes, filtered to show only releases newer than from_version.
