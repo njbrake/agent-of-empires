@@ -10,7 +10,7 @@ use std::fs;
 
 use super::config::{
     ColorMode, Config, ContainerRuntimeName, DefaultTerminalMode, TmuxClipboardMode, TmuxMouseMode,
-    TmuxStatusBarMode,
+    TmuxStatusBarMode, VolumeIgnoresStrategy,
 };
 use super::get_profile_dir;
 
@@ -206,6 +206,9 @@ pub struct SandboxConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container_runtime: Option<ContainerRuntimeName>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volume_ignores_strategy: Option<VolumeIgnoresStrategy>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -236,6 +239,9 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_status_hooks: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse_capture: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_agents: Option<HashMap<String, String>>,
@@ -409,6 +415,9 @@ pub fn apply_sandbox_overrides(
     if let Some(container_runtime) = source.container_runtime {
         target.container_runtime = container_runtime;
     }
+    if let Some(volume_ignores_strategy) = source.volume_ignores_strategy {
+        target.volume_ignores_strategy = volume_ignores_strategy;
+    }
 }
 
 /// Apply worktree config overrides to a target config.
@@ -477,6 +486,9 @@ pub fn apply_session_overrides(
     }
     if let Some(agent_status_hooks) = source.agent_status_hooks {
         target.agent_status_hooks = agent_status_hooks;
+    }
+    if let Some(mouse_capture) = source.mouse_capture {
+        target.mouse_capture = mouse_capture;
     }
     if let Some(ref custom_agents) = source.custom_agents {
         target.custom_agents = custom_agents.clone();

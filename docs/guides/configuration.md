@@ -227,6 +227,7 @@ default_terminal_mode = "host"
 | `environment` | `["TERM", "COLORTERM", "FORCE_COLOR", "NO_COLOR"]` | Env vars for containers (see below) |
 | `extra_volumes` | `[]` | Additional Docker volume mounts |
 | `volume_ignores` | `[]` | Directories to exclude from the project mount via anonymous volumes |
+| `volume_ignores_strategy` | `"anonymous"` | Volume mounting strategy: `"anonymous"` (default) or `"named"` (required on macOS/VirtioFS to reliably shadow bind-mount subdirectories; named volumes are explicitly removed on session delete) |
 | `auto_cleanup` | `true` | Remove containers when sessions are deleted |
 | `default_terminal_mode` | `"host"` | Paired terminal location: `"host"` or `"container"` |
 

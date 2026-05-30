@@ -3,6 +3,7 @@
 use crate::session::{
     validate_check_interval, validate_snooze_duration, Config, ContainerRuntimeName,
     DefaultTerminalMode, ProfileConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
+    VolumeIgnoresStrategy,
 };
 use crate::sound::{
     validate_sound_exists, volume_from_option, volume_options, volume_to_index, SoundMode,
@@ -85,6 +86,7 @@ pub enum FieldKey {
     ExtraVolumes,
     PortMappings,
     VolumeIgnores,
+    VolumeIgnoresStrategy,
     MountSsh,
     CustomInstruction,
     ContainerRuntime,
@@ -109,6 +111,7 @@ pub enum FieldKey {
     NewSessionAttachMode,
     DefaultAttachMode,
     ClickAction,
+    MouseCapture,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -1250,6 +1253,11 @@ fn build_sandbox_fields(
         global.sandbox.container_runtime,
         sb.and_then(|s| s.container_runtime),
     );
+    let (volume_ignores_strategy, o_vis) = resolve_value(
+        scope,
+        global.sandbox.volume_ignores_strategy,
+        sb.and_then(|s| s.volume_ignores_strategy),
+    );
 
     let terminal_mode_selected = match default_terminal_mode {
         DefaultTerminalMode::Host => 0,
@@ -1275,6 +1283,16 @@ fn build_sandbox_fields(
     };
     let container_runtime_options =
         vec!["Docker".into(), "Podman".into(), "Apple Container".into()];
+
+    let volume_ignores_strategy_selected = match volume_ignores_strategy {
+        VolumeIgnoresStrategy::Anonymous => 0,
+        VolumeIgnoresStrategy::Named => 1,
+    };
+    let global_volume_ignores_strategy_selected = match global.sandbox.volume_ignores_strategy {
+        VolumeIgnoresStrategy::Anonymous => 0,
+        VolumeIgnoresStrategy::Named => 1,
+    };
+    let volume_ignores_strategy_options = vec!["anonymous".into(), "named".into()];
 
     vec![
         SettingField {
@@ -1398,6 +1416,24 @@ fn build_sandbox_fields(
             inherited_display: inherited_if(
                 o7,
                 FieldValue::List(global.sandbox.volume_ignores.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::VolumeIgnoresStrategy,
+            label: "Volume Ignores Strategy",
+            description: "anonymous: default, works on Linux. named: use deterministic Docker/Podman named volumes, required on macOS/VirtioFS to reliably shadow bind-mount subdirectories.",
+            value: FieldValue::Select {
+                selected: volume_ignores_strategy_selected,
+                options: volume_ignores_strategy_options.clone(),
+            },
+            category: SettingsCategory::Sandbox,
+            has_override: o_vis,
+            inherited_display: inherited_if(
+                o_vis,
+                FieldValue::Select {
+                    selected: global_volume_ignores_strategy_selected,
+                    options: volume_ignores_strategy_options,
+                },
             ),
         },
         SettingField {
@@ -1947,6 +1983,12 @@ fn build_interaction_fields(
         session.and_then(|s| s.click_action),
     );
 
+    let (mouse_capture, mouse_capture_override) = resolve_value(
+        scope,
+        global.session.mouse_capture,
+        session.and_then(|s| s.mouse_capture),
+    );
+
     vec![
         SettingField {
             key: FieldKey::DefaultAttachMode,
@@ -2042,6 +2084,24 @@ fn build_interaction_fields(
             inherited_display: inherited_if(
                 live_send_exit_chord_override,
                 FieldValue::Text(global.session.live_send_exit_chord.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::MouseCapture,
+            label: "Mouse Capture",
+            description: "Request xterm mouse tracking so the TUI handles the \
+                 scroll wheel (preview-pane scroll) and click-to-select rows. \
+                 Disable to hand the wheel and text selection back to the \
+                 terminal, e.g. iOS Mosh + Termius/Blink where mouse-tracking \
+                 escapes aren't forwarded reliably. The AOE_MOUSE_CAPTURE env \
+                 var remains an opt-out backstop and can still force capture \
+                 off when set.",
+            value: FieldValue::Bool(mouse_capture),
+            category: SettingsCategory::Interaction,
+            has_override: mouse_capture_override,
+            inherited_display: inherited_if(
+                mouse_capture_override,
+                FieldValue::Bool(global.session.mouse_capture),
             ),
         },
     ]
@@ -2539,6 +2599,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             config.session.agent_status_hooks = *v;
         }
+        (FieldKey::MouseCapture, FieldValue::Bool(v)) => {
+            config.session.mouse_capture = *v;
+        }
         (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
         (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
         (FieldKey::ExtraVolumes, FieldValue::List(v)) => config.sandbox.extra_volumes = v.clone(),
@@ -2566,6 +2629,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 0 => ContainerRuntimeName::Docker,
                 1 => ContainerRuntimeName::Podman,
                 _ => ContainerRuntimeName::AppleContainer,
+            };
+        }
+        (FieldKey::VolumeIgnoresStrategy, FieldValue::Select { selected, .. }) => {
+            config.sandbox.volume_ignores_strategy = match selected {
+                1 => VolumeIgnoresStrategy::Named,
+                _ => VolumeIgnoresStrategy::Anonymous,
             };
         }
         // Tmux
@@ -2953,6 +3022,15 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 s.container_runtime = val
             });
         }
+        (FieldKey::VolumeIgnoresStrategy, FieldValue::Select { selected, .. }) => {
+            let strategy = match selected {
+                1 => VolumeIgnoresStrategy::Named,
+                _ => VolumeIgnoresStrategy::Anonymous,
+            };
+            set_profile_override(strategy, &mut config.sandbox, |s, val| {
+                s.volume_ignores_strategy = val
+            });
+        }
         // Tmux
         (FieldKey::StatusBar, FieldValue::Select { selected, .. }) => {
             let mode = match selected {
@@ -3039,6 +3117,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| {
                 s.agent_status_hooks = val;
+            });
+        }
+        (FieldKey::MouseCapture, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.session, |s, val| {
+                s.mouse_capture = val;
             });
         }
         (FieldKey::AgentExtraArgs, FieldValue::List(v)) => {
@@ -3715,6 +3798,7 @@ mod tests {
             FieldKey::NewSessionAttachMode,
             FieldKey::ClickAction,
             FieldKey::LiveSendExitChord,
+            FieldKey::MouseCapture,
         ] {
             assert!(
                 interaction_keys.contains(&k),

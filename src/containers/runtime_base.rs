@@ -23,6 +23,8 @@ pub(crate) struct RuntimeBase {
     pub supports_read_only_volumes: bool,
     /// Whether this runtime supports `-v` on remove to clean up anonymous volumes
     pub supports_remove_volumes: bool,
+    /// Whether this runtime supports `volume ls` / `volume rm` for named volumes
+    pub supports_named_volumes: bool,
 }
 
 impl RuntimeBase {
@@ -34,6 +36,7 @@ impl RuntimeBase {
         remove_subcommand: "rm",
         supports_read_only_volumes: true,
         supports_remove_volumes: true,
+        supports_named_volumes: true,
     };
 
     pub const APPLE_CONTAINER: Self = Self {
@@ -44,6 +47,7 @@ impl RuntimeBase {
         remove_subcommand: "delete",
         supports_read_only_volumes: false,
         supports_remove_volumes: false,
+        supports_named_volumes: false,
     };
 
     pub const PODMAN: Self = Self {
@@ -57,6 +61,7 @@ impl RuntimeBase {
         remove_subcommand: "rm",
         supports_read_only_volumes: true,
         supports_remove_volumes: true,
+        supports_named_volumes: true,
     };
 
     pub fn command(&self) -> Command {
@@ -191,6 +196,24 @@ impl RuntimeBase {
             args.push(path.clone());
         }
 
+        if self.supports_named_volumes {
+            for nv in &config.named_ignore_volumes {
+                args.push("-v".to_string());
+                args.push(format!("{}:{}", nv.volume_name, nv.container_path));
+            }
+        } else if !config.named_ignore_volumes.is_empty() {
+            // Apple Container doesn't support named volumes; fall back to anonymous behavior.
+            tracing::warn!(
+                target: "containers.runtime",
+                runtime = %self.name,
+                "named volume_ignores_strategy is not supported; falling back to anonymous volumes"
+            );
+            for nv in &config.named_ignore_volumes {
+                args.push("-v".to_string());
+                args.push(nv.container_path.clone());
+            }
+        }
+
         let (env_argv, _inherit) = docker_env_args(&config.environment);
         args.extend(env_argv);
 
@@ -303,6 +326,61 @@ impl RuntimeBase {
         Ok(())
     }
 
+    /// Remove all named ignore volumes whose names start with the given prefix.
+    ///
+    /// Used to clean up volumes created with `volume_ignores_strategy = "named"` after
+    /// a session container is deleted. Volumes can outlive the container, so this must
+    /// be called even when the container is already gone.
+    ///
+    /// This is a no-op on runtimes that don't support named volumes (e.g. Apple Container).
+    pub fn remove_named_ignore_volumes(&self, prefix: &str) -> Result<()> {
+        if !self.supports_named_volumes {
+            return Ok(());
+        }
+
+        // List volumes whose names start with the prefix.
+        let list_output = self
+            .command()
+            .args([
+                "volume",
+                "ls",
+                "--filter",
+                &format!("name={}", prefix),
+                "-q",
+            ])
+            .output()?;
+
+        if !list_output.status.success() {
+            let stderr = String::from_utf8_lossy(&list_output.stderr);
+            tracing::warn!(target: "containers.runtime", runtime = %self.name, %prefix, "failed to list named ignore volumes: {}", stderr);
+            return Ok(());
+        }
+
+        let stdout = String::from_utf8_lossy(&list_output.stdout);
+        // Filter in Rust to exact prefix match (docker's --filter is substring-based).
+        let names: Vec<&str> = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && n.starts_with(prefix))
+            .collect();
+
+        if names.is_empty() {
+            return Ok(());
+        }
+
+        tracing::debug!(target: "containers.runtime", runtime = %self.name, ?names, "removing named ignore volumes");
+        let mut rm_args = vec!["volume", "rm"];
+        rm_args.extend(names.iter().copied());
+        let rm_output = self.command().args(&rm_args).output()?;
+
+        if !rm_output.status.success() {
+            let stderr = String::from_utf8_lossy(&rm_output.stderr);
+            tracing::warn!(target: "containers.runtime", runtime = %self.name, "failed to remove named ignore volumes: {}", stderr);
+        }
+
+        Ok(())
+    }
+
     pub fn exec_command(&self, name: &str, options: Option<&str>, cmd: &str) -> String {
         if let Some(opt_str) = options {
             [self.binary, "exec", "-it", opt_str, name, cmd].join(" ")
@@ -337,6 +415,7 @@ mod tests {
                 read_only: true,
             }],
             anonymous_volumes: vec![],
+            named_ignore_volumes: vec![],
             environment: vec![],
             cpu_limit: None,
             memory_limit: None,
@@ -360,6 +439,7 @@ mod tests {
                 read_only: true,
             }],
             anonymous_volumes: vec![],
+            named_ignore_volumes: vec![],
             environment: vec![],
             cpu_limit: None,
             memory_limit: None,
@@ -405,6 +485,7 @@ mod tests {
                 read_only: false,
             }],
             anonymous_volumes: vec!["/tmp/cache".to_string()],
+            named_ignore_volumes: vec![],
             environment: vec![EnvEntry::Literal {
                 key: "KEY".to_string(),
                 value: "VALUE".to_string(),
@@ -443,6 +524,7 @@ mod tests {
             working_dir: "/workspace".to_string(),
             volumes: vec![],
             anonymous_volumes: vec![],
+            named_ignore_volumes: vec![],
             environment: vec![EnvEntry::Inherit {
                 key: "GH_TOKEN".to_string(),
                 value: "ghp_secret123".to_string(),
@@ -466,6 +548,7 @@ mod tests {
             working_dir: "/workspace".to_string(),
             volumes: vec![],
             anonymous_volumes: vec![],
+            named_ignore_volumes: vec![],
             environment: vec![
                 EnvEntry::Inherit {
                     key: "SECRET".to_string(),
@@ -497,6 +580,7 @@ mod tests {
             working_dir: "/workspace".to_string(),
             volumes: vec![],
             anonymous_volumes: vec![],
+            named_ignore_volumes: vec![],
             environment: vec![],
             cpu_limit: None,
             memory_limit: None,
@@ -515,5 +599,89 @@ mod tests {
         assert_eq!(p_indices.len(), 2);
         assert_eq!(args[p_indices[0] + 1], "3000:3000");
         assert_eq!(args[p_indices[1] + 1], "5432:5432");
+    }
+
+    #[test]
+    fn test_named_ignore_volumes_rendered_as_name_colon_path_on_docker() {
+        use crate::containers::container_interface::NamedVolumeMount;
+        let base = RuntimeBase::DOCKER;
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            anonymous_volumes: vec![],
+            named_ignore_volumes: vec![NamedVolumeMount {
+                volume_name: "aoe-vi-sess1-workspace-node_modules-abc123def456".to_string(),
+                container_path: "/workspace/node_modules".to_string(),
+            }],
+            environment: vec![],
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: vec![],
+        };
+
+        let args = base.build_create_args("test", "alpine:latest", &config);
+
+        let v_positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-v")
+            .map(|(i, _)| i)
+            .collect();
+        let volume_args: Vec<&str> = v_positions.iter().map(|&i| args[i + 1].as_str()).collect();
+
+        assert!(
+            volume_args.contains(
+                &"aoe-vi-sess1-workspace-node_modules-abc123def456:/workspace/node_modules"
+            ),
+            "Named volume must render as name:/path, got: {:?}",
+            volume_args
+        );
+    }
+
+    #[test]
+    fn test_named_ignore_volumes_fall_back_to_anonymous_on_apple_container() {
+        use crate::containers::container_interface::NamedVolumeMount;
+        let base = RuntimeBase::APPLE_CONTAINER;
+        let config = ContainerConfig {
+            working_dir: "/workspace".to_string(),
+            volumes: vec![],
+            anonymous_volumes: vec![],
+            named_ignore_volumes: vec![NamedVolumeMount {
+                volume_name: "aoe-vi-sess1-workspace-node_modules-abc123".to_string(),
+                container_path: "/workspace/node_modules".to_string(),
+            }],
+            environment: vec![],
+            cpu_limit: None,
+            memory_limit: None,
+            port_mappings: vec![],
+        };
+
+        let args = base.build_create_args("test", "alpine:latest", &config);
+
+        let v_positions: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| *a == "-v")
+            .map(|(i, _)| i)
+            .collect();
+        let volume_args: Vec<&str> = v_positions.iter().map(|&i| args[i + 1].as_str()).collect();
+
+        // Apple Container must use bare path, not name:path
+        assert!(
+            volume_args.contains(&"/workspace/node_modules"),
+            "Apple Container fallback must use bare container path, got: {:?}",
+            volume_args
+        );
+        assert!(
+            !volume_args.iter().any(|a| a.contains("aoe-vi-")),
+            "Apple Container must not use the volume name in -v args"
+        );
+    }
+
+    #[test]
+    fn test_supports_named_volumes_flags() {
+        assert!(RuntimeBase::DOCKER.supports_named_volumes);
+        assert!(RuntimeBase::PODMAN.supports_named_volumes);
+        assert!(!RuntimeBase::APPLE_CONTAINER.supports_named_volumes);
     }
 }

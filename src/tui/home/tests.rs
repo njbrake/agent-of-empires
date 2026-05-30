@@ -1923,10 +1923,9 @@ fn test_o_key_opens_sort_picker() {
 #[test]
 #[serial]
 fn test_shift_o_opens_sort_picker_in_strict_mode() {
-    // Regression guard: normalize_strict_key maps Shift+O → bare 'o'. The main
-    // match must handle 'o' without an `if !self.strict_hotkeys` guard,
-    // otherwise the key falls through to capture_letter_to_compose and opens
-    // the message dialog instead of the sort picker.
+    // Regression guard: the SortPicker binding lists Shift+O (Char('O')) for
+    // strict mode, so it must resolve to the sort picker rather than falling
+    // through to the typing-guard (capture_letter_to_compose).
     use crate::session::config::SortOrder;
 
     let mut env = create_test_env_with_mixed_sessions();
@@ -2167,12 +2166,9 @@ fn test_non_strict_w_jumps_to_next_waiting_in_attention_sort() {
 #[test]
 #[serial]
 fn test_strict_mode_ctrl_g_opens_group_picker() {
-    // Regression guard: the help overlay lists "Ctrl+G" for Group by in
-    // strict mode. Previously normalize_strict_key stripped CTRL and routed
-    // the result into the typing-guard catch-all, so the advertised hotkey
-    // was a no-op (the bare 'g' landed in pending_paste). Ctrl+G must now
-    // keep its modifier and open the group picker, while bare 'g' continues
-    // to fall into the typing-guard catch-all.
+    // Regression guard: the GroupBy binding is Ctrl+G in strict mode. It must
+    // open the group picker, while bare 'g' continues to fall into the
+    // typing-guard catch-all (it lands in pending_paste).
     use crate::session::config::GroupByMode;
 
     let mut env = create_test_env_with_sessions(3);
@@ -2210,6 +2206,209 @@ fn test_strict_mode_ctrl_g_opens_group_picker() {
         env.view.pending_paste.as_deref(),
         Some("g"),
         "bare 'g' in strict mode falls through to the typing-guard catch-all"
+    );
+}
+
+#[test]
+#[serial]
+fn test_strict_mode_ctrl_t_and_ctrl_n_reach_secondary_actions() {
+    // Regression guard (2026-05-29): in strict_hotkeys mode, normalize_strict_key
+    // used to fold Ctrl+T -> 'T' and Ctrl+N -> 'N' (modifier stripped), which
+    // collided with the Shift+T / Shift+N primary arms (toggle view, plain new
+    // session) and left the Ctrl+T / Ctrl+N secondary arms (quick-attach
+    // terminal, new-from-selection) as unreachable dead code. Both chords must
+    // keep CTRL so the secondary arms fire.
+    let mut env = create_test_env_with_sessions(1);
+    env.view.strict_hotkeys = true;
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    // Shift+T toggles the view (primary action), no terminal attach.
+    assert_eq!(env.view.view_mode, ViewMode::Agent);
+    let shift_t = env
+        .view
+        .handle_key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT), None);
+    assert_eq!(env.view.view_mode, ViewMode::Terminal);
+    assert!(
+        !matches!(shift_t, Some(Action::AttachTerminal(_, _))),
+        "Shift+T must toggle view, not attach terminal"
+    );
+    // Reset to Agent view.
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::SHIFT), None);
+    assert_eq!(env.view.view_mode, ViewMode::Agent);
+
+    // Ctrl+T quick-attaches the paired terminal (secondary action) and must
+    // NOT toggle the view.
+    let ctrl_t = env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        matches!(ctrl_t, Some(Action::AttachTerminal(_, _))),
+        "Ctrl+T in strict mode must quick-attach the paired terminal"
+    );
+    assert_eq!(
+        env.view.view_mode,
+        ViewMode::Agent,
+        "Ctrl+T must not toggle the view"
+    );
+
+    // Shift+N opens the plain new-session dialog (no prefill from selection).
+    assert!(env.view.new_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT), None);
+    assert!(
+        env.view.new_dialog.is_some(),
+        "Shift+N must open the new-session dialog"
+    );
+    env.view.new_dialog = None;
+
+    // Ctrl+N opens the new-from-selection dialog (secondary action). It also
+    // routes through open_new_session_dialog, so assert it reaches the arm by
+    // confirming the dialog opens with CTRL intact rather than being swallowed.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.new_dialog.is_some(),
+        "Ctrl+N in strict mode must open the new-from-selection dialog"
+    );
+}
+
+#[test]
+#[serial]
+fn test_strict_mode_ctrl_d_r_p_reach_secondary_actions() {
+    // Regression guard (2026-05-29): normalize_strict_key used to fold
+    // Ctrl+D/Ctrl+R/Ctrl+P to bare 'D'/'R'/'P', which collided with the
+    // Shift+letter primary arms. In strict mode Shift+D=delete, Shift+R=rename,
+    // Shift+P=profiles, so the folds made Ctrl+D fire delete (not diff), Ctrl+R
+    // fire rename (not serve), and orphaned the diff/serve/projects arms. All
+    // three Ctrl chords must keep CTRL so their secondary arms fire.
+    let mut env = create_test_env_with_sessions(1);
+    env.view.strict_hotkeys = true;
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    // Shift+D opens the delete confirmation (primary uppercase action).
+    assert!(env.view.unified_delete_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT), None);
+    assert!(
+        env.view.unified_delete_dialog.is_some(),
+        "Shift+D must open the delete dialog"
+    );
+    env.view.unified_delete_dialog = None;
+
+    // Ctrl+D routes to the diff arm, NOT delete. The test session's path is not
+    // a real git worktree so the diff view may fail to open (info dialog) or
+    // open empty; either way the regression is that Ctrl+D must never reach
+    // open_delete_for_selected. Clear any takeover the diff arm leaves behind so
+    // it doesn't swallow the next keypress.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.unified_delete_dialog.is_none(),
+        "Ctrl+D in strict mode must NOT open the delete dialog (it targets diff)"
+    );
+    env.view.diff_view = None;
+    env.view.info_dialog = None;
+
+    // Shift+R opens the rename dialog (primary uppercase action).
+    assert!(env.view.rename_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT), None);
+    assert!(
+        env.view.rename_dialog.is_some(),
+        "Shift+R must open the rename dialog"
+    );
+    env.view.rename_dialog = None;
+
+    // Ctrl+R routes to the serve arm, NOT rename.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.rename_dialog.is_none(),
+        "Ctrl+R in strict mode must NOT open the rename dialog (it targets serve)"
+    );
+    env.view.info_dialog = None;
+    #[cfg(feature = "serve")]
+    {
+        env.view.serve_view = None;
+    }
+
+    // P follows the same relocation rule as D/R/T/N: the bare-`p` (primary)
+    // action -> Shift+P, the Shift+P (secondary) action -> Ctrl+P. So in strict
+    // mode Shift+P opens projects and Ctrl+P opens profiles.
+    assert!(env.view.projects_dialog.is_none());
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT), None);
+    assert!(
+        env.view.projects_dialog.is_some(),
+        "Shift+P in strict mode must open the projects dialog"
+    );
+    assert!(
+        env.view.profile_picker_dialog.is_none(),
+        "Shift+P must not open the profile picker"
+    );
+    env.view.projects_dialog = None;
+
+    // Ctrl+P opens the profile picker, NOT projects.
+    assert!(env.view.profile_picker_dialog.is_none());
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.profile_picker_dialog.is_some(),
+        "Ctrl+P in strict mode must open the profile picker"
+    );
+    assert!(
+        env.view.projects_dialog.is_none(),
+        "Ctrl+P must not open the projects dialog"
+    );
+}
+
+#[test]
+#[serial]
+fn test_command_palette_diff_invokes_diff_in_strict_mode() {
+    // Regression guard for the palette half of the strict-mode bug: the palette
+    // used to synthesize a keypress, so picking "Open diff view" in strict mode
+    // routed through Shift+D and fired DELETE instead. Palette entries now carry
+    // an ActionId and run the action directly, so the mode can't matter.
+    let mut env = create_test_env_with_sessions(1);
+    env.view.strict_hotkeys = true;
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    // Open the palette and filter to the diff command.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.command_palette.is_some(),
+        "Ctrl+K opens the palette"
+    );
+    for ch in "diff view".chars() {
+        env.view.handle_key(key(KeyCode::Char(ch)), None);
+    }
+    env.view.handle_key(key(KeyCode::Enter), None);
+
+    // The diff action ran (opened the diff view, or raised an info dialog if the
+    // temp path isn't a real git repo). Crucially, it did NOT delete.
+    assert!(
+        env.view.unified_delete_dialog.is_none(),
+        "palette 'diff' in strict mode must not open the delete dialog"
+    );
+    assert!(
+        env.view.diff_view.is_some() || env.view.info_dialog.is_some(),
+        "palette 'diff' in strict mode must attempt to open the diff view"
     );
 }
 
@@ -4060,6 +4259,45 @@ fn apply_status_update_skips_terminal_states() {
     let inst = env.view.get_instance(&id).unwrap();
     assert_eq!(inst.status, Status::Deleting);
     assert_eq!(inst.idle_entered_at, None);
+}
+
+#[test]
+#[serial]
+fn apply_stop_results_transitions_instance_to_stopped() {
+    use crate::session::Status;
+    use crate::tui::stop_poller::StopRequest;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+
+    // Pretend the session is live, then dispatch the stop to the background
+    // poller exactly as Action::StopSession does. The fixture instance has no
+    // tmux pane or sandbox, so perform_stop returns success quickly.
+    env.view
+        .mutate_instance(&id, |inst| inst.status = Status::Running);
+    let inst = env.view.get_instance(&id).unwrap().clone();
+    env.view.stop_poller.request_stop(StopRequest {
+        session_id: id.clone(),
+        instance: inst,
+    });
+
+    // Poll the result-application path the main loop runs each frame.
+    let mut applied = false;
+    for _ in 0..50 {
+        if env.view.apply_stop_results() {
+            applied = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(applied, "apply_stop_results never observed the stop result");
+
+    let inst = env.view.get_instance(&id).unwrap();
+    assert_eq!(inst.status, Status::Stopped);
+    assert_eq!(inst.last_error, None);
 }
 
 #[test]
@@ -7466,6 +7704,43 @@ mod live_send_mode {
             "cache must be preserved when the fork capture fails inside live mode"
         );
         assert_eq!(env.view.preview_cache.captured_lines, 1);
+    }
+
+    #[test]
+    #[serial]
+    fn refresh_terminal_cache_overwrites_on_empty_capture() {
+        // Counterpart to `refresh_preserves_cache_when_live_capture_fails`:
+        // the agent cache and the host-terminal cache now share
+        // `refresh_preview_cache_core`, but only the agent wrapper carries the
+        // live-send kill switch. The terminal path must keep its old semantics
+        // (overwrite to empty so the preview surfaces "session looks gone")
+        // even when the unit fixture's backing tmux session does not exist and
+        // the capture comes back empty. Guards against the kill switch leaking
+        // into the shared core for the non-agent wrappers.
+        let mut env = create_test_env_with_sessions(1);
+        let id = env
+            .view
+            .flat_items
+            .iter()
+            .find_map(|item| match item {
+                crate::session::Item::Session { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("test env has one session");
+        env.view.selected_session = Some(id.clone());
+        env.view.terminal_preview_cache.content = "stale terminal output".to_string();
+        env.view.terminal_preview_cache.captured_lines = 1;
+        env.view.terminal_preview_cache.dimensions = (10, 10);
+        env.view.terminal_preview_cache.session_id = Some(id.clone());
+
+        env.view.refresh_terminal_preview_cache_if_needed(80, 24);
+
+        assert_eq!(
+            env.view.terminal_preview_cache.content, "",
+            "terminal cache must overwrite stale content (no kill switch outside the agent path)"
+        );
+        assert_eq!(env.view.terminal_preview_cache.dimensions, (80, 24));
+        assert_eq!(env.view.terminal_preview_cache.session_id, Some(id));
     }
 
     mod paste_splitting {

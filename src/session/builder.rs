@@ -652,6 +652,8 @@ pub fn cleanup_instance(
                     tracing::warn!(target: "session.create", "Failed to clean up container: {}", e);
                 }
             }
+            // Remove named ignore volumes even if the container is already gone.
+            container.remove_named_ignore_volumes(&instance.id);
         }
     }
 

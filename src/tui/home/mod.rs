@@ -1,5 +1,6 @@
 //! Home view - main session list and navigation
 
+pub(crate) mod bindings;
 mod input;
 mod live_send;
 mod operations;
@@ -40,6 +41,7 @@ use super::dialogs::{
 use super::diff::DiffView;
 use super::settings::SettingsView;
 use super::status_poller::{StatusPoller, StatusUpdate};
+use super::stop_poller::StopPoller;
 
 /// Extract a project group name from a session instance.
 /// Uses `worktree_info.main_repo_path` for worktree sessions (so all branches of the
@@ -472,6 +474,9 @@ pub struct HomeView {
     // Performance: background deletion
     pub(super) deletion_poller: DeletionPoller,
 
+    // Performance: background stop (docker stop can block up to ~10s)
+    pub(super) stop_poller: StopPoller,
+
     // Performance: background session creation (for sandbox)
     pub(super) creation_poller: CreationPoller,
     /// Set to true if user cancelled while creation was pending
@@ -816,6 +821,7 @@ impl HomeView {
             status_poller: StatusPoller::new(),
             pending_status_refresh: false,
             deletion_poller: DeletionPoller::new(),
+            stop_poller: StopPoller::new(),
             creation_poller: CreationPoller::new(),
             creation_cancelled: false,
             on_launch_hooks_ran: HashSet::new(),
@@ -1285,6 +1291,30 @@ impl HomeView {
                     inst.status = Status::Error;
                     inst.last_error = error;
                 });
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Apply the result of a background stop. Returns true if an instance was
+    /// updated so the caller can trigger a redraw.
+    pub fn apply_stop_results(&mut self) -> bool {
+        use crate::session::Status;
+
+        if let Some(result) = self.stop_poller.try_recv_result() {
+            if result.success {
+                // Status was already set to Stopped optimistically when the
+                // stop was requested; reassert it in case the disk reload or
+                // a race changed it, and clear any stale error.
+                self.set_instance_error(&result.session_id, None);
+                self.set_instance_status(&result.session_id, Status::Stopped);
+            } else {
+                self.set_instance_error(&result.session_id, result.error);
+                self.set_instance_status(&result.session_id, Status::Error);
+            }
+            if let Err(e) = self.save() {
+                tracing::error!(target: "tui.home", "Failed to save after stop: {}", e);
             }
             return true;
         }

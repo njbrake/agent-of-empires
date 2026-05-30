@@ -358,6 +358,7 @@ mod tests {
         let rt = ContainerRuntime::podman();
         assert!(rt.base.supports_read_only_volumes);
         assert!(rt.base.supports_remove_volumes);
+        assert!(rt.base.supports_named_volumes);
         assert_eq!(rt.base.remove_subcommand, "rm");
         assert_eq!(rt.base.pull_prefix, &["pull"]);
     }

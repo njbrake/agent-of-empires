@@ -154,6 +154,9 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                 messages.push("Container removed".to_string());
             }
         }
+        // Remove named ignore volumes even if the container is already gone — volumes created
+        // with volume_ignores_strategy = "named" outlive the container and need explicit cleanup.
+        container.remove_named_ignore_volumes(&request.instance.id);
     }
 
     // Stage 4: worktree cleanup. Container is gone, agent is gone, no

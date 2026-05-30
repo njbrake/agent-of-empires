@@ -1269,6 +1269,69 @@ impl HomeView {
         }
     }
 
+    /// Shared core for the four `refresh_*_preview_cache_if_needed` methods.
+    /// They all run the same needs-refresh gate (session id / dimensions /
+    /// scroll-exceeds / 250ms timer) and the same capture, cache-update, and
+    /// scroll-clamp body; they differ only in which cache field they target,
+    /// where the capture comes from, and whether live-send forces a refresh.
+    ///
+    /// `select` is called twice: once for the gate, once to write the result.
+    /// `capture` runs between those two borrows so it can take a shared `&self`
+    /// to reach `get_instance`. It returns `None` to leave the cache untouched:
+    /// the agent uses that for its live-send preserve-last-good kill switch
+    /// (#1501); the terminal/tool wrappers use it when the instance has gone
+    /// away, matching the original "only write inside `if let Some(inst)`".
+    ///
+    /// `force` bypasses the idle throttle; the agent passes `in_live` here so
+    /// every render refreshes the preview in live-send mode (see the throttle
+    /// note in `refresh_preview_cache_if_needed`), the others pass `false`.
+    fn refresh_preview_cache_core(
+        &mut self,
+        width: u16,
+        height: u16,
+        force: bool,
+        select: fn(&mut Self) -> &mut super::PreviewCache,
+        capture: impl FnOnce(&Self, &str, usize) -> Option<String>,
+    ) {
+        const PREVIEW_REFRESH_MS: u128 = 250;
+        let Some(id) = self.selected_session.clone() else {
+            return;
+        };
+        let scroll_offset = self.preview_scroll_offset;
+
+        let cache = select(self);
+        let needs_refresh = force
+            || cache.session_id.as_ref() != Some(&id)
+            || cache.dimensions != (width, height)
+            || scroll_exceeds_cache(cache.captured_lines, height, scroll_offset)
+            || cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS;
+        if !needs_refresh {
+            return;
+        }
+
+        let capture_lines = capture_lines_for(height, scroll_offset);
+        let Some(content) = capture(self, id.as_str(), capture_lines) else {
+            return;
+        };
+
+        let cache = select(self);
+        cache.captured_lines = content.lines().count();
+        cache.content = content;
+        // Invalidate the cached parse; the next render that needs
+        // `ensure_parsed` will re-run `ansi-to-tui`.
+        cache.parsed_text = None;
+        cache.session_id = Some(id);
+        cache.dimensions = (width, height);
+        cache.last_refresh = Instant::now();
+        let captured_lines = cache.captured_lines;
+
+        self.preview_scroll_offset = clamp_scroll_to_capture(
+            self.preview_scroll_offset,
+            captured_lines,
+            self.preview_visible_rows,
+        );
+    }
+
     pub(super) fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         // Outside live-send, captures fork a fresh `tmux capture-pane`
         // so we throttle to 250ms (4 Hz). Inside live-send, captures
@@ -1280,8 +1343,9 @@ impl HomeView {
         // pushes when tmux notifies us of new pane bytes). The result
         // is roughly attach-quality latency in the common case; the
         // residual gap is the cost of capture-pane + ratatui re-render
-        // vs. tmux writing bytes straight into your terminal.
-        const PREVIEW_REFRESH_MS_IDLE: u128 = 250;
+        // vs. tmux writing bytes straight into your terminal. The core's
+        // `force` flag carries this: we pass `in_live` so live-send bypasses
+        // the 250ms idle throttle.
         let in_live = self.live_send.is_some();
         // While in live-send mode, keep the agent's tmux pane sized to the
         // preview's visible output area so it renders directly into view.
@@ -1321,67 +1385,46 @@ impl HomeView {
             }
         }
 
-        let scroll_offset = self.preview_scroll_offset;
-        let session_changed = match &self.selected_session {
-            Some(id) => self.preview_cache.session_id.as_ref() != Some(id),
-            None => false,
-        };
-        let dims_changed = self.preview_cache.dimensions != (width, height);
-        // Live-send: no throttle. Idle: 250ms throttle to keep the
-        // fork rate sane. See the constant comment above for why.
-        let timer_expired = in_live
-            || self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS_IDLE;
-        // Only re-capture for scroll when the cached window can no longer
-        // cover the requested offset. Wheel ticks inside the BUFFER headroom
-        // re-render from the existing content without forking tmux.
-        let scroll_exceeds =
-            scroll_exceeds_cache(self.preview_cache.captured_lines, height, scroll_offset);
-
-        let needs_refresh = self.selected_session.is_some()
-            && (session_changed || dims_changed || timer_expired || scroll_exceeds);
-
-        if needs_refresh {
-            if let Some(id) = self.selected_session.clone() {
-                let capture_lines = capture_lines_for(height, scroll_offset);
-                // Captures always go through the fork-based path
-                // (`Session::capture_pane_with_size` via the instance
-                // helper). The long-lived `tmux -C` connection is
-                // reserved for `send-keys` from the worker thread; on
-                // some tmux builds (macOS 3.x observed) the control-
-                // mode connection EOFs mid-session, and routing
-                // captures through it as well meant a dropped
-                // connection froze the preview until the user exited
-                // live mode. Forking per capture costs ~5-10 ms on a
-                // local mac and is invisible against the 250 ms idle
-                // throttle / `%output`-wake cadence; we trade that
-                // overhead for "preview never gets stuck".
-                //
-                // Live vs. non-live failure semantics differ. In live
-                // mode an empty capture (which is what
-                // `Session::capture_pane_with_size` returns when the
-                // session is gone OR tmux had a transient hiccup)
-                // preserves the last-known-good capture so the preview
-                // doesn't flash blank (the kill-switch behavior
-                // introduced in #1501). Outside live mode the empty
-                // content surfaces as "No output available", which is
-                // the intended signal that the underlying session is
-                // gone.
-                let in_live = self.live_send.is_some();
-                // Only treat an empty fork capture as "preserve the
-                // existing cache" when the cache is FOR THIS SAME
-                // SESSION. If the user just switched live-send from
-                // session A to session B and B's first capture comes
-                // back empty, holding the kill-switch would leave A's
-                // content on screen under B's header. Cross-session
-                // we always overwrite, falling back to an empty body
-                // (the same "session looks gone" signal the non-live
-                // path uses).
-                let same_session = self.preview_cache.session_id.as_ref() == Some(&id);
-                let fork_capture = self.get_instance(&id).and_then(|inst| {
+        // Captures always go through the fork-based path
+        // (`Session::capture_pane_with_size` via the instance helper). The
+        // long-lived `tmux -C` connection is reserved for `send-keys` from the
+        // worker thread; on some tmux builds (macOS 3.x observed) the control-
+        // mode connection EOFs mid-session, and routing captures through it as
+        // well meant a dropped connection froze the preview until the user
+        // exited live mode. Forking per capture costs ~5-10 ms on a local mac
+        // and is invisible against the 250 ms idle throttle / `%output`-wake
+        // cadence; we trade that overhead for "preview never gets stuck".
+        //
+        // Live vs. non-live failure semantics differ. In live mode an empty
+        // capture (which is what `Session::capture_pane_with_size` returns when
+        // the session is gone OR tmux had a transient hiccup) preserves the
+        // last-known-good capture so the preview doesn't flash blank (the
+        // kill-switch behavior introduced in #1501). The capture closure
+        // returns `None` for that case so the core leaves every cache field
+        // alone, including `session_id` and `dimensions`, which document
+        // "what's in `content`" and would lie if updated past a stale snapshot.
+        // Outside live mode the empty content surfaces as "No output
+        // available", the intended signal that the underlying session is gone.
+        self.refresh_preview_cache_core(
+            width,
+            height,
+            in_live,
+            |s| &mut s.preview_cache,
+            |s, id, capture_lines| {
+                let in_live = s.live_send.is_some();
+                // Only treat an empty fork capture as "preserve the existing
+                // cache" when the cache is FOR THIS SAME SESSION. If the user
+                // just switched live-send from session A to session B and B's
+                // first capture comes back empty, holding the kill-switch would
+                // leave A's content on screen under B's header. Cross-session we
+                // always overwrite, falling back to an empty body (the same
+                // "session looks gone" signal the non-live path uses).
+                let same_session = s.preview_cache.session_id.as_deref() == Some(id);
+                let fork_capture = s.get_instance(id).and_then(|inst| {
                     inst.capture_output_with_size(capture_lines, width, height)
                         .ok()
                 });
-                let captured: Option<String> = if in_live {
+                if in_live {
                     match fork_capture {
                         Some(content) if !content.is_empty() => Some(content),
                         _ if same_session => None,
@@ -1389,93 +1432,35 @@ impl HomeView {
                     }
                 } else {
                     Some(fork_capture.unwrap_or_default())
-                };
-                // Only mutate cache when we actually got bytes. On a
-                // live-mode transient failure (`None`) we leave every
-                // cache field alone — including `session_id` and
-                // `dimensions`, which document "what's in `content`"
-                // and would lie if updated past a stale snapshot. The
-                // retry cadence is already bounded by the loop's tick
-                // / wake / key sources, so we don't need to write a
-                // `last_refresh` here to throttle (in live mode
-                // `in_live` forces `timer_expired` regardless).
-                if let Some(content) = captured {
-                    self.preview_cache.captured_lines = content.lines().count();
-                    self.preview_cache.content = content;
-                    // Invalidate the cached parse; the next render that
-                    // needs `ensure_parsed` will re-run `ansi-to-tui`.
-                    self.preview_cache.parsed_text = None;
-                    self.preview_cache.session_id = Some(id);
-                    self.preview_cache.dimensions = (width, height);
-                    self.preview_cache.last_refresh = Instant::now();
-                    self.preview_scroll_offset = clamp_scroll_to_capture(
-                        self.preview_scroll_offset,
-                        self.preview_cache.captured_lines,
-                        self.preview_visible_rows,
-                    );
                 }
-            }
-        }
+            },
+        );
     }
 
     /// Refresh terminal preview cache if needed (for host terminals)
-    fn refresh_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
-        const PREVIEW_REFRESH_MS: u128 = 250;
-
+    pub(super) fn refresh_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         // Symmetric with `refresh_preview_cache_if_needed`: when live-send
         // is pointed at the host-terminal pane, keep its tmux pane sized to
         // the visible output area so a window resize or info-header toggle
         // reflows the shell instead of waiting for a live-mode re-enter.
         self.resize_live_pane_if_target(live_send::LiveSendTarget::Terminal, width, height);
-
-        let scroll_offset = self.preview_scroll_offset;
-        let needs_refresh = match &self.selected_session {
-            Some(id) => {
-                self.terminal_preview_cache.session_id.as_ref() != Some(id)
-                    || self.terminal_preview_cache.dimensions != (width, height)
-                    || scroll_exceeds_cache(
-                        self.terminal_preview_cache.captured_lines,
-                        height,
-                        scroll_offset,
-                    )
-                    || self
-                        .terminal_preview_cache
-                        .last_refresh
-                        .elapsed()
-                        .as_millis()
-                        > PREVIEW_REFRESH_MS
-            }
-            None => false,
-        };
-
-        if needs_refresh {
-            if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.get_instance(id) {
-                    let capture_lines = capture_lines_for(height, scroll_offset);
-                    let content = inst
-                        .terminal_tmux_session()
-                        .and_then(|s| s.capture_pane(capture_lines))
-                        .unwrap_or_default();
-                    self.terminal_preview_cache.captured_lines = content.lines().count();
-                    self.terminal_preview_cache.content = content;
-                    self.terminal_preview_cache.parsed_text = None;
-                    self.terminal_preview_cache.session_id = Some(id.clone());
-                    self.terminal_preview_cache.dimensions = (width, height);
-                    self.terminal_preview_cache.last_refresh = Instant::now();
-                    self.preview_scroll_offset = clamp_scroll_to_capture(
-                        self.preview_scroll_offset,
-                        self.terminal_preview_cache.captured_lines,
-                        self.preview_visible_rows,
-                    );
-                }
-            }
-        }
+        self.refresh_preview_cache_core(
+            width,
+            height,
+            false,
+            |s| &mut s.terminal_preview_cache,
+            |s, id, capture_lines| {
+                s.get_instance(id).map(|inst| {
+                    inst.terminal_tmux_session()
+                        .and_then(|sess| sess.capture_pane(capture_lines))
+                        .unwrap_or_default()
+                })
+            },
+        );
     }
 
     /// Refresh container terminal preview cache if needed
     fn refresh_container_terminal_preview_cache_if_needed(&mut self, width: u16, height: u16) {
-        const PREVIEW_REFRESH_MS: u128 = 250;
-
         // Symmetric with `refresh_preview_cache_if_needed`: when live-send
         // is pointed at the in-container shell, keep its tmux pane sized to
         // the visible output area so a window resize or info-header toggle
@@ -1485,91 +1470,35 @@ impl HomeView {
             width,
             height,
         );
-
-        let scroll_offset = self.preview_scroll_offset;
-        let needs_refresh = match &self.selected_session {
-            Some(id) => {
-                self.container_terminal_preview_cache.session_id.as_ref() != Some(id)
-                    || self.container_terminal_preview_cache.dimensions != (width, height)
-                    || scroll_exceeds_cache(
-                        self.container_terminal_preview_cache.captured_lines,
-                        height,
-                        scroll_offset,
-                    )
-                    || self
-                        .container_terminal_preview_cache
-                        .last_refresh
-                        .elapsed()
-                        .as_millis()
-                        > PREVIEW_REFRESH_MS
-            }
-            None => false,
-        };
-
-        if needs_refresh {
-            if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.get_instance(id) {
-                    let capture_lines = capture_lines_for(height, scroll_offset);
-                    let content = inst
-                        .container_terminal_tmux_session()
-                        .and_then(|s| s.capture_pane(capture_lines))
-                        .unwrap_or_default();
-                    self.container_terminal_preview_cache.captured_lines = content.lines().count();
-                    self.container_terminal_preview_cache.content = content;
-                    self.container_terminal_preview_cache.parsed_text = None;
-                    self.container_terminal_preview_cache.session_id = Some(id.clone());
-                    self.container_terminal_preview_cache.dimensions = (width, height);
-                    self.container_terminal_preview_cache.last_refresh = Instant::now();
-                    self.preview_scroll_offset = clamp_scroll_to_capture(
-                        self.preview_scroll_offset,
-                        self.container_terminal_preview_cache.captured_lines,
-                        self.preview_visible_rows,
-                    );
-                }
-            }
-        }
+        self.refresh_preview_cache_core(
+            width,
+            height,
+            false,
+            |s| &mut s.container_terminal_preview_cache,
+            |s, id, capture_lines| {
+                s.get_instance(id).map(|inst| {
+                    inst.container_terminal_tmux_session()
+                        .and_then(|sess| sess.capture_pane(capture_lines))
+                        .unwrap_or_default()
+                })
+            },
+        );
     }
 
     fn refresh_tool_preview_cache_if_needed(&mut self, width: u16, height: u16, tool_name: &str) {
-        const PREVIEW_REFRESH_MS: u128 = 250;
-
-        let scroll_offset = self.preview_scroll_offset;
-        let needs_refresh = match &self.selected_session {
-            Some(id) => {
-                self.tool_preview_cache.session_id.as_ref() != Some(id)
-                    || self.tool_preview_cache.dimensions != (width, height)
-                    || scroll_exceeds_cache(
-                        self.tool_preview_cache.captured_lines,
-                        height,
-                        scroll_offset,
-                    )
-                    || self.tool_preview_cache.last_refresh.elapsed().as_millis()
-                        > PREVIEW_REFRESH_MS
-            }
-            None => false,
-        };
-
-        if needs_refresh {
-            if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.get_instance(id) {
-                    let capture_lines = capture_lines_for(height, scroll_offset);
-                    let tool_session =
-                        crate::tmux::ToolSession::new(&inst.id, &inst.title, tool_name);
-                    let content = tool_session.capture_pane(capture_lines).unwrap_or_default();
-                    self.tool_preview_cache.captured_lines = content.lines().count();
-                    self.tool_preview_cache.content = content;
-                    self.tool_preview_cache.parsed_text = None;
-                    self.tool_preview_cache.session_id = Some(id.clone());
-                    self.tool_preview_cache.dimensions = (width, height);
-                    self.tool_preview_cache.last_refresh = Instant::now();
-                    self.preview_scroll_offset = clamp_scroll_to_capture(
-                        self.preview_scroll_offset,
-                        self.tool_preview_cache.captured_lines,
-                        self.preview_visible_rows,
-                    );
-                }
-            }
-        }
+        self.refresh_preview_cache_core(
+            width,
+            height,
+            false,
+            |s| &mut s.tool_preview_cache,
+            |s, id, capture_lines| {
+                s.get_instance(id).map(|inst| {
+                    crate::tmux::ToolSession::new(&inst.id, &inst.title, tool_name)
+                        .capture_pane(capture_lines)
+                        .unwrap_or_default()
+                })
+            },
+        );
     }
 
     /// `captured_lines` from whichever preview cache is currently on screen.

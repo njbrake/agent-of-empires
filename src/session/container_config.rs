@@ -8,8 +8,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::containers::{ContainerConfig, EnvEntry, VolumeMount};
+use crate::containers::{ContainerConfig, EnvEntry, NamedVolumeMount, VolumeMount};
 use crate::git::GitWorktree;
+use crate::session::config::VolumeIgnoresStrategy;
 
 use super::environment::collect_environment;
 use super::instance::SandboxInfo;
@@ -962,6 +963,34 @@ impl<'a> ContainerAgentSelection<'a> {
     }
 }
 
+/// Produce a deterministic Docker volume name for a named volume_ignores mount.
+///
+/// Uses the full session ID as a prefix so volumes can be enumerated on deletion.
+/// A short hash of the container path is appended to handle slug collisions.
+fn named_volume_for(session_id: &str, container_path: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let sanitize = |s: &str| -> String {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                    c
+                } else {
+                    '-'
+                }
+            })
+            .collect()
+    };
+    let slug: String = sanitize(container_path.trim_start_matches('/'))
+        .chars()
+        .take(40)
+        .collect();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    container_path.hash(&mut h);
+    let hash = format!("{:x}", h.finish());
+    let hash12 = &hash[..12.min(hash.len())];
+    format!("aoe-vi-{}-{}-{}", session_id, slug, hash12)
+}
+
 /// Build a full `ContainerConfig` for creating a sandboxed container.
 ///
 /// `profile` selects which profile's overrides (volumes, mount_ssh, volume_ignores)
@@ -1247,13 +1276,10 @@ pub(crate) fn build_container_config(
         }
     }
 
-    // Filter anonymous_volumes to exclude paths that conflict with extra_volumes
-    // (extra_volumes should take precedence over volume_ignores)
-    // Conflicts include:
-    //   - Exact match: both point to same path
-    //   - Anonymous volume is parent of extra_volume (would shadow the mount)
-    //   - Anonymous volume is inside extra_volume (redundant/conflicting)
-    let anonymous_volumes: Vec<String> = volume_ignore_bases
+    // Expand all volume_ignores paths and filter conflicts with extra_volumes.
+    // (extra_volumes take precedence over volume_ignores)
+    // Conflicts: exact match, anonymous is a parent of extra, or inside extra.
+    let expanded_ignore_paths: Vec<String> = volume_ignore_bases
         .iter()
         .flat_map(|base_path| {
             sandbox_config
@@ -1261,14 +1287,30 @@ pub(crate) fn build_container_config(
                 .iter()
                 .map(move |ignore| format!("{}/{}", base_path, ignore))
         })
-        .filter(|anon_path| {
+        .filter(|path| {
             !extra_volume_container_paths.iter().any(|extra_path| {
-                anon_path == extra_path
-                    || extra_path.starts_with(&format!("{}/", anon_path))
-                    || anon_path.starts_with(&format!("{}/", extra_path))
+                path == extra_path
+                    || extra_path.starts_with(&format!("{}/", path))
+                    || path.starts_with(&format!("{}/", extra_path))
             })
         })
         .collect();
+
+    // Route by strategy: anonymous volumes are the default; named volumes fix VirtioFS on macOS.
+    let (anonymous_volumes, named_ignore_volumes): (Vec<String>, Vec<NamedVolumeMount>) =
+        match sandbox_config.volume_ignores_strategy {
+            VolumeIgnoresStrategy::Anonymous => (expanded_ignore_paths, vec![]),
+            VolumeIgnoresStrategy::Named => {
+                let named = expanded_ignore_paths
+                    .into_iter()
+                    .map(|container_path| NamedVolumeMount {
+                        volume_name: named_volume_for(instance_id, &container_path),
+                        container_path,
+                    })
+                    .collect();
+                (vec![], named)
+            }
+        };
 
     // Deduplicate volumes by container_path (last writer wins, so extra_volumes
     // from user config override automatic mounts).
@@ -1287,6 +1329,7 @@ pub(crate) fn build_container_config(
         working_dir: workspace_path,
         volumes: deduped,
         anonymous_volumes,
+        named_ignore_volumes,
         environment,
         cpu_limit: sandbox_config.cpu_limit,
         memory_limit: sandbox_config.memory_limit,
@@ -3594,5 +3637,68 @@ volume_ignores = ["target"]
         );
 
         std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+    }
+
+    // --- named_volume_for tests ---
+
+    #[test]
+    fn test_named_volume_for_is_deterministic() {
+        let a = named_volume_for("sess-abc123", "/workspace/node_modules");
+        let b = named_volume_for("sess-abc123", "/workspace/node_modules");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_named_volume_for_differs_by_path() {
+        let a = named_volume_for("sess-abc123", "/workspace/node_modules");
+        let b = named_volume_for("sess-abc123", "/workspace/.venv");
+        assert_ne!(a, b, "Different paths must produce different volume names");
+    }
+
+    #[test]
+    fn test_named_volume_for_differs_by_session_id() {
+        let a = named_volume_for("sess-aaa", "/workspace/node_modules");
+        let b = named_volume_for("sess-bbb", "/workspace/node_modules");
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_named_volume_for_sanitizes_unsafe_chars() {
+        let name = named_volume_for("sess-1", "/workspace/path with spaces/foo:bar");
+        assert!(
+            !name.contains(' ') && !name.contains(':'),
+            "Volume name must not contain spaces or colons"
+        );
+    }
+
+    #[test]
+    fn test_named_volume_for_starts_with_prefix() {
+        let name = named_volume_for("sess-xyz", "/workspace/target");
+        assert!(name.starts_with("aoe-vi-sess-xyz-"));
+    }
+
+    #[test]
+    fn test_named_volume_for_slug_collision_prevented_by_hash() {
+        // Two paths that have the same 40-char slug prefix (unlikely but possible for long paths)
+        // are disambiguated by the hash suffix.
+        let path1 = "/workspace/a-very-long-directory-name-that-exceeds-40-chars-v1";
+        let path2 = "/workspace/a-very-long-directory-name-that-exceeds-40-chars-v2";
+        let a = named_volume_for("sess-1", path1);
+        let b = named_volume_for("sess-1", path2);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn test_named_volume_for_prefix_does_not_match_longer_session_id() {
+        // "sess1" must not match volumes belonging to "sess10".
+        // The cleanup prefix is "aoe-vi-{session_id}-" (trailing dash), so a volume
+        // named "aoe-vi-sess10-..." must NOT start with "aoe-vi-sess1-".
+        let vol_sess10 = named_volume_for("sess10", "/workspace/node_modules");
+        let prefix_sess1 = format!("aoe-vi-{}-", "sess1");
+        assert!(
+            !vol_sess10.starts_with(&prefix_sess1),
+            "Volume for sess10 must not match the cleanup prefix for sess1: {}",
+            vol_sess10
+        );
     }
 }
