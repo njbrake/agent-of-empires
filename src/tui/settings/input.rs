@@ -822,6 +822,11 @@ impl SettingsView {
                     s.agent_status_hooks = None;
                 }
             }
+            FieldKey::MouseCapture => {
+                if let Some(ref mut s) = config.session {
+                    s.mouse_capture = None;
+                }
+            }
             FieldKey::DefaultTerminalMode => {
                 if let Some(ref mut s) = config.sandbox {
                     s.default_terminal_mode = None;

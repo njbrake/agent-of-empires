@@ -73,6 +73,9 @@ website/src/pages/docs/development/*.md
 *.cast
 /test-results
 
+# PR review GIFs (uploaded to PR descriptions, not tracked)
+.gifs/
+
 # Coverage output (Vitest + Playwright + merged)
 web/coverage/
 web/playwright-report/

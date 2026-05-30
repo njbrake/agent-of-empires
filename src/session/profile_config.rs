@@ -238,6 +238,9 @@ pub struct SessionConfigOverride {
     pub agent_status_hooks: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mouse_capture: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_agents: Option<HashMap<String, String>>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -477,6 +480,9 @@ pub fn apply_session_overrides(
     }
     if let Some(agent_status_hooks) = source.agent_status_hooks {
         target.agent_status_hooks = agent_status_hooks;
+    }
+    if let Some(mouse_capture) = source.mouse_capture {
+        target.mouse_capture = mouse_capture;
     }
     if let Some(ref custom_agents) = source.custom_agents {
         target.custom_agents = custom_agents.clone();

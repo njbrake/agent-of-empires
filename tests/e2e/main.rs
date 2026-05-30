@@ -27,6 +27,7 @@ mod profile_picker;
 mod project_registry;
 mod sandbox;
 mod serve;
+mod settings;
 mod tool_sessions;
 mod tui_launch;
 mod unified_view;

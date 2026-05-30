@@ -109,6 +109,7 @@ pub enum FieldKey {
     NewSessionAttachMode,
     DefaultAttachMode,
     ClickAction,
+    MouseCapture,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -1947,6 +1948,12 @@ fn build_interaction_fields(
         session.and_then(|s| s.click_action),
     );
 
+    let (mouse_capture, mouse_capture_override) = resolve_value(
+        scope,
+        global.session.mouse_capture,
+        session.and_then(|s| s.mouse_capture),
+    );
+
     vec![
         SettingField {
             key: FieldKey::DefaultAttachMode,
@@ -2042,6 +2049,24 @@ fn build_interaction_fields(
             inherited_display: inherited_if(
                 live_send_exit_chord_override,
                 FieldValue::Text(global.session.live_send_exit_chord.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::MouseCapture,
+            label: "Mouse Capture",
+            description: "Request xterm mouse tracking so the TUI handles the \
+                 scroll wheel (preview-pane scroll) and click-to-select rows. \
+                 Disable to hand the wheel and text selection back to the \
+                 terminal, e.g. iOS Mosh + Termius/Blink where mouse-tracking \
+                 escapes aren't forwarded reliably. The AOE_MOUSE_CAPTURE env \
+                 var remains an opt-out backstop and can still force capture \
+                 off when set.",
+            value: FieldValue::Bool(mouse_capture),
+            category: SettingsCategory::Interaction,
+            has_override: mouse_capture_override,
+            inherited_display: inherited_if(
+                mouse_capture_override,
+                FieldValue::Bool(global.session.mouse_capture),
             ),
         },
     ]
@@ -2538,6 +2563,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             config.session.agent_status_hooks = *v;
+        }
+        (FieldKey::MouseCapture, FieldValue::Bool(v)) => {
+            config.session.mouse_capture = *v;
         }
         (FieldKey::DefaultImage, FieldValue::Text(v)) => config.sandbox.default_image = v.clone(),
         (FieldKey::Environment, FieldValue::List(v)) => config.sandbox.environment = v.clone(),
@@ -3039,6 +3067,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| {
                 s.agent_status_hooks = val;
+            });
+        }
+        (FieldKey::MouseCapture, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.session, |s, val| {
+                s.mouse_capture = val;
             });
         }
         (FieldKey::AgentExtraArgs, FieldValue::List(v)) => {
@@ -3715,6 +3748,7 @@ mod tests {
             FieldKey::NewSessionAttachMode,
             FieldKey::ClickAction,
             FieldKey::LiveSendExitChord,
+            FieldKey::MouseCapture,
         ] {
             assert!(
                 interaction_keys.contains(&k),

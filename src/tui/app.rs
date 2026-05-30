@@ -103,6 +103,19 @@ pub struct App {
     /// it back on when the surface dismisses. Default true to match the
     /// startup `EnableMouseCapture` in `tui::run`.
     mouse_captured: bool,
+    /// Whether the resolved config permits xterm mouse tracking (the
+    /// `session.mouse_capture` field plus the `AOE_MOUSE_CAPTURE` backstop).
+    /// This is permission, not live state: `mouse_captured` tracks whether
+    /// tracking is actually engaged right now. Refreshed from disk on the
+    /// periodic reload so toggling Settings > Interaction > Mouse Capture takes
+    /// effect without a restart. When false, `sync_mouse_capture` keeps xterm
+    /// tracking off entirely.
+    mouse_capture_allowed: bool,
+    /// True when running under Mosh (`MOSH_CONNECTION` set). Mosh mangles
+    /// xterm mouse-tracking escapes, so `tui::run` skips the startup
+    /// `EnableMouseCapture` and `sync_mouse_capture` must not re-enable
+    /// tracking mid-session either.
+    mosh_active: bool,
     /// Set by `Action::OpenCockpit` so the async main loop can pick it
     /// up and enter the cockpit view (which needs `event_stream` access
     /// the sync `execute_action` can't lend out).
@@ -175,6 +188,7 @@ impl App {
         profile: &str,
         available_tools: AvailableTools,
         suppress_first_run_dialogs: bool,
+        mosh_active: bool,
     ) -> Result<Self> {
         let no_agents = !available_tools.any_available();
         let active_profile = if profile.is_empty() {
@@ -233,9 +247,13 @@ impl App {
             update_status_rx: None,
             dismissed_update_version,
             event_stream: Some(EventStream::new()),
-            // Initial state matches whatever `tui::run` did at startup;
-            // capture is on by default, off only if AOE_MOUSE_CAPTURE=0.
-            mouse_captured: crate::tui::mouse_capture_requested(),
+            // Initial state matches whatever `tui::run` did at startup: capture
+            // is requested by default, but Mosh suppresses the actual escape, so
+            // `mouse_captured` (live state) also factors in `mosh_active`.
+            // `mouse_capture_allowed` is permission only and ignores Mosh.
+            mouse_captured: crate::tui::mouse_capture_requested(&config.session) && !mosh_active,
+            mouse_capture_allowed: crate::tui::mouse_capture_requested(&config.session),
+            mosh_active,
             #[cfg(feature = "serve")]
             pending_cockpit_open: None,
             pending_install_version: None,
@@ -254,14 +272,17 @@ impl App {
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
-        // Mouse capture is on by default; AOE_MOUSE_CAPTURE=0 opts out so
-        // iOS Mosh + Termius/Blink use the terminal app's native scrollback
-        // for touch-scroll (Mosh doesn't reliably forward mouse-tracking
-        // escapes to mobile clients).
-        if !crate::tui::mouse_capture_requested() {
-            return Ok(());
-        }
-        let desired = !self.home.wants_text_selection();
+        // Mouse capture is on by default; the Mouse Capture setting (or the
+        // AOE_MOUSE_CAPTURE=0 backstop) opts out so iOS Mosh + Termius/Blink
+        // use the terminal app's native scrollback for touch-scroll (Mosh
+        // doesn't reliably forward mouse-tracking escapes to mobile clients).
+        // Folding `mouse_capture_allowed` into `desired` (rather than an early
+        // return) means flipping the setting off mid-session disables tracking
+        // on the next sync instead of leaving it stuck on. `mosh_active` is
+        // folded in too so a mid-session enable never emits the escape under
+        // Mosh, matching the startup gate in `tui::run`.
+        let desired =
+            self.mouse_capture_allowed && !self.mosh_active && !self.home.wants_text_selection();
         if desired == self.mouse_captured {
             return Ok(());
         }
@@ -318,7 +339,7 @@ impl App {
             crossterm::terminal::LeaveAlternateScreen,
             DisableBracketedPaste,
         )?;
-        if crate::tui::mouse_capture_requested() {
+        if self.mouse_captured {
             crossterm::execute!(terminal.backend_mut(), DisableMouseCapture)?;
         }
         crossterm::execute!(terminal.backend_mut(), crossterm::cursor::Show)?;
@@ -345,8 +366,8 @@ impl App {
         )?;
         // Defer mouse-capture restore to sync_mouse_capture so we don't
         // briefly enable it only to disable again when the user returned
-        // to the serve view. sync_mouse_capture itself respects the
-        // AOE_MOUSE_CAPTURE opt-out.
+        // to the serve view. sync_mouse_capture itself respects the Mouse
+        // Capture setting and the AOE_MOUSE_CAPTURE opt-out.
         self.sync_mouse_capture(terminal)?;
         std::io::Write::flush(terminal.backend_mut())?;
 
@@ -1084,6 +1105,17 @@ impl App {
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL && self.home.live_send.is_none()
             {
                 self.home.reload()?;
+                // Pick up a Settings > Interaction > Mouse Capture toggle from
+                // disk and apply it now, so capture turns on/off within the
+                // reload window instead of waiting for a restart.
+                let profile = self.home.active_profile.as_deref().unwrap_or("default");
+                let mouse_capture_allowed = crate::session::resolve_config(profile)
+                    .map(|c| crate::tui::mouse_capture_requested(&c.session))
+                    .unwrap_or(self.mouse_capture_allowed);
+                if mouse_capture_allowed != self.mouse_capture_allowed {
+                    self.mouse_capture_allowed = mouse_capture_allowed;
+                    self.sync_mouse_capture(terminal)?;
+                }
                 last_disk_refresh = std::time::Instant::now();
                 refresh_needed = true;
                 needs_full_refresh = true;

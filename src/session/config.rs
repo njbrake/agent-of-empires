@@ -546,6 +546,16 @@ pub struct SessionConfig {
     #[serde(default = "default_true")]
     pub agent_status_hooks: bool,
 
+    /// Request xterm mouse tracking from the terminal so the TUI handles the
+    /// scroll wheel (preview-pane scroll, #795) and click-to-select rows.
+    /// Disable to hand wheel and text selection back to the terminal, e.g.
+    /// iOS Mosh + Termius/Blink, which don't reliably forward mouse-tracking
+    /// escapes. The `AOE_MOUSE_CAPTURE` env var stays as an opt-out backstop:
+    /// capture is requested only when this is true and the env var hasn't
+    /// disabled it. Default on.
+    #[serde(default = "default_true")]
+    pub mouse_capture: bool,
+
     /// User-defined custom agents: name -> launch command
     /// (e.g., "lenovo-claude" = "ssh -t lenovo claude").
     /// Custom agent names appear in the TUI agent picker alongside built-in agents.
@@ -710,6 +720,7 @@ impl Default for SessionConfig {
             agent_extra_args: HashMap::new(),
             agent_command_override: HashMap::new(),
             agent_status_hooks: true,
+            mouse_capture: true,
             custom_agents: HashMap::new(),
             agent_detect_as: HashMap::new(),
             strict_hotkeys: false,
