@@ -1006,6 +1006,18 @@
       ]
     },
     {
+      "id": "cockpit.story.composer-single-newline",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-single-newline-renders.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/Markdown.tsx"
+      ]
+    },
+    {
       "id": "cockpit.tool-cards",
       "kind": "vitest",
       "risk": "high",
