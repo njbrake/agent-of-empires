@@ -76,36 +76,47 @@ export function useTour({
   const prevScopeRef = useRef(scope);
   const mountedRef = useRef(true);
 
-  useEffect(
-    () => () => {
+  // Set in setup, not just cleanup, so a StrictMode unmount/remount (or any
+  // remount) does not leave begin() permanently latched to a no-op.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   // Defer one frame so a closing menu / freshly committed route has painted
-  // before we probe the DOM for anchors. No arbitrary timeout.
-  const begin = useCallback((): number => {
-    return requestAnimationFrame(() => {
-      if (!mountedRef.current) return;
-      const resolved = resolveTourSteps({ scope, readOnly, isDesktop });
-      if (resolved.length === 0) return;
-      setSteps(resolved);
-      setRun(true);
-    });
-  }, [scope, readOnly, isDesktop]);
+  // before we probe the DOM for anchors. No arbitrary timeout. `onStarted`
+  // fires synchronously, only when the tour actually starts (steps resolved),
+  // so callers can latch on real success rather than on the scheduling attempt.
+  const begin = useCallback(
+    (onStarted?: () => void): number => {
+      return requestAnimationFrame(() => {
+        if (!mountedRef.current) return;
+        const resolved = resolveTourSteps({ scope, readOnly, isDesktop });
+        if (resolved.length === 0) return;
+        onStarted?.();
+        setSteps(resolved);
+        setRun(true);
+      });
+    },
+    [scope, readOnly, isDesktop],
+  );
 
   const startTour = useCallback(() => {
     begin();
   }, [begin]);
 
   // Auto-launch: once per mount, dashboard scope, fine pointer, flag unset.
+  // The latch is set inside begin()'s success path so a frame where no anchor
+  // is painted yet does not permanently suppress the auto-launch.
   useEffect(() => {
     if (autoStartedRef.current) return;
     const seen = safeGetItem(TOUR_SEEN_KEY) === "1";
     if (!shouldAutoLaunch({ autoLaunchReady, scope, isDesktop, seen })) return;
-    autoStartedRef.current = true;
-    const id = begin();
+    const id = begin(() => {
+      autoStartedRef.current = true;
+    });
     return () => cancelAnimationFrame(id);
   }, [autoLaunchReady, scope, isDesktop, begin]);
 
