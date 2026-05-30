@@ -35,7 +35,6 @@ async function setupAndOpenSession(page: Page) {
   await page.goto("/");
   await seedSettings(page, { mobileFontSize: 10 });
   await page.reload();
-  await page.waitForTimeout(300);
   await openMobileSidebar(page);
   await clickSidebarSession(page, "pinch-test");
   await page.locator(".xterm").first().waitFor({ state: "visible", timeout: 10_000 });
@@ -65,13 +64,13 @@ test.describe("Mobile right panel picker (#1452)", () => {
     // The bug: keyboard padding collapsed the paired terminal to ~0px.
     // Now it owns the viewport, so it stays comfortably tall.
     await simulateKeyboardOpen(page, 300);
-    await page.waitForTimeout(400);
-    const box = await paired.boundingBox();
-    expect(box, "paired terminal should have a bounding box").not.toBeNull();
-    expect(
-      box!.height,
-      `paired terminal collapsed to ${box!.height}px under the keyboard`,
-    ).toBeGreaterThan(150);
+    // Poll the height rather than sleeping a fixed time: the layout settles
+    // a frame or two after the visualViewport resize.
+    await expect
+      .poll(async () => (await paired.boundingBox())?.height ?? 0, {
+        message: "paired terminal collapsed under the keyboard",
+      })
+      .toBeGreaterThan(150);
   });
 
   test("picker promotes the diff view, opens a file, and the back chip returns to the agent", async ({
@@ -98,7 +97,6 @@ test.describe("Mobile right panel picker (#1452)", () => {
       }),
     );
     await page.goto("/");
-    await page.waitForTimeout(300);
     await openMobileSidebar(page);
     await clickSidebarSession(page, "pinch-test");
     await page.locator(".xterm").first().waitFor({ state: "visible", timeout: 10_000 });
@@ -151,7 +149,6 @@ test.describe("Desktop right panel split is unchanged (#1452)", () => {
   }) => {
     await mockTerminalApis(page);
     await page.goto("/");
-    await page.waitForTimeout(300);
     await clickSidebarSession(page, "pinch-test");
     await page.locator(".xterm").first().waitFor({ state: "visible", timeout: 10_000 });
 
@@ -201,7 +198,6 @@ async function setupCockpitSession(page: Page) {
     r.fulfill({ json: {} }),
   );
   await page.goto("/");
-  await page.waitForTimeout(300);
   await openMobileSidebar(page);
   await clickSidebarSession(page, "cockpit-mobile");
   // Cockpit sessions render no xterm in the agent view; wait for the
@@ -226,13 +222,11 @@ test.describe("Mobile picker on a cockpit session (#1452)", () => {
     // The root is pinned for the paired view even on a cockpit session, so
     // the terminal stays tall under the keyboard rather than collapsing.
     await simulateKeyboardOpen(page, 300);
-    await page.waitForTimeout(400);
-    const box = await paired.boundingBox();
-    expect(box, "paired terminal should have a bounding box").not.toBeNull();
-    expect(
-      box!.height,
-      `paired terminal collapsed to ${box!.height}px on a cockpit session`,
-    ).toBeGreaterThan(150);
+    await expect
+      .poll(async () => (await paired.boundingBox())?.height ?? 0, {
+        message: "paired terminal collapsed on a cockpit session",
+      })
+      .toBeGreaterThan(150);
 
     // Back to the cockpit agent view.
     await page.getByTestId("mobile-back-to-agent").click();
