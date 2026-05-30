@@ -998,9 +998,22 @@
       "kind": "vitest",
       "risk": "high",
       "specs": [
-        "src/components/cockpit/Markdown.test.tsx"
+        "src/components/cockpit/Markdown.test.tsx",
+        "src/components/cockpit/Markdown.breaks.test.tsx"
       ],
       "components": [
+        "web/src/components/cockpit/Markdown.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-single-newline",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-single-newline-renders.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
         "web/src/components/cockpit/Markdown.tsx"
       ]
     },

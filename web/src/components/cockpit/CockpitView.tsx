@@ -505,9 +505,12 @@ function UserText({ text }: { text: string }) {
   // fenced code blocks render with syntax highlighting instead of
   // literal backticks. Smooth-reveal is off because user prompts arrive
   // complete; the pacing only matters for streamed agent tokens. See #1108.
+  // `breaks` is on because the composer is a plain <textarea>: a single
+  // shift+enter shows as a visible line break while typing, so the sent
+  // bubble must preserve that layout instead of collapsing it. See #1472.
   return (
     <div className="max-w-[80%] min-w-0 rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm">
-      <Markdown text={text} smooth={false} />
+      <Markdown text={text} smooth={false} breaks />
     </div>
   );
 }

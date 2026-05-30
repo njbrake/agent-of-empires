@@ -18,7 +18,8 @@ import type {
   SyntaxHighlighterProps,
 } from "@assistant-ui/react-markdown";
 import * as React from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 
 import {
@@ -40,18 +41,36 @@ interface Props {
    *  whose runtime status is `running`) should pass `smooth={true}`.
    *  See #1132. */
   smooth?: boolean;
+  /** Treat a single newline as a hard line break (remark-breaks). The
+   *  cockpit composer is a plain <textarea>, so a lone shift+enter shows
+   *  as a visible break while typing; enabling this keeps the sent user
+   *  bubble matching that layout. Default off so assistant text keeps
+   *  CommonMark soft-break semantics: model-authored markdown is often
+   *  hard-wrapped and streamed, and turning every wrap into a <br> would
+   *  add jarring mid-sentence breaks and streaming reflow. See #1472. */
+  breaks?: boolean;
+}
+
+/** remark plugin chain for the cockpit markdown surface. `breaks` opts
+ *  single newlines into hard <br> breaks; see the `breaks` prop on
+ *  {@link Markdown}. Exported so the regression tests exercise the exact
+ *  chain the component mounts. */
+export function remarkPluginsFor(breaks: boolean) {
+  return breaks ? [remarkGfm, remarkBreaks] : [remarkGfm];
 }
 
 /**
  * Render markdown text. Used for both assistant chunks and user
- * prompts; the smoothing pace is the only knob exposed.
+ * prompts; the smoothing pace and single-newline handling are the knobs
+ * exposed.
  */
-export function Markdown({ text, smooth = false }: Props) {
+export function Markdown({ text, smooth = false, breaks = false }: Props) {
+  const remarkPlugins = useMemo(() => remarkPluginsFor(breaks), [breaks]);
   return (
     <MarkdownTextPrimitive
       preprocess={() => text}
       smooth={smooth}
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={remarkPlugins}
       className="cockpit-markdown text-sm leading-relaxed"
       components={{
         SyntaxHighlighter: ShikiSyntaxHighlighter,
