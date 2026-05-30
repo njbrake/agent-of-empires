@@ -2323,7 +2323,11 @@
       "components": [
         "web/src/components/tour/TourRunner.tsx",
         "web/src/components/TopBar.tsx",
-        "web/src/components/OverflowMenu.tsx"
+        "web/src/components/OverflowMenu.tsx",
+        "web/src/components/Dashboard.tsx",
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/components/RightPanel.tsx",
+        "web/src/components/cockpit/Composer.tsx"
       ]
     },
     {
@@ -2336,7 +2340,9 @@
         "src/components/__tests__/Dashboard.tour.test.tsx"
       ],
       "components": [
-        "web/src/components/Dashboard.tsx"
+        "web/src/components/Dashboard.tsx",
+        "web/src/lib/tourSteps.ts",
+        "web/src/hooks/useTour.tsx"
       ]
     }
   ]
