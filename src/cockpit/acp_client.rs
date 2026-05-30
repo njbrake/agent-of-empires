@@ -2961,7 +2961,21 @@ fn map_acp_config_option(
         SessionConfigOptionCategory::Model => ConfigOptionCategory::Model,
         SessionConfigOptionCategory::ThoughtLevel => ConfigOptionCategory::ThoughtLevel,
         SessionConfigOptionCategory::Other(s) => ConfigOptionCategory::Other(s),
-        _ => ConfigOptionCategory::Other(String::new()),
+        // The schema enum is `#[non_exhaustive]`, so this arm is required
+        // to compile. Unknown category *names* arrive via the untagged
+        // `Other(String)` arm above; this fires only when upstream adds a
+        // genuinely new named variant we haven't mapped yet. Warn so the
+        // gap is visible instead of silently surfacing a categoryless
+        // option with an empty payload.
+        other => {
+            tracing::warn!(
+                target: "cockpit.acp",
+                variant = ?other,
+                "unknown SessionConfigOptionCategory; treating as Other(\"\"). \
+                 Bump claude-agent-acp or add a match arm.",
+            );
+            ConfigOptionCategory::Other(String::new())
+        }
     });
 
     // Only `Select` is rendered today; future kinds (boolean toggles
@@ -6658,6 +6672,58 @@ mod tests {
                 assert_eq!(options[1].category, ConfigOptionCategory::ThoughtLevel);
                 assert_eq!(options[1].current_value, "default");
                 assert_eq!(options[2].category, ConfigOptionCategory::Mode);
+            }
+            other => panic!("expected ConfigOptionsUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_config_option_preserves_unknown_category_name() {
+        // Forward-compat path for #1563: a category name aoe doesn't
+        // recognize arrives via the upstream untagged `Other(String)`
+        // arm. It must pass through as `Other(<name>)` and the option
+        // must not be dropped from the descriptor list. (The wildcard
+        // `_` arm that warns fires only for a genuinely new *named*
+        // upstream variant, which cannot be constructed against the
+        // current `#[non_exhaustive]` schema, so it is verified by
+        // inspection rather than a unit test.)
+        use agent_client_protocol::schema::{
+            ConfigOptionUpdate, SessionConfigKind, SessionConfigOption,
+            SessionConfigOptionCategory, SessionConfigSelect, SessionConfigSelectOption,
+            SessionConfigSelectOptions,
+        };
+        let unknown = SessionConfigOption::new(
+            "future",
+            "Future Selector",
+            SessionConfigKind::Select(SessionConfigSelect::new(
+                "a",
+                SessionConfigSelectOptions::Ungrouped(vec![SessionConfigSelectOption::new(
+                    "a", "A",
+                )]),
+            )),
+        )
+        .category(SessionConfigOptionCategory::Other(
+            "future_category".to_string(),
+        ));
+        let update = ConfigOptionUpdate::new(vec![unknown]);
+
+        let events = map_update_to_events(
+            SessionUpdate::ConfigOptionUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::ConfigOptionsUpdated { options } => {
+                assert_eq!(
+                    options.len(),
+                    1,
+                    "unknown-category option must not be dropped"
+                );
+                assert_eq!(options[0].id, "future");
+                assert_eq!(
+                    options[0].category,
+                    ConfigOptionCategory::Other("future_category".to_string()),
+                );
             }
             other => panic!("expected ConfigOptionsUpdated, got {other:?}"),
         }
