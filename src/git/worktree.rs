@@ -31,6 +31,23 @@ fn sanitize_remote_credentials(s: &str) -> String {
     re.replace_all(s, "${1}<redacted>@").into_owned()
 }
 
+/// Classify a failed `git worktree add` into a typed error.
+///
+/// The branch-already-checked-out case (git prints `'<branch>' is already
+/// used by worktree at '<path>'`, or `already checked out at '<path>'` on
+/// older git) becomes a clean `BranchAlreadyCheckedOut` that names the
+/// branch and drops the raw stderr (including the other worktree's path).
+/// Everything else stays `WorktreeCommandFailed`, with any credentialed
+/// remote URL redacted before it can be surfaced.
+fn classify_worktree_add_failure(combined: &str, branch: &str) -> GitError {
+    let lower = combined.to_ascii_lowercase();
+    if lower.contains("already used by worktree") || lower.contains("already checked out at") {
+        GitError::BranchAlreadyCheckedOut(branch.to_string())
+    } else {
+        GitError::WorktreeCommandFailed(sanitize_remote_credentials(combined))
+    }
+}
+
 /// Remote name used as a fallback when no candidate remote can be picked
 /// from the local refs. Real selection happens in
 /// `detect_default_branch_info`, which walks every configured remote and
@@ -639,6 +656,11 @@ impl GitWorktree {
                 (true, false) => stderr,
                 (false, false) => format!("{stdout}\n{stderr}"),
             };
+            // Redact any credentialed remote URL before this text can reach
+            // the debug log or the client (via the warnings channel below or
+            // the error message). Idempotent, so the second pass inside
+            // `classify_worktree_add_failure` is a no-op.
+            let combined = sanitize_remote_credentials(&combined);
 
             // post-checkout hooks (e.g. pre-commit's hook-type=post-checkout
             // running uv-sync, npm install, etc.) can fail after git has
@@ -655,7 +677,7 @@ impl GitWorktree {
                 tracing::warn!(target: "git.worktree", "worktree create: {}", warning);
                 warnings.push(warning);
             } else {
-                return Err(GitError::WorktreeCommandFailed(combined));
+                return Err(classify_worktree_add_failure(&combined, branch));
             }
         }
 
@@ -1787,15 +1809,15 @@ mod tests {
             .unwrap();
 
         // Try creating again at a different path but same branch - git won't
-        // allow two worktrees to check out the same branch.
+        // allow two worktrees to check out the same branch. This is the
+        // branch-already-checked-out case, so it maps to the typed
+        // BranchAlreadyCheckedOut error naming the branch.
         let wt_path2 = dir.path().join("fail-worktree-2");
         let result = git_wt.create_worktree("fail-branch", &wt_path2, false, None);
-        assert!(result.is_err());
-        let err_msg = format!("{}", result.unwrap_err());
-        assert!(
-            err_msg.contains("worktree command failed"),
-            "Expected WorktreeCommandFailed error, got: {err_msg}"
-        );
+        match result {
+            Err(GitError::BranchAlreadyCheckedOut(branch)) => assert_eq!(branch, "fail-branch"),
+            other => panic!("Expected BranchAlreadyCheckedOut error, got: {other:?}"),
+        }
     }
 
     // ---- Full worktree creation flow tests for regular repos ----
@@ -2627,6 +2649,36 @@ mod tests {
         // is correct: there is no embedded password to redact.
         let s = "fatal: Could not read from remote: git@github.com:foo/bar.git";
         assert_eq!(sanitize_remote_credentials(s), s);
+    }
+
+    #[test]
+    fn test_classify_worktree_add_failure_branch_in_use() {
+        // Current git wording.
+        let combined =
+            "fatal: 'feature/foo' is already used by worktree at '/tmp/repo-worktrees/feature-foo'";
+        match classify_worktree_add_failure(combined, "feature/foo") {
+            GitError::BranchAlreadyCheckedOut(b) => assert_eq!(b, "feature/foo"),
+            other => panic!("expected BranchAlreadyCheckedOut, got {other:?}"),
+        }
+        // Older git wording.
+        let combined_old = "fatal: 'feature/foo' is already checked out at '/tmp/other'";
+        assert!(matches!(
+            classify_worktree_add_failure(combined_old, "feature/foo"),
+            GitError::BranchAlreadyCheckedOut(_)
+        ));
+    }
+
+    #[test]
+    fn test_classify_worktree_add_failure_redacts_credentials() {
+        let combined =
+            "fatal: unable to access 'https://alice:supersecret@github.com/foo/bar.git/': 403";
+        match classify_worktree_add_failure(combined, "feature/foo") {
+            GitError::WorktreeCommandFailed(msg) => {
+                assert!(!msg.contains("supersecret"), "token leaked: {msg}");
+                assert!(!msg.contains("alice:"), "username leaked: {msg}");
+            }
+            other => panic!("expected WorktreeCommandFailed, got {other:?}"),
+        }
     }
 
     #[test]
