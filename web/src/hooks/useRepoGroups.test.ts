@@ -424,11 +424,34 @@ describe("useRepoGroups manual group order (#1644)", () => {
     ]);
   });
 
-  it("keeps synthetic groups pinned to the bottom even if they leak into the stored order", () => {
+  it("defaults untouched synthetic groups to the bottom (multi-repo above scratch)", () => {
+    const wReal = workspace("real", "/repo-a", [session({ id: "s-real" })]);
+    const wMulti = workspace("multi", "/repo-a", [
+      session({ id: "s-multi", workspace_repos: multiRepos }),
+    ]);
+    const wScratch = workspace("sc", "/home/u/.agent-of-empires/scratch/aaa", [
+      session({ id: "s-sc", scratch: true }),
+    ]);
+    // Stored order only ranks the real group; the synthetic groups have
+    // no stored position and sink to their default bottom.
+    window.localStorage.setItem(ORDER_KEY, JSON.stringify(["/repo-a"]));
+    const { result } = renderHook(() =>
+      useRepoGroups([wReal, wMulti, wScratch], ["real", "multi", "sc"], "manual"),
+    );
+    expect(result.current.groups.map((g) => g.id)).toEqual([
+      "/repo-a",
+      MULTI_REPO_GROUP_ID,
+      SCRATCH_GROUP_ID,
+    ]);
+  });
+
+  it("lets a synthetic group hold an explicit dragged position above a real group", () => {
     const wReal = workspace("real", "/repo-a", [session({ id: "s-real" })]);
     const wScratch = workspace("sc", "/home/u/.agent-of-empires/scratch/aaa", [
       session({ id: "s-sc", scratch: true }),
     ]);
+    // User dragged scratch above the real group; the stored order ranks
+    // it first, so it must render first rather than snapping to bottom.
     window.localStorage.setItem(
       ORDER_KEY,
       JSON.stringify([SCRATCH_GROUP_ID, "/repo-a"]),
@@ -437,8 +460,8 @@ describe("useRepoGroups manual group order (#1644)", () => {
       useRepoGroups([wReal, wScratch], ["real", "sc"], "manual"),
     );
     expect(result.current.groups.map((g) => g.id)).toEqual([
-      "/repo-a",
       SCRATCH_GROUP_ID,
+      "/repo-a",
     ]);
   });
 

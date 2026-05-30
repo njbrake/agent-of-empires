@@ -190,26 +190,45 @@ export function useRepoGroups(
       });
     }
 
+    const isSyntheticGroup = (id: string) =>
+      id === MULTI_REPO_GROUP_ID || id === SCRATCH_GROUP_ID;
+
     repoGroups.sort((a, b) => {
-      // Synthetic groups pin to the bottom in a stable order:
-      // real repos → multi-repo → scratch. Scratch is "most ad hoc"
-      // so it sits below multi-repo workspaces (which still
-      // represent real work).
-      if (a.id === SCRATCH_GROUP_ID) return 1;
-      if (b.id === SCRATCH_GROUP_ID) return -1;
-      if (a.id === MULTI_REPO_GROUP_ID) return 1;
-      if (b.id === MULTI_REPO_GROUP_ID) return -1;
       if (sortMode === "lastActivity") {
+        // The order is computed here, so manual group order (and group
+        // drag) does not apply; synthetic groups stay pinned to the
+        // bottom in a stable order: real repos → multi-repo → scratch.
+        if (a.id === SCRATCH_GROUP_ID) return 1;
+        if (b.id === SCRATCH_GROUP_ID) return -1;
+        if (a.id === MULTI_REPO_GROUP_ID) return 1;
+        if (b.id === MULTI_REPO_GROUP_ID) return -1;
         const ak = repoGroupLastActivityMs(a.workspaces);
         const bk = repoGroupLastActivityMs(b.workspaces);
         if (ak !== bk) return bk - ak;
         return a.repoPath.localeCompare(b.repoPath);
       }
+      // Manual mode: an explicit group order wins for any group the user
+      // has dragged, real or synthetic. A group with no stored position
+      // falls back by type, a brand-new real project floats to the top
+      // (matching new-workspace behavior), while an untouched synthetic
+      // group sinks to its default bottom. Once dragged, a synthetic
+      // group holds its chosen spot like any other. See #1644.
       const ag = groupRank.get(a.id);
       const bg = groupRank.get(b.id);
-      if (ag != null && bg != null) return ag - bg;
-      if (ag == null && bg != null) return -1;
-      if (ag != null && bg == null) return 1;
+      const SYNTHETIC_BOTTOM = Number.MAX_SAFE_INTEGER;
+      const keyOf = (id: string, rank: number | undefined) =>
+        rank != null ? rank : isSyntheticGroup(id) ? SYNTHETIC_BOTTOM : -1;
+      const ka = keyOf(a.id, ag);
+      const kb = keyOf(b.id, bg);
+      if (ka !== kb) return ka - kb;
+      if (ka === SYNTHETIC_BOTTOM) {
+        // Two untouched synthetic groups: multi-repo above scratch.
+        if (a.id === MULTI_REPO_GROUP_ID) return -1;
+        if (b.id === MULTI_REPO_GROUP_ID) return 1;
+        return 0;
+      }
+      // Two untouched real groups: fall back to the derived min-rank,
+      // then a deterministic repoPath tie-break.
       const am = Math.min(...a.workspaces.map((w) => rankOf(w.id)));
       const bm = Math.min(...b.workspaces.map((w) => rankOf(w.id)));
       if (am !== bm) return am - bm;

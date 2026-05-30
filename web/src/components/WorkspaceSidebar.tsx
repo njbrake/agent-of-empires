@@ -1773,13 +1773,10 @@ export function WorkspaceSidebar({
       // braces. See #1644.
       if (active.data.current?.type === "group") {
         if (over.data.current?.type !== "group") return;
-        // Reorder only the real (sortable) groups; synthetic groups are
-        // pinned to the bottom and never enter the group SortableContext.
-        const orderedIds = groups
-          .map((g) => g.id)
-          .filter(
-            (id) => id !== MULTI_REPO_GROUP_ID && id !== SCRATCH_GROUP_ID,
-          );
+        // Persist the full visible group order, synthetic groups
+        // included: they default to the bottom but can be dragged to any
+        // position, after which their stored rank holds. See #1644.
+        const orderedIds = groups.map((g) => g.id);
         const oldIndex = orderedIds.indexOf(String(active.id));
         const newIndex = orderedIds.indexOf(String(over.id));
         if (oldIndex < 0 || newIndex < 0) return;
@@ -2010,20 +2007,13 @@ export function WorkspaceSidebar({
               const liveGroups = filteredGroups.filter(
                 repoGroupHasLiveWorkspace,
               );
-              // Real repo groups are sortable; the synthetic Multi-repo /
-              // Scratch groups are pinned to the bottom and stay out of
-              // the group SortableContext so they cannot be dragged or
-              // become a drop target. Group drag is also off while a
-              // filter is active (the visible list is a partial
-              // projection) or whenever row drag is off (read-only or
-              // last-activity sort). See #1644.
-              const sortableGroupIds = liveGroups
-                .filter(
-                  (g) =>
-                    g.id !== MULTI_REPO_GROUP_ID &&
-                    g.id !== SCRATCH_GROUP_ID,
-                )
-                .map((g) => g.id);
+              // Every visible group is sortable, synthetic Multi-repo /
+              // Scratch included: they default to the bottom but can be
+              // dragged to any position. Group drag is off while a filter
+              // is active (the visible list is a partial projection) or
+              // whenever row drag is off (read-only or last-activity
+              // sort, where the order is computed). See #1644.
+              const sortableGroupIds = liveGroups.map((g) => g.id);
               const groupDragDisabled = dragDisabled || q.length > 0;
 
               const renderGroupBody = (
@@ -2103,29 +2093,24 @@ export function WorkspaceSidebar({
                   items={sortableGroupIds}
                   strategy={verticalListSortingStrategy}
                 >
-                  {liveGroups.map((group) =>
-                    group.id === MULTI_REPO_GROUP_ID ||
-                    group.id === SCRATCH_GROUP_ID ? (
-                      <div key={group.id}>{renderGroupBody(group)}</div>
-                    ) : (
-                      <SortableRepoGroup
-                        key={group.id}
-                        groupId={group.id}
-                        disabled={groupDragDisabled}
-                      >
-                        {(handle) =>
-                          // Hide the grip when group drag is off (the
-                          // visible order is computed or filtered) so
-                          // there is no dead affordance, mirroring how
-                          // session rows drop their drag wiring.
-                          renderGroupBody(
-                            group,
-                            groupDragDisabled ? undefined : handle,
-                          )
-                        }
-                      </SortableRepoGroup>
-                    ),
-                  )}
+                  {liveGroups.map((group) => (
+                    <SortableRepoGroup
+                      key={group.id}
+                      groupId={group.id}
+                      disabled={groupDragDisabled}
+                    >
+                      {(handle) =>
+                        // Hide the grip when group drag is off (the
+                        // visible order is computed or filtered) so
+                        // there is no dead affordance, mirroring how
+                        // session rows drop their drag wiring.
+                        renderGroupBody(
+                          group,
+                          groupDragDisabled ? undefined : handle,
+                        )
+                      }
+                    </SortableRepoGroup>
+                  ))}
                 </SortableContext>
               );
             })()}
