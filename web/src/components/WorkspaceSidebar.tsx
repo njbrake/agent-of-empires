@@ -868,7 +868,7 @@ export const SessionRow = memo(function SessionRow({
                 <span
                   title={`${queuedCount} queued prompt${queuedCount === 1 ? "" : "s"}`}
                   aria-label={`${queuedCount} queued`}
-                  className="inline-flex shrink-0 items-center rounded border border-sky-700/40 bg-sky-950/30 px-1 text-[10px] font-medium text-sky-300"
+                  className="inline-flex shrink-0 items-center rounded border border-sky-700/40 bg-sky-950/30 px-1 text-[10px] font-mono font-medium tabular-nums text-sky-300"
                 >
                   {queuedCount}
                 </span>
