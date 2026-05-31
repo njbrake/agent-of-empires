@@ -25,8 +25,6 @@ export const docsNav: NavSection[] = [
       { title: "Podman", href: "/guides/podman/" },
       { title: "Apple Containers", href: "/guides/apple-containers/" },
       { title: "Web Dashboard", href: "/guides/web-dashboard/" },
-      { title: "Cockpit (Native Agent Rendering)", href: "/docs/cockpit/" },
-      { title: "Cockpit Multi-Agent Support", href: "/docs/cockpit/multi-agent/" },
       { title: "Remote Phone Access", href: "/guides/remote-phone-access/" },
       { title: "Repo Config & Hooks", href: "/guides/repo-config/" },
       { title: "Git Worktrees", href: "/guides/worktrees/" },
@@ -40,6 +38,18 @@ export const docsNav: NavSection[] = [
       { title: "Shell Completions", href: "/guides/shell-completions/" },
       { title: "Sound Effects", href: "/docs/sounds/" },
       { title: "Push Notifications", href: "/docs/push-notifications/" },
+    ],
+  },
+  {
+    title: "Cockpit",
+    items: [
+      { title: "Overview", href: "/docs/cockpit/" },
+      { title: "Setup", href: "/docs/cockpit/setup/" },
+      { title: "Interface", href: "/docs/cockpit/interface/" },
+      { title: "Modes, Approvals & Models", href: "/docs/cockpit/controls/" },
+      { title: "Persistence & Recovery", href: "/docs/cockpit/persistence/" },
+      { title: "Troubleshooting", href: "/docs/cockpit/troubleshooting/" },
+      { title: "Multi-Agent Support", href: "/docs/cockpit/multi-agent/" },
     ],
   },
   {
