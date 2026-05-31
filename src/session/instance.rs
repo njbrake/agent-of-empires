@@ -852,12 +852,15 @@ impl Instance {
             self.archived_at = None;
             self.snoozed_until = None;
         }
-        // touch_last_accessed(): clears archived + snoozed. Does NOT clear
-        // favorite or pin (both are explicit user-surfacing signals, not
-        // sink states).
+        // touch_last_accessed(): clears archived + snoozed + idle-dormant.
+        // Does NOT clear favorite or pin (both are explicit user-surfacing
+        // signals, not sink states). Mirrors touch_last_accessed() so the
+        // wake-from-dormancy invariant holds on the concurrent-writer merge
+        // path too, not just direct touches (#1689).
         if touched {
             self.archived_at = None;
             self.snoozed_until = None;
+            self.idle_dormant_since = None;
         }
         // Final-state invariant: archive is the strongest dismiss and
         // wins over snooze. The per-mutation rules above clear other
