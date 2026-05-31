@@ -565,7 +565,14 @@ pub(crate) fn persist_session_to_storage(profile: &str, instance_id: &str, sessi
         return;
     }
 
-    let storage = match super::storage::Storage::new(profile) {
+    // FIXME: PR3 will thread the per-process Arc<FileWatchService> through
+    // Instance and the persist/clear helpers so writes from the owning
+    // process surface via the in-process Local fast path. Until then the
+    // kernel watcher still picks up the change a few ms later.
+    let storage = match super::storage::Storage::new(
+        profile,
+        crate::file_watch::FileWatchService::noop(),
+    ) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "session.store", "Failed to create storage for session ID persistence: {}", e);
@@ -608,7 +615,11 @@ pub(crate) fn persist_session_to_storage(profile: &str, instance_id: &str, sessi
 /// lock (in-process mutex + cross-process flock; see `storage.rs` module
 /// rustdoc).
 fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
-    let storage = match super::storage::Storage::new(profile) {
+    // FIXME: PR3 will thread the per-process Arc<FileWatchService> here.
+    let storage = match super::storage::Storage::new(
+        profile,
+        crate::file_watch::FileWatchService::noop(),
+    ) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "session.store", "Failed to create storage to clear session ID: {}", e);
@@ -4919,7 +4930,8 @@ mod tests {
             std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
 
             let storage =
-                crate::session::storage::Storage::new("test-profile-already-none").unwrap();
+                crate::session::storage::Storage::new_for_test("test-profile-already-none")
+                    .unwrap();
             let inst = Instance::new("title", "/tmp/x");
             let id = inst.id.clone();
             assert!(inst.agent_session_id.is_none());
@@ -4948,7 +4960,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
 
-            let storage = crate::session::storage::Storage::new("clear-test").unwrap();
+            let storage = crate::session::storage::Storage::new_for_test("clear-test").unwrap();
             let mut inst = Instance::new("title", "/tmp/x");
             inst.agent_session_id = Some("stale-uuid-1234".to_string());
             let id = inst.id.clone();
@@ -5002,7 +5014,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
 
-            let storage = crate::session::storage::Storage::new("fb-test").unwrap();
+            let storage = crate::session::storage::Storage::new_for_test("fb-test").unwrap();
 
             let stale_sid = "11111111-1111-1111-1111-111111111111".to_string();
             let mut inst = Instance::new("fallback_dies_test", "/tmp/x");
@@ -5076,7 +5088,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
 
-            let _storage = crate::session::storage::Storage::new("fb-test-live").unwrap();
+            let _storage = crate::session::storage::Storage::new_for_test("fb-test-live").unwrap();
 
             let stale_sid = "22222222-2222-2222-2222-222222222222".to_string();
             let mut inst = Instance::new("fallback_lives_test", "/tmp/x");
@@ -5146,7 +5158,7 @@ mod tests {
             #[cfg(target_os = "linux")]
             std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
 
-            let _storage = crate::session::storage::Storage::new("fb-test-grace").unwrap();
+            let _storage = crate::session::storage::Storage::new_for_test("fb-test-grace").unwrap();
 
             let stale_sid = "33333333-3333-3333-3333-333333333333".to_string();
             let mut inst = Instance::new("fallback_grace_test", "/tmp/x");

@@ -2,14 +2,11 @@
 //! `notify::RecommendedWatcher`. Constructed in `main()` (or in a per
 //! subprocess entry point) and threaded through consumers as `Arc<Self>`.
 //!
-//! Kernel-event-driven delivery only in this PR; the in-process Local fast
-//! path (`notify_local_change`, `DispatchMsg::Local`, dispatcher Local arm)
-//! is added by the server consumer migration (see
-//! `docs/development/file-watch-migration-server.md` §5).
-//!
-//! See `docs/development/file-watch-service-design.md` for the full spec
-//! (public API §6, internals §7, filtering and debouncing §8, failure
-//! handling §9, concurrency model §10).
+//! Kernel-driven delivery via `notify` plus an in-process Local fast path
+//! (`notify_local_change`, `DispatchMsg::Local`, dispatcher Local arm). The
+//! Local path lets a writer in the same process surface its own change
+//! immediately; the kernel echo arrives ~ms later for the same atomic
+//! rename and collapses into the same per-key debounce slot.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsStr;
@@ -55,6 +52,8 @@ pub enum FileEventKind {
 pub enum EventSource {
     /// Source is the OS kernel (notify watcher).
     Kernel,
+    /// Source is an in-process `notify_local_change` call.
+    Local,
 }
 
 /// Per-subscription match policy applied to event paths after the uniform
@@ -167,10 +166,11 @@ struct Inner {
     slots: BTreeMap<Instant, Vec<(SubscriptionId, PathBuf)>>,
 }
 
-/// Internal dispatcher message. Single-variant in this PR; the server
-/// consumer migration adds a `Local(PathBuf)` arm.
+/// Internal dispatcher message. `Kernel` carries a raw notify result; `Local`
+/// carries an in-process upsert path published via `notify_local_change`.
 enum DispatchMsg {
     Kernel(notify::Result<notify::Event>),
+    Local(PathBuf),
 }
 
 /// Process-singleton file-watch primitive. Constructed via [`Self::new`] (or
@@ -178,6 +178,13 @@ enum DispatchMsg {
 pub struct FileWatchService {
     inner: Mutex<Inner>,
     dispatcher_dead: AtomicBool,
+    /// Sender into the dispatcher channel for in-process Local events. The
+    /// kernel drain thread holds the SOLE original sender; this clone is
+    /// what `notify_local_change` uses. On a noop service it is paired with
+    /// a receiver that has been dropped before construction returns, so
+    /// `send` resolves to Err and `dispatcher_dead` (pre-set on noop)
+    /// suppresses the error log.
+    tokio_tx: mpsc::UnboundedSender<DispatchMsg>,
 }
 
 /// RAII guard returned by [`FileWatchService::subscribe_channel`]. Dropping
@@ -236,6 +243,7 @@ impl FileWatchService {
                 slots: BTreeMap::new(),
             }),
             dispatcher_dead: AtomicBool::new(false),
+            tokio_tx: tokio_tx.clone(),
         });
 
         // Drain thread: holds `notify_rx` and the SOLE `tokio_tx`. Service
@@ -280,8 +288,16 @@ impl FileWatchService {
     /// Construct a noop service: no kernel watcher, no drain thread, no
     /// dispatcher. [`Self::subscribe_channel`] returns Ok with an
     /// immediately-closed receiver (its paired sender is dropped before
-    /// return). Used by tests and as the graceful-degradation fallback.
+    /// return). [`Self::notify_local_change`] is silently a no-op: the
+    /// dispatcher channel's receiver is dropped at construction so any
+    /// `send` Errs, and `dispatcher_dead` is pre-set so the error log path
+    /// short-circuits. Used by tests and as the graceful-degradation
+    /// fallback.
     pub fn noop() -> Arc<Self> {
+        let (tokio_tx, _tokio_rx) = mpsc::unbounded_channel::<DispatchMsg>();
+        // Drop the receiver immediately so any future `tokio_tx.send` Errs
+        // out without delivering. The pre-set `dispatcher_dead` below makes
+        // the resulting `notify_local_change` Err path skip the error log.
         Arc::new(FileWatchService {
             inner: Mutex::new(Inner {
                 watcher: None,
@@ -294,8 +310,37 @@ impl FileWatchService {
                 pending: HashMap::new(),
                 slots: BTreeMap::new(),
             }),
-            dispatcher_dead: AtomicBool::new(false),
+            dispatcher_dead: AtomicBool::new(true),
+            tokio_tx,
         })
+    }
+
+    /// Publish an in-process Upserted event for `path`. Used by writers in
+    /// the same process (e.g. `Storage::update` after `atomic_write`) to
+    /// surface their change immediately; the kernel echo arrives ~ms later
+    /// for the same rename and collapses into the same per-key debounce
+    /// slot. Crate-private; never exposed publicly.
+    ///
+    /// On a live service this `send` is microseconds and never blocks. On a
+    /// noop service the dispatcher channel's receiver was dropped at
+    /// construction so the send Errs and the pre-set `dispatcher_dead`
+    /// latch suppresses the otherwise-misleading dispatcher-dead log.
+    pub(crate) fn notify_local_change(&self, path: &Path) {
+        // Canonicalise so the debounce key (SubscriptionId, path) matches
+        // the kernel echo's canonical form (e.g. `/private/var/...` on
+        // macOS). Without this they hash to different debounce slots and
+        // fire as two deliveries instead of collapsing. Fallback to the
+        // raw path if canonicalize fails (e.g. an Upserted notification
+        // for a path the kernel can no longer stat); the dispatcher's
+        // `path.starts_with(&sub.spec.dir)` scope check still uses the
+        // canonicalized `spec.dir`, so a non-canonical Local path will
+        // miss matching subscriptions and silently drop, which is the
+        // same outcome as the original kernel event would produce on the
+        // (rare) post-rename-then-unlink race.
+        let final_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+        if self.tokio_tx.send(DispatchMsg::Local(final_path)).is_err() {
+            log_dispatcher_dead_once_err(self, "local_send_failed", "channel closed");
+        }
     }
 
     /// Subscribe and receive events on a bounded mpsc channel.
@@ -539,6 +584,17 @@ async fn run_dispatcher(
                         let Some(arc) = svc.upgrade() else { return "service_dropped" };
                         handle_kernel(&arc, res);
                     }
+                    Some(DispatchMsg::Local(path)) => {
+                        let Some(arc) = svc.upgrade() else { return "service_dropped" };
+                        // Local upserts traverse the SAME uniform filter and
+                        // per-(SubscriptionId, path) trailing-edge debounce
+                        // as kernel events. The local event arrives first;
+                        // the kernel echo arrives ~ms later for the same
+                        // atomic_write rename and collapses into the same
+                        // debounce slot, yielding one delivery per logical
+                        // write.
+                        dispatch_path(&arc, &path, FileEventKind::Upserted, EventSource::Local);
+                    }
                     None => return "channel_closed",
                 }
             }
@@ -566,31 +622,42 @@ fn handle_kernel(svc: &Arc<FileWatchService>, res: notify::Result<notify::Event>
         return;
     }
     for path in ev.paths.iter() {
-        if is_tempfile(path) || is_lockfile(path) {
-            continue;
-        }
-        // Snapshot matching subscriptions under lock; release before any send.
-        let matched: Vec<(SubscriptionId, Option<Duration>, DeliverySink)> = {
-            let inner = svc.inner.lock().expect("file_watch inner mutex poisoned");
-            inner
-                .subscriptions
-                .iter()
-                .filter(|(_, sub)| {
-                    path.starts_with(&sub.spec.dir) && matcher_matches(&sub.spec, path)
-                })
-                .map(|(id, sub)| (*id, sub.spec.debounce, sub.sink.clone_sink()))
-                .collect()
+        dispatch_path(svc, path, kind, EventSource::Kernel);
+    }
+}
+
+/// Run the uniform filter, per-subscription matcher, and per-key debounce
+/// for one (path, kind, source) triple. Shared by the Kernel and Local
+/// dispatcher arms so an in-process write and the kernel echo for the same
+/// atomic rename land in the same debounce slot.
+fn dispatch_path(
+    svc: &Arc<FileWatchService>,
+    path: &Path,
+    kind: FileEventKind,
+    source: EventSource,
+) {
+    if is_tempfile(path) || is_lockfile(path) {
+        return;
+    }
+    // Snapshot matching subscriptions under lock; release before any send.
+    let matched: Vec<(SubscriptionId, Option<Duration>, DeliverySink)> = {
+        let inner = svc.inner.lock().expect("file_watch inner mutex poisoned");
+        inner
+            .subscriptions
+            .iter()
+            .filter(|(_, sub)| path.starts_with(&sub.spec.dir) && matcher_matches(&sub.spec, path))
+            .map(|(id, sub)| (*id, sub.spec.debounce, sub.sink.clone_sink()))
+            .collect()
+    };
+    for (id, debounce, sink) in matched {
+        let event = FileEvent {
+            path: path.to_path_buf(),
+            kind,
+            source,
         };
-        for (id, debounce, sink) in matched {
-            let event = FileEvent {
-                path: path.clone(),
-                kind,
-                source: EventSource::Kernel,
-            };
-            match debounce {
-                None => deliver(&sink, event, id),
-                Some(window) => arm_debounce(svc, id, event, window),
-            }
+        match debounce {
+            None => deliver(&sink, event, id),
+            Some(window) => arm_debounce(svc, id, event, window),
         }
     }
 }
@@ -1236,5 +1303,119 @@ mod tests {
         // The bogus dir must not have leaked into `dirs`.
         let inner = svc.inner.lock().unwrap();
         assert!(!inner.dirs.contains_key(&bogus));
+    }
+
+    /// Test 18: in-process Local upserts traverse the dispatcher and, when
+    /// they race the kernel echo for the same path, collapse into a single
+    /// delivery via the per-key debounce. Local is sent into the dispatcher
+    /// channel BEFORE the file write, deterministically arming the slot
+    /// first so the surviving event's `source == EventSource::Local`.
+    #[tokio::test]
+    #[serial(file_watch)]
+    async fn notify_local_change_fires_local_first_then_kernel_collapses() {
+        let dir = TempDir::new().unwrap();
+        let svc = FileWatchService::new().expect("init");
+        let target = dir.path().join("local-coalesce");
+        // Pre-create the file BEFORE subscribing so canonicalize on the
+        // notify_local_change call below resolves to the same canonical
+        // form the kernel will emit. This event fires before subscribe
+        // and is therefore not delivered.
+        std::fs::write(&target, "seed").expect("seed");
+        let (mut rx, _h) = svc
+            .subscribe_channel(
+                WatchSpec {
+                    dir: dir.path().to_path_buf(),
+                    matcher: FileMatcher::Exact(target.clone()),
+                    debounce: Some(Duration::from_millis(75)),
+                },
+                8,
+            )
+            .expect("subscribe");
+        // Local first: synchronous tokio_tx.send beats the kernel pipeline
+        // (notify worker -> drain thread -> tokio_tx) regardless of host
+        // notify-backend latency.
+        svc.notify_local_change(&target);
+        // Mutate content: kernel emits an Upserted echo on the same canonical
+        // path. arm_debounce sees the existing Local entry, refreshes
+        // fire_at, leaves `pending` as Local (both kinds Upserted; replace
+        // rule covers Removed -> Upserted only).
+        std::fs::write(&target, "mutated").expect("mutate");
+        let first = timeout(KERNEL_WAIT, rx.recv())
+            .await
+            .expect("debounced delivery")
+            .expect("channel open");
+        assert_eq!(first.path.file_name(), target.file_name());
+        assert_eq!(
+            first.source,
+            EventSource::Local,
+            "Local arrived first so it must be the surviving event after debounce coalesce"
+        );
+        // No second delivery within a tight budget: the burst collapsed.
+        let second = timeout(Duration::from_millis(200), rx.recv()).await;
+        assert!(
+            second.is_err() || matches!(second, Ok(None)),
+            "Local + kernel echo for the same write must collapse to one delivery"
+        );
+    }
+
+    /// Test 19: `notify_local_change` on a noop service is silent: no log
+    /// line, no panic, no delivery. The dispatcher_dead latch is pre-set on
+    /// noop so the send-Err path skips the error log.
+    #[tokio::test]
+    async fn notify_local_change_on_noop_is_silent() {
+        let svc = FileWatchService::noop();
+        // Capture tracing output: the call must not emit any line.
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let buf_for_writer = buf.clone();
+        let make_writer = move || TestBufWriter {
+            buf: buf_for_writer.clone(),
+        };
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(make_writer)
+            .with_ansi(false)
+            .finish();
+        let (mut rx, _h) = svc
+            .subscribe_channel(
+                WatchSpec {
+                    dir: PathBuf::from("/nowhere"),
+                    matcher: FileMatcher::Exact(PathBuf::from("/nowhere/x")),
+                    debounce: None,
+                },
+                4,
+            )
+            .expect("noop subscribe");
+        tracing::subscriber::with_default(subscriber, || {
+            svc.notify_local_change(&PathBuf::from("/nowhere/x"));
+        });
+        // No delivery within budget.
+        let res = timeout(Duration::from_millis(100), rx.recv()).await;
+        assert!(
+            matches!(res, Ok(None)) || res.is_err(),
+            "noop notify must not deliver"
+        );
+        let captured = buf.lock().unwrap();
+        assert!(
+            captured.is_empty(),
+            "noop notify_local_change must emit no log lines, got: {}",
+            String::from_utf8_lossy(&captured)
+        );
+    }
+
+    /// `MakeWriter` impl that writes into a shared `Vec<u8>` so the test can
+    /// inspect captured tracing output. Simple enough to inline alongside
+    /// the noop-silence test rather than pull a heavier helper.
+    struct TestBufWriter {
+        buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for TestBufWriter {
+        fn write(&mut self, src: &[u8]) -> std::io::Result<usize> {
+            self.buf.lock().unwrap().extend_from_slice(src);
+            Ok(src.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 }
