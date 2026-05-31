@@ -1166,6 +1166,12 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub mount_ssh: bool,
 
+    /// Append the SELinux relabel flag (`:z`) to sandbox bind mounts so the
+    /// container can read them on SELinux-enforcing hosts (Fedora, RHEL). Off by
+    /// default; only emitted for Docker/Podman. Note: this relabels the host paths.
+    #[serde(default)]
+    pub selinux_relabel: bool,
+
     /// Custom instruction text appended to the agent's system prompt in sandboxed sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_instruction: Option<String>,
@@ -1215,6 +1221,7 @@ impl Default for SandboxConfig {
             volume_ignores: Vec::new(),
             volume_ignores_strategy: VolumeIgnoresStrategy::default(),
             mount_ssh: false,
+            selinux_relabel: false,
             custom_instruction: None,
             container_runtime: ContainerRuntimeName::default(),
         }

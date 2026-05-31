@@ -852,6 +852,11 @@ impl SettingsView {
                     s.mount_ssh = None;
                 }
             }
+            FieldKey::SelinuxRelabel => {
+                if let Some(ref mut s) = config.sandbox {
+                    s.selinux_relabel = None;
+                }
+            }
             FieldKey::CpuLimit => {
                 if let Some(ref mut s) = config.sandbox {
                     s.cpu_limit = None;

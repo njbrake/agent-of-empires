@@ -106,4 +106,15 @@ podman pull ghcr.io/agent-of-empires/aoe-sandbox:latest
 
 ### Permission Denied on Bind Mounts
 
-On SELinux-enabled systems (Fedora, RHEL), you may need to relabel project directories so the container can read them. Either disable SELinux for the volume, or relabel with `:Z` / `:z` (one-time, modifies host labels). AoE does not append SELinux flags automatically; if your distribution requires them, add them via `sandbox.extra_volumes` or relabel the project root.
+On SELinux-enforcing systems (Fedora, RHEL), the container runs as the confined `container_t` domain and is denied access to bind-mounted host paths (the credential dir, the project worktree) because they keep their `user_home_t` label. The symptom is a blank agent pane, or "Permission denied" / `?????????` even as root inside the container.
+
+The fix is to relabel those host paths to a container-accessible type. AoE can do this for you: set
+
+```toml
+[sandbox]
+selinux_relabel = true
+```
+
+which appends the `:z` (shared) SELinux relabel flag to every sandbox bind mount, so the runtime relabels the host paths to `container_file_t` at mount time. It is off by default (a no-op on non-SELinux hosts, and it modifies host labels, so it is opt-in). Only Docker and Podman honor the flag; Apple Container ignores it.
+
+Alternatively, relabel manually with `chcon -R -t container_file_t <path>` (one-time; reverted by a later `restorecon`), or make it durable with `semanage fcontext`.

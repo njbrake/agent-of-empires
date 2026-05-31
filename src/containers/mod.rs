@@ -213,6 +213,7 @@ mod tests {
             cpu_limit: None,
             memory_limit: None,
             port_mappings: vec![],
+            ..Default::default()
         };
 
         let args = container.build_create_args(&config);
@@ -243,6 +244,7 @@ mod tests {
             cpu_limit: None,
             memory_limit: None,
             port_mappings: vec![],
+            ..Default::default()
         };
 
         let args = container.build_create_args(&config);
