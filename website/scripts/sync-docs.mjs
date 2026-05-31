@@ -69,6 +69,34 @@ const PAGES = [
       "Access your Agent of Empires sessions from your phone via Tailscale Funnel or Cloudflare Tunnel with QR pairing.",
   },
   {
+    source: "docs/guides/web/dashboard.md",
+    dest: "guides/web/dashboard.md",
+    title: "Dashboard & Workspaces",
+    description:
+      "The web dashboard layout: workspace sidebar, status glyphs, the session-creation wizard, command palette, sidebar sort, and triage.",
+  },
+  {
+    source: "docs/guides/web/terminal.md",
+    dest: "guides/web/terminal.md",
+    title: "Terminal View",
+    description:
+      "The browser agent and paired terminals: PTY relay, scrollback, reconnect behavior, WebSocket close codes, and read-only mode.",
+  },
+  {
+    source: "docs/guides/web/diff.md",
+    dest: "guides/web/diff.md",
+    title: "Web Diff View",
+    description:
+      "Review a session's changes from the browser: the flat / tree changed-files list, per-session base override, and inline review comments.",
+  },
+  {
+    source: "docs/guides/web/settings.md",
+    dest: "guides/web/settings.md",
+    title: "Settings & Profiles",
+    description:
+      "The web settings tabs, the profile picker, connected-device tracking, and the step-up elevation gate for persisted config edits.",
+  },
+  {
     source: "docs/guides/worktrees.md",
     dest: "guides/worktrees.md",
     title: "Worktrees Reference",
@@ -305,6 +333,10 @@ const URL_MAP = {
   "docs/guides/sandbox.md": "/guides/sandbox/",
   "docs/guides/tmux-status-bar.md": "/guides/tmux-status-bar/",
   "docs/guides/web-dashboard.md": "/guides/web-dashboard/",
+  "docs/guides/web/dashboard.md": "/guides/web/dashboard/",
+  "docs/guides/web/terminal.md": "/guides/web/terminal/",
+  "docs/guides/web/diff.md": "/guides/web/diff/",
+  "docs/guides/web/settings.md": "/guides/web/settings/",
   "docs/guides/remote-phone-access.md": "/guides/remote-phone-access/",
   "docs/guides/worktrees.md": "/guides/worktrees/",
   "docs/guides/agent-override.md": "/guides/agent-override/",

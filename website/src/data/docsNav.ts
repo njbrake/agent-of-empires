@@ -24,8 +24,6 @@ export const docsNav: NavSection[] = [
       { title: "Docker Sandbox", href: "/guides/sandbox/" },
       { title: "Podman", href: "/guides/podman/" },
       { title: "Apple Containers", href: "/guides/apple-containers/" },
-      { title: "Web Dashboard", href: "/guides/web-dashboard/" },
-      { title: "Remote Phone Access", href: "/guides/remote-phone-access/" },
       { title: "Repo Config & Hooks", href: "/guides/repo-config/" },
       { title: "Git Worktrees", href: "/guides/worktrees/" },
       { title: "Multi-Repo Workspaces", href: "/guides/multi-repo-workspaces/" },
@@ -38,6 +36,17 @@ export const docsNav: NavSection[] = [
       { title: "Shell Completions", href: "/guides/shell-completions/" },
       { title: "Sound Effects", href: "/docs/sounds/" },
       { title: "Push Notifications", href: "/docs/push-notifications/" },
+    ],
+  },
+  {
+    title: "Web Dashboard",
+    items: [
+      { title: "Overview", href: "/guides/web-dashboard/" },
+      { title: "Dashboard & Workspaces", href: "/guides/web/dashboard/" },
+      { title: "Terminal View", href: "/guides/web/terminal/" },
+      { title: "Diff View", href: "/guides/web/diff/" },
+      { title: "Settings & Profiles", href: "/guides/web/settings/" },
+      { title: "Remote Phone Access", href: "/guides/remote-phone-access/" },
     ],
   },
   {
