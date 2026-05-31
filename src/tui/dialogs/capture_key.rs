@@ -95,6 +95,7 @@ impl CaptureKeyDialog {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
+            .padding(Padding::horizontal(1))
             .border_style(Style::default().fg(theme.accent))
             .title(format!(" Rebind: {} ", self.command.label()))
             .title_style(Style::default().fg(theme.accent).bold());
@@ -104,7 +105,7 @@ impl CaptureKeyDialog {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .margin(1)
+            .margin(0)
             .constraints([
                 Constraint::Length(1), // prompt
                 Constraint::Length(1), // spacer
