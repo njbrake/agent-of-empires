@@ -1411,14 +1411,11 @@ export function useCockpit(
   // frame on the WS) is idempotent against the reducer.
   const forceEndTurn = useCallback(async () => {
     if (!sessionId) return;
-    dispatch({
-      kind: "frame",
-      frame: {
-        session_id: sessionId,
-        seq: lastSeqRef.current + 1,
-        event: { Stopped: { reason: "user_forced" } },
-      },
-    });
+    // No optimistic Stopped: that fabricated a client-side seq and lied to
+    // the UI while the worker stayed alive. The server now drives the real
+    // Stopped (either the synthetic free-the-UI one or the user_forced one
+    // from the worker restart), so we just POST and let it flow back
+    // through the event stream. See #1727.
     lastActivityRef.current = Date.now();
     try {
       const res = await fetch(
