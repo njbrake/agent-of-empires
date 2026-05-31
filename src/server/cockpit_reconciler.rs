@@ -572,7 +572,7 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
 
     let supervisor = Arc::clone(&state.cockpit_supervisor);
     let agent = supervisor
-        .pick_agent_for_tool(&tool, agent_override.as_deref())
+        .pick_agent_for_tool(&tool, agent_override.as_deref(), &source_profile)
         .await;
     let cwd = PathBuf::from(project_path);
 
