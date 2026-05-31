@@ -1533,6 +1533,24 @@ impl<S: BroadcastSink> Supervisor<S> {
 
     /// Shutdown a single cockpit worker.
     pub async fn shutdown(&self, session_id: &str) -> Result<(), SupervisorError> {
+        self.shutdown_with_reason(session_id, "user_stopped").await
+    }
+
+    /// Like `shutdown`, but tags the synthetic `Stopped` event with
+    /// `reason: "idle_auto_stop"` so the cockpit timeline shows the
+    /// worker was reclaimed for inactivity rather than user-stopped.
+    /// Used by the reconciler's idle-reap pass (#1689). Seamless: no UI
+    /// banner, the next prompt respawns the worker.
+    pub async fn shutdown_idle(&self, session_id: &str) -> Result<(), SupervisorError> {
+        self.shutdown_with_reason(session_id, "idle_auto_stop")
+            .await
+    }
+
+    async fn shutdown_with_reason(
+        &self,
+        session_id: &str,
+        stop_reason: &str,
+    ) -> Result<(), SupervisorError> {
         // Hold workers + pending_resumes simultaneously so the spawn
         // can't observe an empty workers map, finish the handshake,
         // and insert a WorkerHandle while we're walking through this
@@ -1575,7 +1593,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                     session_id,
                     seq,
                     &Event::Stopped {
-                        reason: "user_stopped".into(),
+                        reason: stop_reason.into(),
                     },
                 );
             }
