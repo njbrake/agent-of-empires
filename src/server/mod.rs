@@ -260,8 +260,9 @@ pub struct DiskWatchEntry {
 /// Whether the caller has applied tmux scrape (and suppression) to
 /// `fresh.status`. `status_poll_loop` passes `TmuxApplied`; the watcher
 /// consumer passes `DiskOnly`.
+#[doc(hidden)]
 #[derive(Copy, Clone, Debug)]
-enum StatusSource {
+pub enum StatusSource {
     /// Caller already scraped tmux into `fresh.status` and applied
     /// `recently_restarted` suppression. The helper trusts `fresh.status`
     /// for existing ids.
@@ -1708,7 +1709,8 @@ fn merge_runtime_fields(prior: Instance, mut fresh: Instance) -> Instance {
 /// `tokio::task::spawn_blocking(load_all_instances)` for both call sites)
 /// and, on the `TmuxApplied` path only, for emitting `state.status_tx`
 /// diffs BEFORE invoking the helper.
-async fn reload_state_instances_from_disk(
+#[doc(hidden)]
+pub async fn reload_state_instances_from_disk(
     state: &Arc<AppState>,
     fresh: Vec<Instance>,
     status_source: StatusSource,
@@ -2701,11 +2703,75 @@ pub(crate) fn derive_cockpit_status(event: &crate::cockpit::Event) -> Option<Sta
     }
 }
 
+/// Test-only constructors that integration tests in `tests/` need to drive
+/// `reload_state_instances_from_disk` and the dynamic-profile-rewire helpers
+/// without going through the full daemon. Mirrors the pattern at
+/// `src/tmux/mod.rs`'s `test_support` module: gated on
+/// `#[cfg(any(test, feature = "test-support"))]` so the surface stays out of
+/// production builds, and `#[doc(hidden)]` so it's invisible in rustdoc.
+#[cfg(all(feature = "serve", any(test, feature = "test-support")))]
+#[doc(hidden)]
+pub mod test_support {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicI64};
+
+    /// Build a minimal `Arc<AppState>` for helper-equivalence tests. Most
+    /// fields are seeded with empty / default values; only `instances`,
+    /// `recently_restarted`, and the file-watch trio are real. Cockpit
+    /// fields are stubbed because the helper's cockpit overlay reads them.
+    pub fn build_test_app_state(prior: Vec<Instance>) -> Arc<AppState> {
+        let app_dir = tempfile::tempdir().expect("tempdir");
+        let cockpit_db = app_dir.path().join("cockpit_events.db");
+        let event_store = Arc::new(
+            crate::cockpit::event_store::EventStore::open(&cockpit_db, 100).expect("event store"),
+        );
+        let cockpit_events_tx = broadcast::channel::<CockpitBroadcastFrame>(8).0;
+        let sink = std::sync::Arc::new(crate::cockpit::supervisor::ChannelSink {
+            tx: cockpit_events_tx.clone(),
+            event_store: event_store.clone(),
+        });
+        let supervisor = std::sync::Arc::new(
+            crate::cockpit::supervisor::Supervisor::with_capacity(sink, 1),
+        );
+        Arc::new(AppState {
+            profile: "test".to_string(),
+            read_only: false,
+            instances: RwLock::new(prior),
+            token_manager: Arc::new(TokenManager::new(None, Duration::from_secs(3600))),
+            login_manager: Arc::new(login::LoginManager::new(None)),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            devices: RwLock::new(Vec::new()),
+            behind_tunnel: false,
+            instance_locks: RwLock::new(HashMap::new()),
+            recently_restarted: crate::session::recovery::new_recently_restarted(),
+            cleanup_defaults_cache: RwLock::new(CleanupDefaultsCache {
+                refreshed_at: std::time::Instant::now(),
+                entries: HashMap::new(),
+            }),
+            remote_owner_cache: RwLock::new(HashMap::new()),
+            session_primaries: Arc::new(RwLock::new(HashMap::new())),
+            session_pause_counts: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
+            cockpit_events_tx,
+            cockpit_event_store: event_store,
+            cockpit_master_enabled: AtomicBool::new(false),
+            cockpit_supervisor: supervisor,
+            push: None,
+            push_enabled: false,
+            web_config: crate::session::config::WebConfig::default(),
+            last_web_activity: AtomicI64::new(0),
+            shutdown: CancellationToken::new(),
+            file_watch: FileWatchService::noop(),
+            disk_changed: Arc::new(tokio::sync::Notify::new()),
+            disk_watch_handles: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "serve")]
-    use chrono::TimeZone;
 
     #[cfg(feature = "serve")]
     #[test]
@@ -2988,212 +3054,5 @@ mod tests {
     async fn token_manager_no_auth_mode() {
         let mgr = TokenManager::new(None, Duration::from_secs(3600));
         assert!(mgr.is_no_auth().await);
-    }
-
-    /// Build a minimal `Arc<AppState>` for helper-equivalence tests. Most
-    /// fields are seeded with empty / default values; only `instances`,
-    /// `recently_restarted`, and the file-watch trio are real. The cockpit
-    /// fields are stubbed under `feature = "serve"` because the helper's
-    /// cockpit overlay reads them.
-    #[cfg(feature = "serve")]
-    fn for_helper_test(prior: Vec<Instance>) -> Arc<AppState> {
-        use std::collections::HashMap;
-        use std::sync::atomic::{AtomicBool, AtomicI64};
-        let app_dir = tempfile::tempdir().expect("tempdir");
-        let cockpit_db = app_dir.path().join("cockpit_events.db");
-        let event_store = Arc::new(
-            crate::cockpit::event_store::EventStore::open(&cockpit_db, 100).expect("event store"),
-        );
-        let cockpit_events_tx = broadcast::channel::<CockpitBroadcastFrame>(8).0;
-        let sink = std::sync::Arc::new(crate::cockpit::supervisor::ChannelSink {
-            tx: cockpit_events_tx.clone(),
-            event_store: event_store.clone(),
-        });
-        let supervisor = std::sync::Arc::new(
-            crate::cockpit::supervisor::Supervisor::with_capacity(sink, 1),
-        );
-        Arc::new(AppState {
-            profile: "test".to_string(),
-            read_only: false,
-            instances: RwLock::new(prior),
-            token_manager: Arc::new(TokenManager::new(None, Duration::from_secs(3600))),
-            login_manager: Arc::new(login::LoginManager::new(None)),
-            rate_limiter: Arc::new(RateLimiter::new()),
-            devices: RwLock::new(Vec::new()),
-            behind_tunnel: false,
-            instance_locks: RwLock::new(HashMap::new()),
-            recently_restarted: crate::session::recovery::new_recently_restarted(),
-            cleanup_defaults_cache: RwLock::new(CleanupDefaultsCache {
-                refreshed_at: std::time::Instant::now(),
-                entries: HashMap::new(),
-            }),
-            remote_owner_cache: RwLock::new(HashMap::new()),
-            session_primaries: Arc::new(RwLock::new(HashMap::new())),
-            session_pause_counts: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
-            cockpit_events_tx,
-            cockpit_event_store: event_store,
-            cockpit_master_enabled: AtomicBool::new(false),
-            cockpit_supervisor: supervisor,
-            push: None,
-            push_enabled: false,
-            web_config: crate::session::config::WebConfig::default(),
-            last_web_activity: AtomicI64::new(0),
-            shutdown: CancellationToken::new(),
-            file_watch: FileWatchService::noop(),
-            disk_changed: Arc::new(tokio::sync::Notify::new()),
-            disk_watch_handles: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        })
-    }
-
-    /// Helper-equivalence regression for the §5 extraction. Verifies that
-    /// `reload_state_instances_from_disk` preserves the ordering contract
-    /// for both `StatusSource::DiskOnly` (prior status wins) and
-    /// `StatusSource::TmuxApplied` (fresh status wins), monotonic-max
-    /// `last_accessed_at`, and the five `#[serde(skip)]` runtime fields
-    /// carried by `merge_runtime_fields`.
-    #[cfg(feature = "serve")]
-    #[tokio::test]
-    async fn reload_state_instances_from_disk_disk_only_preserves_prior_status() {
-        let mut prior = Instance::new("seed", "/tmp/seed");
-        prior.status = Status::Running;
-        prior.last_error = Some("boom".to_string());
-        prior.last_accessed_at = Some(chrono::Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap());
-        let prior_id = prior.id.clone();
-        let state = for_helper_test(vec![prior]);
-
-        // Fresh from disk: same id, different status (would-overwrite),
-        // older last_accessed_at, no last_error.
-        let mut fresh = Instance::new("seed", "/tmp/seed");
-        fresh.id = prior_id.clone();
-        fresh.status = Status::Idle;
-        fresh.last_accessed_at = Some(chrono::Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap());
-
-        reload_state_instances_from_disk(&state, vec![fresh], StatusSource::DiskOnly).await;
-
-        let result = state.instances.read().await;
-        assert_eq!(result.len(), 1);
-        let row = &result[0];
-        assert_eq!(row.id, prior_id);
-        assert_eq!(
-            row.status,
-            Status::Running,
-            "DiskOnly: prior in-memory status must win"
-        );
-        assert_eq!(
-            row.last_error.as_deref(),
-            Some("boom"),
-            "runtime field preserved"
-        );
-        assert_eq!(
-            row.last_accessed_at.unwrap().timestamp(),
-            chrono::Utc
-                .with_ymd_and_hms(2024, 6, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp(),
-            "monotonic-max last_accessed_at",
-        );
-    }
-
-    #[cfg(feature = "serve")]
-    #[tokio::test]
-    async fn reload_state_instances_from_disk_tmux_applied_takes_fresh_status() {
-        let mut prior = Instance::new("seed", "/tmp/seed");
-        prior.status = Status::Idle;
-        prior.last_error = Some("prev".to_string());
-        prior.last_accessed_at = Some(chrono::Utc.with_ymd_and_hms(2024, 6, 1, 0, 0, 0).unwrap());
-        let prior_id = prior.id.clone();
-        let state = for_helper_test(vec![prior]);
-
-        // Fresh: tmux scrape decided Running.
-        let mut fresh = Instance::new("seed", "/tmp/seed");
-        fresh.id = prior_id.clone();
-        fresh.status = Status::Running;
-        fresh.last_accessed_at = Some(chrono::Utc.with_ymd_and_hms(2024, 5, 1, 0, 0, 0).unwrap());
-
-        reload_state_instances_from_disk(&state, vec![fresh], StatusSource::TmuxApplied).await;
-
-        let result = state.instances.read().await;
-        assert_eq!(result.len(), 1);
-        let row = &result[0];
-        assert_eq!(
-            row.status,
-            Status::Running,
-            "TmuxApplied: fresh status must win",
-        );
-        assert_eq!(
-            row.last_error.as_deref(),
-            Some("prev"),
-            "runtime field preserved"
-        );
-        assert_eq!(
-            row.last_accessed_at.unwrap().timestamp(),
-            chrono::Utc
-                .with_ymd_and_hms(2024, 6, 1, 0, 0, 0)
-                .unwrap()
-                .timestamp(),
-            "monotonic-max last_accessed_at",
-        );
-    }
-
-    /// New ids on disk surface with disk values; absent ids do NOT have
-    /// runtime fields injected from prior (they had no prior).
-    #[cfg(feature = "serve")]
-    #[tokio::test]
-    async fn reload_state_instances_from_disk_new_ids_use_fresh() {
-        let prior = Instance::new("seed", "/tmp/seed");
-        let state = for_helper_test(vec![prior]);
-        let new_inst = Instance::new("new", "/tmp/new");
-        let new_id = new_inst.id.clone();
-        reload_state_instances_from_disk(&state, vec![new_inst], StatusSource::DiskOnly).await;
-        let result = state.instances.read().await;
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, new_id);
-        assert!(
-            result[0].last_error.is_none(),
-            "new id has no prior runtime fields"
-        );
-    }
-
-    /// Dynamic profile rewire: `subscribe_profile_disk_watch` inserts a
-    /// `DiskWatchEntry`; `unsubscribe_profile_disk_watch` removes it under
-    /// the canonical drop-then-abort order. Verifies the §6 rewire path
-    /// without spawning the full daemon binary.
-    #[cfg(feature = "serve")]
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn dynamic_profile_rewire_inserts_and_removes_entries() {
-        let temp = tempfile::tempdir().unwrap();
-        // SAFETY: env mutation under #[serial].
-        unsafe { std::env::set_var("HOME", temp.path()) };
-        #[cfg(target_os = "linux")]
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"))
-        };
-        let _ = crate::session::get_profile_dir("rewire-profile").expect("profile dir");
-
-        let state = for_helper_test(Vec::new());
-        let live = FileWatchService::new().expect("live svc");
-        let mut state_mut = Arc::try_unwrap(state).map_err(|_| ()).expect("unique");
-        state_mut.file_watch = live;
-        let state = Arc::new(state_mut);
-
-        rewire_disk_watch_for_profile_add(&state, "rewire-profile").await;
-        {
-            let handles = state.disk_watch_handles.lock().await;
-            assert!(
-                handles.contains_key("rewire-profile"),
-                "add must insert the per-profile entry"
-            );
-        }
-
-        rewire_disk_watch_for_profile_remove(&state, "rewire-profile").await;
-        {
-            let handles = state.disk_watch_handles.lock().await;
-            assert!(
-                !handles.contains_key("rewire-profile"),
-                "remove must drop the per-profile entry"
-            );
-        }
     }
 }
