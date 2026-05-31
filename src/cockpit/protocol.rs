@@ -254,6 +254,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn prompt_request_defaults_attachments_when_absent() {
+        // Text-only clients (and the CLI/TUI cockpit HTTP client) send
+        // `{"text":"..."}` with no attachments key; it must deserialise.
+        let req: PromptRequest = serde_json::from_str(r#"{"text":"hello"}"#).unwrap();
+        assert_eq!(req.text, "hello");
+        assert!(req.attachments.is_empty());
+    }
+
+    #[test]
+    fn prompt_attachment_upload_roundtrips() {
+        let req: PromptRequest = serde_json::from_str(
+            r#"{"text":"see this","attachments":[{"kind":"image","mime_type":"image/png","data":"aGk=","name":"a.png"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(req.attachments.len(), 1);
+        let att = &req.attachments[0];
+        assert_eq!(att.kind, PromptAttachmentKind::Image);
+        assert_eq!(att.mime_type, "image/png");
+        assert_eq!(att.data, "aGk=");
+        assert_eq!(att.name.as_deref(), Some("a.png"));
+    }
+
+    #[test]
     fn broadcast_frame_roundtrips_through_json() {
         let frame = CockpitBroadcastFrame {
             session_id: "s-1".into(),

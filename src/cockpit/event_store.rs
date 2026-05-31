@@ -1115,6 +1115,136 @@ mod tests {
         (tmp, store)
     }
 
+    fn img_blob(id: &str) -> AttachmentBlob {
+        AttachmentBlob {
+            id: id.to_string(),
+            kind: crate::cockpit::state::PromptAttachmentKind::Image,
+            mime_type: "image/png".into(),
+            name: Some("shot.png".into()),
+            data: vec![0x89, 0x50, 0x4E, 0x47, 1, 2, 3],
+        }
+    }
+
+    fn prompt_with_attachment(id: &str) -> Event {
+        Event::UserPromptSent {
+            text: "look at this".into(),
+            attachments: vec![crate::cockpit::state::PromptAttachmentRef {
+                id: id.to_string(),
+                kind: crate::cockpit::state::PromptAttachmentKind::Image,
+                mime_type: "image/png".into(),
+                name: Some("shot.png".into()),
+                size: 7,
+            }],
+        }
+    }
+
+    #[test]
+    fn attachment_record_and_load_roundtrip() {
+        let (_tmp, store) = open_store(1000);
+        store
+            .record("s-1", 1, &prompt_with_attachment("a1"))
+            .unwrap();
+        store.record_attachment("s-1", 1, &img_blob("a1"));
+        let (mime, bytes) = store.load_attachment("s-1", "a1").expect("blob present");
+        assert_eq!(mime, "image/png");
+        assert_eq!(bytes, vec![0x89, 0x50, 0x4E, 0x47, 1, 2, 3]);
+        // Wrong session must not read another session's blob by id.
+        assert!(store.load_attachment("s-2", "a1").is_none());
+        // Unknown id is None.
+        assert!(store.load_attachment("s-1", "nope").is_none());
+    }
+
+    #[test]
+    fn attachment_pruned_with_owning_prompt() {
+        // The user's explicit requirement: the attachment table must
+        // not grow without bound. When the retention cap evicts the
+        // prompt event an attachment rode with, the blob must go too.
+        let (_tmp, store) = open_store(3);
+        store
+            .record("s-1", 1, &prompt_with_attachment("a1"))
+            .unwrap();
+        store.record_attachment("s-1", 1, &img_blob("a1"));
+        assert!(store.load_attachment("s-1", "a1").is_some());
+        // Blow past the cap so seq 1 is pruned.
+        for i in 2..=20 {
+            store.record("s-1", i, &Event::ThinkingStarted).unwrap();
+        }
+        assert!(
+            store.load_attachment("s-1", "a1").is_none(),
+            "attachment blob outlived its pruned prompt event",
+        );
+    }
+
+    #[test]
+    fn delete_session_clears_attachments() {
+        let (_tmp, store) = open_store(1000);
+        store
+            .record("s-1", 1, &prompt_with_attachment("a1"))
+            .unwrap();
+        store.record_attachment("s-1", 1, &img_blob("a1"));
+        store
+            .record("s-2", 1, &prompt_with_attachment("b1"))
+            .unwrap();
+        store.record_attachment("s-2", 1, &img_blob("b1"));
+        store.delete_session("s-1");
+        assert!(store.load_attachment("s-1", "a1").is_none());
+        // Sibling session untouched.
+        assert!(store.load_attachment("s-2", "b1").is_some());
+    }
+
+    #[test]
+    fn latest_prompt_capabilities_reads_most_recent() {
+        let (_tmp, store) = open_store(1000);
+        assert_eq!(store.latest_prompt_capabilities("s-1"), None);
+        store
+            .record(
+                "s-1",
+                1,
+                &Event::PromptCapabilities {
+                    image: true,
+                    audio: false,
+                    embedded_context: true,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store.latest_prompt_capabilities("s-1"),
+            Some((true, false, true))
+        );
+        // A later capabilities event (e.g. after agent switch) wins.
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::PromptCapabilities {
+                    image: false,
+                    audio: false,
+                    embedded_context: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            store.latest_prompt_capabilities("s-1"),
+            Some((false, false, false))
+        );
+    }
+
+    #[test]
+    fn user_prompt_event_deserialises_without_attachments_field() {
+        // Back-compat: events written before this feature have no
+        // `attachments` key. `#[serde(default)]` must hydrate them as
+        // text-only rather than failing the whole replay.
+        let json = r#"{"UserPromptSent":{"text":"legacy"}}"#;
+        let event: Event = serde_json::from_str(json).expect("legacy event deserialises");
+        match event {
+            Event::UserPromptSent { text, attachments } => {
+                assert_eq!(text, "legacy");
+                assert!(attachments.is_empty());
+            }
+            other => panic!("expected UserPromptSent, got {other:?}"),
+        }
+    }
+
     #[test]
     fn record_and_replay_roundtrip() {
         let (_tmp, store) = open_store(1000);

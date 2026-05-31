@@ -1619,6 +1619,38 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn mime_allowlist_gates_by_kind() {
+        assert!(mime_allowed(PromptAttachmentKind::Image, "image/png"));
+        assert!(mime_allowed(PromptAttachmentKind::Image, "image/webp"));
+        // SVG is excluded on purpose (scriptable XML).
+        assert!(!mime_allowed(PromptAttachmentKind::Image, "image/svg+xml"));
+        // Cross-kind MIME is rejected.
+        assert!(!mime_allowed(PromptAttachmentKind::Image, "audio/mpeg"));
+        assert!(mime_allowed(PromptAttachmentKind::Audio, "audio/mpeg"));
+        assert!(mime_allowed(
+            PromptAttachmentKind::Resource,
+            "application/pdf"
+        ));
+        assert!(!mime_allowed(PromptAttachmentKind::Resource, "text/html"));
+    }
+
+    #[test]
+    fn image_magic_bytes_sniff() {
+        assert!(looks_like_image(&[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
+        ]));
+        assert!(looks_like_image(&[0xFF, 0xD8, 0xFF, 0xE0]));
+        assert!(looks_like_image(b"GIF89a....."));
+        let mut webp = b"RIFF".to_vec();
+        webp.extend_from_slice(&[0, 0, 0, 0]);
+        webp.extend_from_slice(b"WEBP");
+        assert!(looks_like_image(&webp));
+        // A text blob mislabeled as PNG must not pass.
+        assert!(!looks_like_image(b"<svg>not an image</svg>"));
+        assert!(!looks_like_image(b""));
+    }
+
+    #[test]
     fn read_log_tail_missing_file_returns_empty_not_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("missing.log");
