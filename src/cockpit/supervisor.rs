@@ -171,6 +171,13 @@ pub enum SupervisorError {
 /// See #1038.
 pub trait BroadcastSink: Send + Sync + 'static {
     fn publish(&self, session_id: &str, seq: u64, event: &Event);
+    /// Like `publish`, but reports whether the event write reached the
+    /// durable event store. Default assumes success for sinks that don't
+    /// persist (tests / in-memory fixtures).
+    fn publish_persisted(&self, session_id: &str, seq: u64, event: &Event) -> bool {
+        self.publish(session_id, seq, event);
+        true
+    }
     /// Approval nonces from `ApprovalRequested` events on disk with no
     /// matching `ApprovalResolved`. Used by `Supervisor::attach` to
     /// cancel approvals whose responder died with the previous daemon.
@@ -191,6 +198,10 @@ pub trait BroadcastSink: Send + Sync + 'static {
         _blob: &crate::cockpit::event_store::AttachmentBlob,
     ) {
     }
+    /// Roll back blobs for one prompt seq. Used when publishing the
+    /// matching `UserPromptSent` fails durability, so refs and blobs
+    /// never diverge on disk.
+    fn delete_attachments_for_seq(&self, _session_id: &str, _seq: u64) {}
 }
 
 /// How this supervisor acquired the worker. Drives both reap (which
@@ -722,7 +733,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                 size: blob.data.len() as u64,
             });
         }
-        self.sink.publish(
+        let persisted = self.sink.publish_persisted(
             session_id,
             seq,
             &Event::UserPromptSent {
@@ -730,6 +741,10 @@ impl<S: BroadcastSink> Supervisor<S> {
                 attachments: refs,
             },
         );
+        if !persisted {
+            self.sink.delete_attachments_for_seq(session_id, seq);
+            return;
+        }
         if is_clear {
             let seq = next_seq(&self.next_seqs, session_id);
             self.sink.publish(session_id, seq, &Event::SessionCleared);
@@ -2262,6 +2277,10 @@ pub struct ChannelSink {
 
 impl BroadcastSink for ChannelSink {
     fn publish(&self, session_id: &str, seq: u64, event: &Event) {
+        let _ = self.publish_persisted(session_id, seq, event);
+    }
+
+    fn publish_persisted(&self, session_id: &str, seq: u64, event: &Event) -> bool {
         // Persist FIRST so a disk failure can be surfaced before
         // broadcast subscribers see an event the on-disk log doesn't
         // have. If the write fails the seq is already burned (the
@@ -2288,6 +2307,7 @@ impl BroadcastSink for ChannelSink {
             }
             _ => self.event_store.record(session_id, seq, event),
         };
+        let persisted = record_result.is_ok();
         let event_ref: &Event = match record_result {
             Ok(()) => event,
             Err(e) => {
@@ -2310,6 +2330,7 @@ impl BroadcastSink for ChannelSink {
             event: Arc::new(event_ref.clone()),
         };
         let _ = self.tx.send(frame);
+        persisted
     }
 
     fn unresolved_approval_nonces(&self, session_id: &str) -> Vec<Nonce> {
@@ -2322,7 +2343,25 @@ impl BroadcastSink for ChannelSink {
         seq: u64,
         blob: &crate::cockpit::event_store::AttachmentBlob,
     ) {
-        self.event_store.record_attachment(session_id, seq, blob);
+        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => {
+                tokio::task::block_in_place(|| {
+                    self.event_store.record_attachment(session_id, seq, blob)
+                });
+            }
+            _ => self.event_store.record_attachment(session_id, seq, blob),
+        }
+    }
+
+    fn delete_attachments_for_seq(&self, session_id: &str, seq: u64) {
+        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => {
+                tokio::task::block_in_place(|| {
+                    self.event_store.delete_attachments_for_seq(session_id, seq)
+                });
+            }
+            _ => self.event_store.delete_attachments_for_seq(session_id, seq),
+        }
     }
 }
 

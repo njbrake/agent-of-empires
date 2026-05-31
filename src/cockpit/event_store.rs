@@ -951,6 +951,27 @@ impl EventStore {
         }
     }
 
+    /// Drop all attachment blobs owned by one prompt seq. Used as a
+    /// rollback when `UserPromptSent` could not be durably persisted, so
+    /// attachment refs and blobs stay in sync.
+    pub fn delete_attachments_for_seq(&self, session_id: &str, seq: u64) {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Err(e) = conn.execute(
+            "DELETE FROM cockpit_attachments WHERE session_id = ?1 AND seq = ?2",
+            params![session_id, seq as i64],
+        ) {
+            warn!(
+                target: "cockpit.event_store",
+                session = %session_id,
+                seq,
+                "rollback attachments failed: {e}"
+            );
+        }
+    }
+
     /// Fetch one attachment's MIME type and bytes for the replay GET
     /// endpoint. Scoped by `session_id` so a valid token for one session
     /// can't read another session's blob by guessing ids.
@@ -1289,6 +1310,7 @@ mod tests {
                 1,
                 &Event::UserPromptSent {
                     text: "hello".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();

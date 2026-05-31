@@ -1500,10 +1500,7 @@ impl AcpClient {
                     // bytes never leave the daemon so a synthetic
                     // `attachment://` uri is enough for the agent to
                     // refer to it.
-                    let uri = format!(
-                        "attachment:///{}",
-                        att.name.clone().unwrap_or_else(|| att.id.clone())
-                    );
+                    let uri = format!("attachment:///{}", att.id);
                     let blob =
                         BlobResourceContents::new(data_b64, uri).mime_type(att.mime_type.clone());
                     ContentBlock::Resource(EmbeddedResource::new(

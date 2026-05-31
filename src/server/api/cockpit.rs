@@ -15,9 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::cockpit::approvals::Nonce;
 use crate::cockpit::event_store::AttachmentBlob;
 use crate::cockpit::protocol::{
-    ContextPrimerQuery, ContextPrimerResponse, PromptAttachmentUpload, PromptRequest, ReplayQuery,
-    ReplayResponse, ResolveApprovalRequest, SwitchAgentRequest, SwitchAgentResponse,
-    DiffCommentsPromptRequest,
+    ContextPrimerQuery, ContextPrimerResponse, DiffCommentsPromptRequest, PromptAttachmentUpload,
+    PromptRequest, ReplayQuery, ReplayResponse, ResolveApprovalRequest, SwitchAgentRequest,
+    SwitchAgentResponse,
 };
 use crate::cockpit::state::PromptAttachmentKind;
 use crate::cockpit::supervisor::SupervisorError;
@@ -57,12 +57,18 @@ fn mime_allowed(kind: PromptAttachmentKind, mime: &str) -> bool {
 /// True if `bytes` start with a magic-number signature for a supported
 /// raster image. Guards against a client mislabeling arbitrary bytes as
 /// `image/png` to smuggle them past the allowlist.
-fn looks_like_image(bytes: &[u8]) -> bool {
-    let png = bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-    let jpeg = bytes.starts_with(&[0xFF, 0xD8, 0xFF]);
-    let gif = bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a");
-    let webp = bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP";
-    png || jpeg || gif || webp
+fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 /// Decode, size-check, MIME-check, magic-byte-sniff and capability-gate
@@ -144,11 +150,19 @@ fn validate_attachments(
                 ),
             ));
         }
-        if up.kind == PromptAttachmentKind::Image && !looks_like_image(&bytes) {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "attachment bytes are not a supported image".to_string(),
-            ));
+        if up.kind == PromptAttachmentKind::Image {
+            let Some(sniffed_mime) = sniff_image_mime(&bytes) else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "attachment bytes are not a supported image".to_string(),
+                ));
+            };
+            if sniffed_mime != up.mime_type {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "attachment MIME does not match declared content-type".to_string(),
+                ));
+            }
         }
         total += bytes.len();
         if total > MAX_TOTAL_ATTACHMENT_BYTES {
@@ -680,6 +694,12 @@ pub async fn cockpit_prompt(
         Err(rej) => return rej.into_response(),
     };
     touch_and_wake_if_sunk(&state, &id).await;
+    {
+        let instances = state.instances.read().await;
+        if !instances.iter().any(|i| i.id == id) {
+            return (StatusCode::NOT_FOUND, "session not found").into_response();
+        }
+    }
     // Decode + validate + capability-gate attachments BEFORE publishing
     // so a rejected prompt never leaves a half-rendered attachment in
     // the transcript (the publish path is otherwise authoritative). See
@@ -1636,18 +1656,31 @@ mod tests {
 
     #[test]
     fn image_magic_bytes_sniff() {
-        assert!(looks_like_image(&[
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
-        ]));
-        assert!(looks_like_image(&[0xFF, 0xD8, 0xFF, 0xE0]));
-        assert!(looks_like_image(b"GIF89a....."));
+        assert_eq!(
+            sniff_image_mime(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+            Some("image/png")
+        );
+        assert_eq!(
+            sniff_image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]),
+            Some("image/jpeg")
+        );
+        assert_eq!(sniff_image_mime(b"GIF89a....."), Some("image/gif"));
         let mut webp = b"RIFF".to_vec();
         webp.extend_from_slice(&[0, 0, 0, 0]);
         webp.extend_from_slice(b"WEBP");
-        assert!(looks_like_image(&webp));
+        assert_eq!(sniff_image_mime(&webp), Some("image/webp"));
         // A text blob mislabeled as PNG must not pass.
-        assert!(!looks_like_image(b"<svg>not an image</svg>"));
-        assert!(!looks_like_image(b""));
+        assert_eq!(sniff_image_mime(b"<svg>not an image</svg>"), None);
+        assert_eq!(sniff_image_mime(b""), None);
+    }
+
+    #[test]
+    fn image_magic_bytes_predicate() {
+        assert!(sniff_image_mime(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]).is_some());
+        assert!(sniff_image_mime(&[0xFF, 0xD8, 0xFF, 0xE0]).is_some());
+        assert!(sniff_image_mime(b"GIF89a.....").is_some());
+        assert!(sniff_image_mime(b"<svg>not an image</svg>").is_none());
+        assert!(sniff_image_mime(b"").is_none());
     }
 
     #[test]

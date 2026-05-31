@@ -582,16 +582,15 @@ export function Composer({
         {...tourAnchor(TOUR_ANCHORS.composer)}
         className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl"
         onDragOver={(e) => {
-          // Allow drops only when the agent accepts attachments; the
-          // browser default is to navigate to the dropped file. See #965.
-          if (!attachmentsEnabled) return;
+          const hasFiles = Array.from(e.dataTransfer?.types ?? []).includes("Files");
+          if (!hasFiles) return;
           e.preventDefault();
         }}
         onDrop={(e) => {
-          if (!attachmentsEnabled) return;
           const dropped = e.dataTransfer?.files;
           if (!dropped || dropped.length === 0) return;
           e.preventDefault();
+          if (!attachmentsEnabled) return;
           void addFiles(dropped);
         }}
       >
