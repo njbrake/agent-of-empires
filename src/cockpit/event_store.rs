@@ -806,9 +806,20 @@ impl EventStore {
             .take(session_ids.len())
             .collect::<Vec<_>>()
             .join(",");
+        // Exclude non-substantive lifecycle/metadata events so they do not
+        // reset the idle clock. AcpSessionAssigned in particular is emitted
+        // on every cold-start resume (acp_client.rs), so counting it would
+        // make a daemon restart look like fresh activity for every worker
+        // and the idle-reap (#1689) would never fire across restarts. Mirrors
+        // the not-substantive set the retention prune protects.
         let sql = format!(
             "SELECT session_id, MAX(created_at) FROM cockpit_events
-             WHERE session_id IN ({placeholders}) GROUP BY session_id"
+             WHERE session_id IN ({placeholders})
+               AND event_json NOT LIKE '{{\"AvailableCommandsUpdated\":%'
+               AND event_json NOT LIKE '{{\"ModesAvailable\":%'
+               AND event_json NOT LIKE '{{\"CurrentModeChanged\":%'
+               AND event_json NOT LIKE '{{\"AcpSessionAssigned\":%'
+             GROUP BY session_id"
         );
         let mut stmt = match conn.prepare(&sql) {
             Ok(s) => s,
@@ -923,6 +934,55 @@ mod tests {
         let replay = store.replay_from("s-1", 2);
         let seqs: Vec<u64> = replay.iter().map(|(s, _)| *s).collect();
         assert_eq!(seqs, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn last_event_at_ignores_non_substantive_events() {
+        // #1689: the idle clock must reflect real activity, not lifecycle /
+        // metadata events. A session whose only events are AcpSessionAssigned
+        // (emitted on every cold-start resume), ModesAvailable, etc. must NOT
+        // register a recent activity timestamp, otherwise a daemon restart
+        // would reset every worker's idle timer and the reap would never fire.
+        let (_tmp, store) = open_store(1000);
+        store
+            .record(
+                "s-lifecycle",
+                1,
+                &Event::AcpSessionAssigned {
+                    acp_session_id: "acp-1".into(),
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-lifecycle",
+                2,
+                &Event::ModesAvailable {
+                    current_mode_id: "default".into(),
+                    modes: vec![],
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-real",
+                1,
+                &Event::UserPromptSent {
+                    text: "hello".into(),
+                },
+            )
+            .unwrap();
+
+        let map =
+            store.last_event_at_for_sessions(&["s-lifecycle".to_string(), "s-real".to_string()]);
+        assert!(
+            !map.contains_key("s-lifecycle"),
+            "non-substantive-only session must not register activity: {map:?}"
+        );
+        assert!(
+            map.contains_key("s-real"),
+            "session with a real event must register activity: {map:?}"
+        );
     }
 
     #[test]
