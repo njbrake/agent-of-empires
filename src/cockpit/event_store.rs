@@ -95,7 +95,9 @@ impl EventStore {
                 PRIMARY KEY (session_id, seq)
             );
             CREATE INDEX IF NOT EXISTS idx_cockpit_events_session_seq
-                ON cockpit_events(session_id, seq);",
+                ON cockpit_events(session_id, seq);
+            CREATE INDEX IF NOT EXISTS idx_cockpit_events_session_created_at
+                ON cockpit_events(session_id, created_at);",
         )
         .context("create cockpit_events schema")?;
         debug!(
@@ -779,6 +781,56 @@ impl EventStore {
             }
         };
         terminator.is_none()
+    }
+
+    /// Latest `created_at` (ms since epoch) per session for the given
+    /// ids, in a single grouped query. Sessions with no events are
+    /// absent from the returned map. Backed by the
+    /// `(session_id, created_at)` index. Used by the reconciler's
+    /// idle-reap pass (#1689) to find cockpit workers that have seen no
+    /// activity for longer than `cockpit.auto_stop_idle_secs`, without a
+    /// per-session round trip.
+    pub fn last_event_at_for_sessions(
+        &self,
+        session_ids: &[String],
+    ) -> std::collections::HashMap<String, i64> {
+        let mut out = std::collections::HashMap::new();
+        if session_ids.is_empty() {
+            return out;
+        }
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let placeholders = std::iter::repeat("?")
+            .take(session_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT session_id, MAX(created_at) FROM cockpit_events
+             WHERE session_id IN ({placeholders}) GROUP BY session_id"
+        );
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "last_event_at_for_sessions prepare: {e}");
+                return out;
+            }
+        };
+        let rows = stmt.query_map(rusqlite::params_from_iter(session_ids.iter()), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        });
+        match rows {
+            Ok(iter) => {
+                for r in iter.flatten() {
+                    out.insert(r.0, r.1);
+                }
+            }
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "last_event_at_for_sessions query: {e}");
+            }
+        }
+        out
     }
 
     /// Drop every event for a session. Called when the session is
