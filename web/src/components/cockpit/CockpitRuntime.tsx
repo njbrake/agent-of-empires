@@ -264,25 +264,25 @@ export function activityToThreadMessages(
     }
     if (row.kind === "user_prompt") {
       flushAssistant();
-      const content: ThreadMessageLike["content"] = [];
-      if (row.text) content.push({ type: "text", text: row.text });
-      for (const att of row.attachments ?? []) {
-        if (att.kind === "image") {
-          content.push({ type: "image", image: att.url });
-        } else {
-          // Audio / embedded resources have no inline player here yet;
-          // surface them as a labelled chip line so the turn isn't empty.
-          content.push({
-            type: "text",
-            text: `📎 ${att.name ?? att.kind} (${att.mimeType})`,
-          });
-        }
-      }
-      if (content.length === 0) content.push({ type: "text", text: "" });
+      // `ThreadMessageLike["content"]` is a readonly array, so build the
+      // parts via spreads rather than push. Images become image parts;
+      // audio / embedded resources have no inline player here yet, so
+      // surface them as a labelled chip line.
+      const parts = [
+        ...(row.text ? [{ type: "text" as const, text: row.text }] : []),
+        ...(row.attachments ?? []).map((att) =>
+          att.kind === "image"
+            ? { type: "image" as const, image: att.url }
+            : {
+                type: "text" as const,
+                text: `📎 ${att.name ?? att.kind} (${att.mimeType})`,
+              },
+        ),
+      ];
       messages.push({
         id: row.id,
         role: "user",
-        content,
+        content: parts.length > 0 ? parts : [{ type: "text", text: "" }],
         createdAt: parseDate(row.at),
       });
       continue;
