@@ -6,6 +6,13 @@ import istanbul from "vite-plugin-istanbul";
 
 const collectCoverage = process.env.AOE_COVERAGE === "1";
 
+// `cargo xtask dev` runs the Rust server and this dev server together and
+// passes the ports through these env vars. The server backend defaults to
+// 8081 in debug builds; the Vite dev server defaults to 5173.
+const servePort = process.env.AOE_SERVE_PORT ?? "8081";
+const webPort = Number(process.env.AOE_WEB_PORT ?? "5173");
+const serveTarget = `http://127.0.0.1:${servePort}`;
+
 export default defineConfig({
   plugins: [
     react(),
@@ -30,6 +37,15 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+  },
+  // REST under /api, WebSocket PTY/cockpit relays under /sessions. Proxy both
+  // to the running `aoe serve` so the dev server's /api and /ws calls resolve.
+  server: {
+    port: webPort,
+    proxy: {
+      "/api": { target: serveTarget, changeOrigin: true },
+      "/sessions": { target: serveTarget, ws: true, changeOrigin: true },
+    },
   },
   // Vitest unit tests live alongside source as `*.test.ts(x)`. Playwright
   // suites under `tests/` use the same `.spec.ts` extension Playwright
