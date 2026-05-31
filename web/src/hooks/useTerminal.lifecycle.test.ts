@@ -35,6 +35,7 @@ const { captured } = vi.hoisted(() => ({
     proposedDimensions: { cols: 100, rows: 30 } as
       | { cols: number; rows: number }
       | undefined,
+    oscHandlers: {} as Record<number, (data: string) => boolean>,
   },
 }));
 
@@ -79,6 +80,15 @@ vi.mock("@xterm/xterm", () => {
       captured.customWheel = fn;
     }
     attachCustomKeyEventHandler(_fn: (e: KeyboardEvent) => boolean): void {}
+    parser = {
+      registerOscHandler(
+        id: number,
+        cb: (data: string) => boolean,
+      ): { dispose: () => void } {
+        captured.oscHandlers[id] = cb;
+        return { dispose: () => {} };
+      },
+    };
     resize(cols: number, rows: number): void {
       this.cols = cols;
       this.rows = rows;
@@ -191,6 +201,7 @@ beforeEach(() => {
   captured.customWheel = undefined;
   captured.resizeObserverCallback = undefined;
   captured.proposedDimensions = { cols: 100, rows: 30 };
+  captured.oscHandlers = {};
   originalWebSocket = global.WebSocket;
   global.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   originalResizeObserver = global.ResizeObserver;
@@ -1647,6 +1658,93 @@ describe("useTerminal mobile backspace autorepeat", () => {
       });
       fireDelete(ta, 3);
       expect(delBytes(ws)).toBe(0);
+    } finally {
+      div.remove();
+    }
+  });
+});
+
+// OSC 52 clipboard handling. tmux emits OSC 52 on copy (set-clipboard on);
+// before #1499 xterm.js had no handler so select-to-copy silently failed.
+// The hook now registers a handler that decodes the base64 payload and
+// writes it to the system clipboard. These tests drive the captured handler
+// directly; the full drag -> tmux -> OSC 52 round-trip is covered by the
+// live Playwright spec.
+describe("useTerminal OSC 52 clipboard", () => {
+  let writeText: ReturnType<typeof vi.fn>;
+  let originalClipboard: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    writeText = vi.fn().mockResolvedValue(undefined);
+    originalClipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+  });
+
+  afterEach(() => {
+    if (originalClipboard) {
+      Object.defineProperty(navigator, "clipboard", originalClipboard);
+    } else {
+      delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+    }
+  });
+
+  async function mountHook(): Promise<HTMLDivElement> {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    renderHook(() => {
+      const term = useTerminal("s-osc52", "ws", false, false);
+      if (term.containerRef && !term.containerRef.current) {
+        (
+          term.containerRef as unknown as { current: HTMLDivElement | null }
+        ).current = div;
+      }
+      return term;
+    });
+    await flushAsync();
+    return div;
+  }
+
+  it("registers an OSC 52 handler on open", async () => {
+    const div = await mountHook();
+    try {
+      expect(typeof captured.oscHandlers[52]).toBe("function");
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("decodes a base64 payload and writes it to the clipboard", async () => {
+    const div = await mountHook();
+    try {
+      // "c;<base64>" where base64("hello world") = "aGVsbG8gd29ybGQ=".
+      captured.oscHandlers[52]!("c;aGVsbG8gd29ybGQ=");
+      await flushAsync();
+      expect(writeText).toHaveBeenCalledWith("hello world");
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("ignores an OSC 52 paste query (no clipboard write)", async () => {
+    const div = await mountHook();
+    try {
+      captured.oscHandlers[52]!("c;?");
+      await flushAsync();
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("ignores an undecodable payload without throwing", async () => {
+    const div = await mountHook();
+    try {
+      expect(() => captured.oscHandlers[52]!("c;!!!not base64!!!")).not.toThrow();
+      await flushAsync();
+      expect(writeText).not.toHaveBeenCalled();
     } finally {
       div.remove();
     }
