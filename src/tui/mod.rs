@@ -177,12 +177,20 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
         (None, None) => None,
     };
 
+    // The TUI process owns its own FileWatchService Arc; threaded into every
+    // consumer (HomeView, DiffView, per-profile Storage) so peer-process
+    // writes to `sessions.json` / `groups.json` propagate within the
+    // primitive's debounce window instead of waiting for the 5s heartbeat.
+    // Backend init failures degrade to a noop service inside `new()`.
+    let file_watch = crate::file_watch::FileWatchService::new()?;
+
     // Create app and run
     let mut app = App::new(
         profile,
         available_tools,
         combined_warning.is_some(),
         mosh_active,
+        file_watch,
     )?;
     if let Some(warning) = combined_warning {
         app.show_startup_warning(&warning);

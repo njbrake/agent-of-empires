@@ -43,7 +43,7 @@ struct StatusJson {
 
 #[tracing::instrument(target = "cli.session", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
-    let storage = Storage::new(profile)?;
+    let storage = Storage::new(profile, crate::file_watch::FileWatchService::noop())?;
     let (mut instances, _) = storage.load_with_groups()?;
 
     if instances.is_empty() {

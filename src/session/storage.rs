@@ -73,6 +73,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::file_watch::FileWatchService;
+
 use super::{get_app_dir, get_profile_dir, Group, Instance};
 
 /// Sidecar lock file name for per-profile storage. Lives next to
@@ -239,6 +241,10 @@ pub struct Storage {
     profile: String,
     sessions_path: PathBuf,
     save_lock: Arc<Mutex<()>>,
+    /// Used to surface in-process writes immediately to subscribers via the
+    /// kernel-event-equivalent dispatcher path; see
+    /// `FileWatchService::notify_local_change`. Cheap to clone (`Arc`).
+    file_watch: Arc<FileWatchService>,
 }
 
 // Cross-device-syncable sidebar ordering. Workspaces are a client
@@ -255,7 +261,7 @@ pub struct WorkspaceOrdering {
 }
 
 impl Storage {
-    pub fn new(profile: &str) -> Result<Self> {
+    pub fn new(profile: &str, file_watch: Arc<FileWatchService>) -> Result<Self> {
         let profile_name = if profile.is_empty() {
             super::config::resolve_default_profile()
         } else {
@@ -270,7 +276,17 @@ impl Storage {
             profile: profile_name,
             sessions_path,
             save_lock,
+            file_watch,
         })
+    }
+
+    /// Construct a `Storage` wired to a noop `FileWatchService`. Used by the
+    /// ~140 test call sites that don't exercise file-watch propagation, and
+    /// by integration tests that don't need a real watcher. Bounded to test
+    /// builds so production code can never accidentally drop the watcher.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn new_for_test(profile: &str) -> Result<Self> {
+        Self::new(profile, FileWatchService::noop())
     }
 
     pub fn profile(&self) -> &str {
@@ -361,8 +377,15 @@ impl Storage {
         if let Some(buf) = groups_buf {
             let groups_path = self.sessions_path.with_file_name("groups.json");
             atomic_write(&groups_path, &buf)?;
+            // Surface the rename to in-process subscribers immediately;
+            // the kernel echo arrives ~ms later for the same rename and
+            // collapses into the same per-key debounce slot. Runs strictly
+            // AFTER atomic_write returns so any subscriber waking on the
+            // notify is guaranteed to read the post-rename file.
+            self.file_watch.notify_local_change(&groups_path);
         }
         atomic_write(&self.sessions_path, &instances_buf)?;
+        self.file_watch.notify_local_change(&self.sessions_path);
         Ok(result)
     }
 }
@@ -435,7 +458,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-profile")?;
+        let storage = Storage::new_for_test("test-profile")?;
 
         let instances = vec![
             Instance::new("test1", "/tmp/test1"),
@@ -465,7 +488,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("")?;
+        let storage = Storage::new_for_test("")?;
         assert_eq!(storage.profile(), "main");
         Ok(())
     }
@@ -481,7 +504,7 @@ mod tests {
         get_profile_dir("work")?;
         get_profile_dir("personal")?;
 
-        let storage = Storage::new("")?;
+        let storage = Storage::new_for_test("")?;
         assert_eq!(storage.profile(), "personal");
         Ok(())
     }
@@ -502,7 +525,7 @@ mod tests {
         };
         super::super::config::save_config(&config)?;
 
-        let storage = Storage::new("")?;
+        let storage = Storage::new_for_test("")?;
         assert_eq!(storage.profile(), "work");
         Ok(())
     }
@@ -513,7 +536,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("custom-profile")?;
+        let storage = Storage::new_for_test("custom-profile")?;
         assert_eq!(storage.profile(), "custom-profile");
         Ok(())
     }
@@ -524,7 +547,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-empty")?;
+        let storage = Storage::new_for_test("test-empty")?;
         let loaded = storage.load()?;
 
         assert!(loaded.is_empty());
@@ -537,7 +560,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-empty-file")?;
+        let storage = Storage::new_for_test("test-empty-file")?;
 
         // Create empty file
         fs::create_dir_all(storage.sessions_path.parent().unwrap())?;
@@ -554,7 +577,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-whitespace")?;
+        let storage = Storage::new_for_test("test-whitespace")?;
 
         fs::create_dir_all(storage.sessions_path.parent().unwrap())?;
         fs::write(&storage.sessions_path, "   \n  \t  ")?;
@@ -570,7 +593,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-no-debris")?;
+        let storage = Storage::new_for_test("test-no-debris")?;
 
         for i in 0..5 {
             let instances = vec![Instance::new(&format!("iter{i}"), "/tmp/test")];
@@ -604,7 +627,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-empty-save")?;
+        let storage = Storage::new_for_test("test-empty-save")?;
         {
             let xs: Vec<Instance> = vec![];
             storage.update(|i, g| {
@@ -625,7 +648,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-no-groups")?;
+        let storage = Storage::new_for_test("test-no-groups")?;
 
         let instances = vec![Instance::new("test", "/tmp/test")];
         storage.update(|i, g| {
@@ -646,7 +669,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-with-groups")?;
+        let storage = Storage::new_for_test("test-with-groups")?;
 
         let mut instances = vec![Instance::new("test", "/tmp/test")];
         instances[0].group_path = "work/projects".to_string();
@@ -673,7 +696,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-invalid")?;
+        let storage = Storage::new_for_test("test-invalid")?;
 
         fs::create_dir_all(storage.sessions_path.parent().unwrap())?;
         fs::write(&storage.sessions_path, "{ invalid json }")?;
@@ -689,7 +712,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-fields")?;
+        let storage = Storage::new_for_test("test-fields")?;
 
         let mut instance = Instance::new("Test Project", "/home/user/project");
         instance.tool = "opencode".to_string();
@@ -723,8 +746,8 @@ mod tests {
         setup_test_home(temp.path());
 
         // Verify profiles are correctly named
-        let storage1 = Storage::new("profile-alpha")?;
-        let storage2 = Storage::new("profile-beta")?;
+        let storage1 = Storage::new_for_test("profile-alpha")?;
+        let storage2 = Storage::new_for_test("profile-beta")?;
 
         assert_eq!(storage1.profile(), "profile-alpha");
         assert_eq!(storage2.profile(), "profile-beta");
@@ -740,7 +763,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-empty-groups")?;
+        let storage = Storage::new_for_test("test-empty-groups")?;
 
         // Save sessions
         {
@@ -827,7 +850,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-update-roundtrip")?;
+        let storage = Storage::new_for_test("test-update-roundtrip")?;
         storage.update(|i, g| {
             *i = [Instance::new("seed", "/tmp/seed")].to_vec();
             *g = GroupTree::new_with_groups(&[], &[]).get_all_groups();
@@ -852,7 +875,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-update-err")?;
+        let storage = Storage::new_for_test("test-update-err")?;
         let initial = vec![Instance::new("keep", "/tmp/keep")];
         storage.update(|i, g| {
             *i = initial.to_vec();
@@ -878,7 +901,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-update-concurrent")?;
+        let storage = Storage::new_for_test("test-update-concurrent")?;
         storage.update(|i, g| {
             *i = [].to_vec();
             *g = GroupTree::new_with_groups(&[], &[]).get_all_groups();
@@ -889,7 +912,7 @@ mod tests {
         std::thread::scope(|scope| {
             for tid in 0..n_threads {
                 scope.spawn(move || {
-                    let storage = Storage::new("test-update-concurrent").unwrap();
+                    let storage = Storage::new_for_test("test-update-concurrent").unwrap();
                     storage
                         .update(|instances, _| {
                             instances.push(Instance::new(
@@ -927,8 +950,8 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage_a = Storage::new("test-update-profile-a")?;
-        let storage_b = Storage::new("test-update-profile-b")?;
+        let storage_a = Storage::new_for_test("test-update-profile-a")?;
+        let storage_b = Storage::new_for_test("test-update-profile-b")?;
 
         std::thread::scope(|scope| {
             scope.spawn(|| {
@@ -963,7 +986,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-commit-lock")?;
+        let storage = Storage::new_for_test("test-commit-lock")?;
         storage.update(|i, g| {
             *i = [].to_vec();
             *g = GroupTree::new_with_groups(&[], &[]).get_all_groups();
@@ -976,7 +999,7 @@ mod tests {
         let release_clone = Arc::clone(&release);
 
         let updater = std::thread::spawn(move || {
-            let storage = Storage::new("test-commit-lock").unwrap();
+            let storage = Storage::new_for_test("test-commit-lock").unwrap();
             storage
                 .update(|instances, _| {
                     instances.push(Instance::new("from-update", "/tmp/u"));
@@ -990,7 +1013,7 @@ mod tests {
         entered.wait();
         let start = Instant::now();
         let committer = std::thread::spawn(|| {
-            let storage = Storage::new("test-commit-lock").unwrap();
+            let storage = Storage::new_for_test("test-commit-lock").unwrap();
             storage
                 .update(|i, g| {
                     *i = [Instance::new("from-commit", "/tmp/c")].to_vec();
@@ -1061,11 +1084,11 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let s1 = Storage::new("test-registry-shared")?;
-        let s2 = Storage::new("test-registry-shared")?;
+        let s1 = Storage::new_for_test("test-registry-shared")?;
+        let s2 = Storage::new_for_test("test-registry-shared")?;
         assert!(Arc::ptr_eq(&s1.save_lock, &s2.save_lock));
 
-        let s3 = Storage::new("test-registry-distinct")?;
+        let s3 = Storage::new_for_test("test-registry-distinct")?;
         assert!(!Arc::ptr_eq(&s1.save_lock, &s3.save_lock));
         Ok(())
     }
@@ -1076,7 +1099,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-update-both-files")?;
+        let storage = Storage::new_for_test("test-update-both-files")?;
         storage.update(|i, g| {
             *i = [].to_vec();
             *g = GroupTree::new_with_groups(&[], &[]).get_all_groups();
@@ -1105,7 +1128,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-update-err-untouched")?;
+        let storage = Storage::new_for_test("test-update-err-untouched")?;
         let seed = vec![Instance::new("seed", "/tmp/seed")];
         let seed_groups = vec![Group::new("seed-group", "work/seed")];
         let mut tree = GroupTree::new_with_groups(&seed, &seed_groups);
@@ -1138,7 +1161,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-skip-groups-write")?;
+        let storage = Storage::new_for_test("test-skip-groups-write")?;
         let seed_instances = [Instance::new("seed", "/tmp/seed")];
         storage.update(|i, g| {
             *i = seed_instances.to_vec();
@@ -1170,7 +1193,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage = Storage::new("test-rewrite-groups")?;
+        let storage = Storage::new_for_test("test-rewrite-groups")?;
         let seed_instances = [Instance::new("seed", "/tmp/seed")];
         storage.update(|i, g| {
             *i = seed_instances.to_vec();
@@ -1202,7 +1225,7 @@ mod tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        let storage_outer = Storage::new("test-poison-recovery")?;
+        let storage_outer = Storage::new_for_test("test-poison-recovery")?;
         let _ = std::thread::spawn(move || {
             let _ = storage_outer.update(|_instances, _groups| -> Result<()> {
                 panic!("forced poison");
@@ -1210,7 +1233,7 @@ mod tests {
         })
         .join();
 
-        let storage_after = Storage::new("test-poison-recovery")?;
+        let storage_after = Storage::new_for_test("test-poison-recovery")?;
         storage_after.update(|instances, _groups| {
             instances.push(Instance::new("after-poison", "/tmp/after"));
             Ok(())

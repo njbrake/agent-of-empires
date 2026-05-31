@@ -666,7 +666,7 @@ pub async fn rename_session(
     let profile = inst.source_profile.clone();
     drop(instances);
 
-    if let Ok(storage) = Storage::new(&profile) {
+    if let Ok(storage) = Storage::new(&profile, state.file_watch.clone()) {
         let title_clone = title.clone();
         let id_clone = id.clone();
         match tokio::task::spawn_blocking(move || {
@@ -781,7 +781,7 @@ pub async fn update_session_notifications(
     let profile = inst.source_profile.clone();
     drop(instances);
 
-    if let Ok(storage) = Storage::new(&profile) {
+    if let Ok(storage) = Storage::new(&profile, state.file_watch.clone()) {
         let id_clone = id.clone();
         let waiting = body.notify_on_waiting;
         let idle = body.notify_on_idle;
@@ -871,7 +871,7 @@ pub async fn update_session_diff_base(
     let profile = inst.source_profile.clone();
     drop(instances);
 
-    if let Ok(storage) = Storage::new(&profile) {
+    if let Ok(storage) = Storage::new(&profile, state.file_watch.clone()) {
         let id_clone = id.clone();
         let new_override = body
             .base_branch
@@ -990,7 +990,7 @@ pub async fn update_session_pin(
     let pinned = body.pinned;
     drop(instances);
 
-    if let Ok(storage) = Storage::new(&profile) {
+    if let Ok(storage) = Storage::new(&profile, state.file_watch.clone()) {
         let id_clone = id.clone();
         match tokio::task::spawn_blocking(move || {
             storage.update(|instances, _groups| {
@@ -1083,7 +1083,7 @@ pub async fn update_session_archive(
         let archived = body.archived;
         drop(instances);
 
-        if let Ok(storage) = Storage::new(&profile) {
+        if let Ok(storage) = Storage::new(&profile, state.file_watch.clone()) {
             let id_clone = id.clone();
             match tokio::task::spawn_blocking(move || {
                 storage.update(|instances, _groups| {
@@ -1258,7 +1258,7 @@ pub async fn update_session_snooze(
     };
     let minutes = body.minutes;
 
-    if let Ok(storage) = Storage::new(&profile) {
+    if let Ok(storage) = Storage::new(&profile, state.file_watch.clone()) {
         let id_clone = id.clone();
         match tokio::task::spawn_blocking(move || {
             storage.update(|instances, _groups| {
@@ -1442,7 +1442,7 @@ pub async fn delete_session(
             // would silently re-add the entry from disk on the next tick
             // and the user would see "deleted" then the session
             // reappearing seconds later.
-            let storage = match Storage::new(&profile) {
+            let storage = match Storage::new(&profile, state.file_watch.clone()) {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::error!(target: "http.api.sessions",
@@ -1793,6 +1793,8 @@ pub async fn create_session(
         .cockpit_master_enabled
         .load(std::sync::atomic::Ordering::Relaxed);
 
+    let file_watch_for_create = state.file_watch.clone();
+
     let result = tokio::task::spawn_blocking(move || {
         use crate::session::builder::{self, InstanceParams};
         use crate::session::Config;
@@ -1887,7 +1889,7 @@ pub async fn create_session(
         // tripped. Matches the CLI cleanup path in
         // `cleanup_partial_session(... scratch_dir: Some(...))`.
         let mut persist_and_start = || -> anyhow::Result<()> {
-            let storage = Storage::new(&profile)?;
+            let storage = Storage::new(&profile, file_watch_for_create.clone())?;
             let to_persist = instance.clone();
             storage.update(|all, _groups| {
                 all.push(to_persist);
@@ -4021,8 +4023,9 @@ pub async fn send_message(
             let id_for_save = id.clone();
             let started_for_save = started.clone();
             let outcome_already_alive = matches!(outcome, EnsureReadyOutcome::AlreadyAlive);
+            let file_watch_for_save = state.file_watch.clone();
             tokio::task::spawn_blocking(move || {
-                if let Ok(storage) = Storage::new(&profile) {
+                if let Ok(storage) = Storage::new(&profile, file_watch_for_save) {
                     if let Err(e) = storage.update(|all, _groups| {
                         if let Some(disk_inst) = all.iter_mut().find(|i| i.id == id_for_save) {
                             if !outcome_already_alive {

@@ -33,6 +33,16 @@ jobs:
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy -- -D warnings
+      - name: file_watch consolidation guard
+        run: |
+          set -euo pipefail
+          hits="$(rg --files-with-matches 'notify::recommended_watcher' src/ || true)"
+          unexpected="$(printf '%s\n' "$hits" | grep -v '^src/file_watch.rs$' | grep . || true)"
+          if [ -n "$unexpected" ]; then
+            echo "::error::New notify::recommended_watcher found outside src/file_watch.rs:"
+            printf '%s\n' "$unexpected"
+            exit 1
+          fi
 
   deny:
     name: Supply Chain

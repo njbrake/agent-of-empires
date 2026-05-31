@@ -40,6 +40,7 @@ const COCKPIT_CHANNEL_CAPACITY: usize = 256;
 #[cfg(feature = "serve")]
 pub use crate::cockpit::protocol::CockpitBroadcastFrame;
 
+use crate::file_watch::{FileMatcher, FileWatchService, SubscriptionHandle, WatchSpec};
 use crate::session::Instance;
 use crate::session::Status;
 use crate::session::Storage;
@@ -241,6 +242,37 @@ impl CleanupDefaultsCache {
     }
 }
 
+/// Per-profile entry tracking a live `FileWatchService` subscription and the
+/// `tokio::spawn`ed forwarder that drains its receiver into
+/// `AppState::disk_changed`. Stored under `AppState::disk_watch_handles`.
+/// Drop-then-abort order on rewire / shutdown is canonical (per primitive
+/// design §12 rule 3): drop the `SubscriptionHandle` first so the
+/// dispatcher stops queuing events for this id, then abort the forwarder.
+pub struct DiskWatchEntry {
+    /// RAII guard from `subscribe_channel`. Drop unsubscribes and unwatches
+    /// the directory if its refcount drops to zero.
+    handle: SubscriptionHandle,
+    /// Abort handle for the forwarder task that drains the per-profile
+    /// receiver into `disk_changed`.
+    forwarder: tokio::task::AbortHandle,
+}
+
+/// Whether the caller has applied tmux scrape (and suppression) to
+/// `fresh.status`. `status_poll_loop` passes `TmuxApplied`; the watcher
+/// consumer passes `DiskOnly`.
+#[doc(hidden)]
+#[derive(Copy, Clone, Debug)]
+pub enum StatusSource {
+    /// Caller already scraped tmux into `fresh.status` and applied
+    /// `recently_restarted` suppression. The helper trusts `fresh.status`
+    /// for existing ids.
+    TmuxApplied,
+    /// `fresh` was loaded from disk only. Prior in-memory `status` and
+    /// `idle_entered_at` win for existing ids; new ids surface with disk
+    /// values.
+    DiskOnly,
+}
+
 /// Shared application state accessible by all request handlers.
 pub struct AppState {
     pub profile: String,
@@ -337,6 +369,22 @@ pub struct AppState {
     /// graceful drain open until the browser tab decides to disconnect.
     /// See #1198.
     pub shutdown: CancellationToken,
+    /// Process-wide file-watch primitive. Threaded into `Storage::new` so
+    /// in-process writes surface immediately via `notify_local_change`,
+    /// and used to register per-profile `subscribe_channel` watches that
+    /// fan into `disk_changed`.
+    pub file_watch: Arc<FileWatchService>,
+    /// Wakeup signal for `disk_watcher_consumer`. Per-profile forwarder
+    /// tasks call `notify_one()` on every received `FileEvent`; the
+    /// consumer task awaits `notified()` and reloads `state.instances`.
+    /// `notify_waiters` is intentionally NOT used: the consumer does a
+    /// single-receiver wait and we want at-least-once wake semantics.
+    pub disk_changed: Arc<tokio::sync::Notify>,
+    /// Per-profile disk-watch subscriptions plus their forwarder tasks.
+    /// Keyed by profile name. Mutated by `init_disk_watch_subscriptions`
+    /// at startup and by the profile create / delete REST handlers.
+    pub disk_watch_handles:
+        Arc<tokio::sync::Mutex<std::collections::HashMap<String, DiskWatchEntry>>>,
 }
 
 impl AppState {
@@ -461,7 +509,19 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 
     raise_fd_limit();
 
-    let instances = load_all_instances()?;
+    // Single FileWatchService construction site for the daemon process. The
+    // design forbids a global singleton; this Arc is threaded into AppState
+    // and through every consumer that needs it.
+    let file_watch = FileWatchService::new().unwrap_or_else(|e| {
+        tracing::warn!(
+            target: "server.file_watch",
+            error = %e,
+            "FileWatchService::new failed; falling back to noop"
+        );
+        FileWatchService::noop()
+    });
+
+    let instances = load_all_instances(&file_watch)?;
 
     // Load or generate auth token
     let auth_token = if no_auth {
@@ -605,6 +665,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         web_config: config.web.clone(),
         last_web_activity: std::sync::atomic::AtomicI64::new(0),
         shutdown: CancellationToken::new(),
+        file_watch: file_watch.clone(),
+        disk_changed: Arc::new(tokio::sync::Notify::new()),
+        disk_watch_handles: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
     let app = build_router(state.clone());
@@ -855,6 +918,27 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             status_poll_loop(poll_state).await;
         },
     );
+
+    // File-watch wire-up: register per-profile subscriptions and start the
+    // consumer task. Spawned AFTER the listener bind above so subscribe
+    // latency never gates listener readiness; polling stays canonical per
+    // primitive §9.2 if subscribe fails.
+    {
+        let init_state = state.clone();
+        tokio::spawn(async move {
+            init_disk_watch_subscriptions(init_state).await;
+        });
+    }
+    {
+        let consumer_state = state.clone();
+        crate::task_util::spawn_supervised(
+            "server.disk_watcher_consumer",
+            crate::task_util::PanicPolicy::Log,
+            async move {
+                disk_watcher_consumer(consumer_state).await;
+            },
+        );
+    }
 
     // Cockpit broadcast listener: a single subscriber that handles
     // every in-process consumer of cockpit events. Status mirroring
@@ -1562,11 +1646,11 @@ async fn load_or_generate_token() -> anyhow::Result<String> {
 }
 
 /// Load sessions from all profiles, matching the TUI's "all profiles" view.
-fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
+fn load_all_instances(file_watch: &Arc<FileWatchService>) -> anyhow::Result<Vec<Instance>> {
     let profiles = crate::session::list_profiles().unwrap_or_default();
     let mut all = Vec::new();
     for profile in &profiles {
-        if let Ok(storage) = Storage::new(profile) {
+        if let Ok(storage) = Storage::new(profile, file_watch.clone()) {
             if let Ok(mut instances) = storage.load() {
                 for inst in &mut instances {
                     inst.source_profile = profile.clone();
@@ -1593,6 +1677,285 @@ fn merge_runtime_fields(prior: Instance, mut fresh: Instance) -> Instance {
     fresh
 }
 
+// INVARIANTS for `reload_state_instances_from_disk` (do not break without
+// revisiting `tests/serve_disk_reload_helper_equivalence.rs`):
+// 1. Both call sites (`status_poll_loop` and `disk_watcher_consumer`) must
+//    invoke this helper. They differ in cadence, in what they do BEFORE
+//    calling it (tmux scrape lives only in `status_poll_loop`), and in
+//    the StatusSource they pass.
+// 2. `merge_runtime_fields` is mandatory per-id. Skipping it wipes the
+//    five #[serde(skip)] runtime fields (`last_error_check`,
+//    `last_start_time`, `last_error`, `session_id_poller`,
+//    `retroactive_capture_excludes`) that disk reload zeroes by design.
+// 3. `merge_runtime_fields` does NOT carry `status`, `last_accessed_at`,
+//    or `idle_entered_at`. Those three are handled per StatusSource:
+//    DiskOnly takes prior.status and `prior.idle_entered_at.or(fresh.idle_entered_at)`;
+//    TmuxApplied takes fresh's. `last_accessed_at` is monotonic-max
+//    regardless.
+// 4. The cockpit overlay filter is `inst.cockpit_mode` (boolean), NOT
+//    `cockpit_acp_session_id`. The latter is set lazily by the ACP
+//    handshake and is None for newly-spawned cockpit sessions; using
+//    it as the filter would silently drop overlay coverage for
+//    pre-handshake rows.
+// 5. `prior_by_id` is built with `.drain(..)` once, then read with
+//    `.get()` (NOT `.remove()`) in the merge loop, so the same map is
+//    still populated when `apply_cockpit_overlay_inplace` runs.
+// 6. Polling is canonical (primitive design §9.2). The watcher path
+//    adds latency reduction; correctness still holds when it fails.
+
+/// Reload `state.instances` by merging caller-supplied `fresh` against the
+/// prior in-memory snapshot per id, then reapplying the cockpit overlay.
+/// The caller is responsible for the disk read (off the runtime via
+/// `tokio::task::spawn_blocking(load_all_instances)` for both call sites)
+/// and, on the `TmuxApplied` path only, for emitting `state.status_tx`
+/// diffs BEFORE invoking the helper.
+#[doc(hidden)]
+pub async fn reload_state_instances_from_disk(
+    state: &Arc<AppState>,
+    fresh: Vec<Instance>,
+    status_source: StatusSource,
+) {
+    // Snapshot suppression here so a worker that unmarks between the
+    // caller's input build and the per-id decision cannot combine a
+    // cleared mark with a stale row to re-emit the phantom Error
+    // transition the suppression exists to prevent. Idempotent on the
+    // poll path, where the caller already applied the same override
+    // inside `spawn_blocking`.
+    let suppressed_ids =
+        crate::session::recovery::snapshot_recently_restarted(&state.recently_restarted);
+
+    let mut current = state.instances.write().await;
+    let prior_by_id: std::collections::HashMap<String, Instance> = current
+        .drain(..)
+        .map(|inst| (inst.id.clone(), inst))
+        .collect();
+
+    let mut merged: Vec<Instance> = Vec::with_capacity(fresh.len());
+    for mut row in fresh {
+        if let Some(prior) = prior_by_id.get(&row.id).cloned() {
+            let prior_status = prior.status;
+            let prior_last_accessed = prior.last_accessed_at;
+            let prior_idle_entered = prior.idle_entered_at;
+            row = merge_runtime_fields(prior, row);
+            match status_source {
+                StatusSource::DiskOnly => {
+                    row.status = prior_status;
+                    row.idle_entered_at = prior_idle_entered.or(row.idle_entered_at);
+                }
+                StatusSource::TmuxApplied => {
+                    // Caller already applied tmux scrape to fresh.status;
+                    // that is the authoritative value. idle_entered_at is
+                    // recomputed by upstream status-transition logic;
+                    // trust fresh.
+                }
+            }
+            row.last_accessed_at = prior_last_accessed.max(row.last_accessed_at);
+        }
+        if suppressed_ids.contains(&row.id) {
+            row.status = Status::Starting;
+        }
+        merged.push(row);
+    }
+
+    #[cfg(feature = "serve")]
+    apply_cockpit_overlay_inplace(&prior_by_id, &mut merged);
+
+    *current = merged;
+}
+
+/// Apply the cockpit status / timestamps overlay to `merged`, sourcing
+/// values from `prior_by_id`. The merge loop above uses `.get()` (NOT
+/// `.remove()`), so this lookup still finds entries here. Filter is
+/// `inst.cockpit_mode` per the invariant above; filtering on
+/// `cockpit_acp_session_id` would silently drop overlay coverage for
+/// pre-handshake rows.
+#[cfg(feature = "serve")]
+fn apply_cockpit_overlay_inplace(
+    prior_by_id: &std::collections::HashMap<String, Instance>,
+    merged: &mut [Instance],
+) {
+    for inst in merged.iter_mut() {
+        if !inst.cockpit_mode {
+            continue;
+        }
+        let Some(prior) = prior_by_id.get(&inst.id) else {
+            continue;
+        };
+        inst.status = prior.status;
+        inst.last_accessed_at = prior.last_accessed_at;
+        inst.idle_entered_at = prior.idle_entered_at;
+    }
+}
+
+/// Register a per-profile `subscribe_channel` against
+/// `<profile_dir>/{sessions,groups}.json` and spawn a forwarder task that
+/// drains the receiver into `state.disk_changed`. Inserts the entry into
+/// `state.disk_watch_handles` keyed by profile name. Idempotent: callers
+/// (startup wire-up, profile create) MUST drop any existing entry first.
+async fn subscribe_profile_disk_watch(state: &Arc<AppState>, profile: &str) {
+    let profile_dir = match crate::session::get_profile_dir_path(profile) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                target: "server.file_watch",
+                profile = %profile,
+                error = %e,
+                "could not resolve profile dir; live propagation disabled"
+            );
+            return;
+        }
+    };
+    let sessions_path = profile_dir.join("sessions.json");
+    let groups_path = profile_dir.join("groups.json");
+    let spec = WatchSpec {
+        dir: profile_dir,
+        matcher: FileMatcher::AnyOf(vec![sessions_path, groups_path]),
+        debounce: Some(std::time::Duration::from_millis(75)),
+    };
+    let (mut rx, handle) = match state.file_watch.subscribe_channel(spec, 16) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                target: "server.file_watch",
+                profile = %profile,
+                error = %e,
+                "subscribe_channel failed; live propagation disabled for this profile"
+            );
+            return;
+        }
+    };
+    let signal = state.disk_changed.clone();
+    let profile_for_log = profile.to_string();
+    let shutdown = state.shutdown.clone();
+    let join = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = shutdown.cancelled() => break,
+                ev = rx.recv() => match ev {
+                    Some(_) => signal.notify_one(),
+                    None => break,
+                }
+            }
+        }
+        tracing::info!(
+            target: "server.file_watch",
+            profile = %profile_for_log,
+            "disk-watch forwarder exit"
+        );
+    });
+    let mut handles = state.disk_watch_handles.lock().await;
+    handles.insert(
+        profile.to_string(),
+        DiskWatchEntry {
+            handle,
+            forwarder: join.abort_handle(),
+        },
+    );
+    tracing::info!(
+        target: "server.file_watch",
+        profile = %profile,
+        op = "add",
+        "disk-watch subscription registered"
+    );
+}
+
+/// Drop the per-profile disk-watch entry: drop the `SubscriptionHandle`
+/// FIRST so the dispatcher stops queuing events, then abort the forwarder.
+/// Drop-then-abort is canonical per primitive design §12 rule 3.
+pub async fn unsubscribe_profile_disk_watch(state: &Arc<AppState>, profile: &str) {
+    let mut handles = state.disk_watch_handles.lock().await;
+    if let Some(entry) = handles.remove(profile) {
+        let DiskWatchEntry { handle, forwarder } = entry;
+        // Drop the handle first: unsubscribes from the dispatcher, releases
+        // the directory watch refcount.
+        drop(handle);
+        forwarder.abort();
+        tracing::info!(
+            target: "server.file_watch",
+            profile = %profile,
+            op = "remove",
+            "disk-watch subscription removed"
+        );
+    }
+}
+
+/// Wire up disk-watch subscriptions for every currently-active profile.
+/// Spawned via `tokio::spawn` AFTER the listener bind so subscribe latency
+/// never gates listener readiness. Per-profile `subscribe_channel` Errs are
+/// logged and skipped; polling stays canonical so propagation degrades to
+/// the 2s tick rather than failing closed.
+pub async fn init_disk_watch_subscriptions(state: Arc<AppState>) {
+    let profiles = crate::session::list_profiles().unwrap_or_default();
+    let count = profiles.len();
+    for profile in &profiles {
+        subscribe_profile_disk_watch(&state, profile).await;
+    }
+    tracing::info!(
+        target: "server.file_watch",
+        profiles_count = count,
+        "disk-watch consumer started"
+    );
+}
+
+/// Per-profile rewire on `aoe profile create`. Drops any prior entry
+/// (idempotent) then re-subscribes. Called by the REST handler after the
+/// profile dir has been created.
+pub async fn rewire_disk_watch_for_profile_add(state: &Arc<AppState>, profile: &str) {
+    unsubscribe_profile_disk_watch(state, profile).await;
+    subscribe_profile_disk_watch(state, profile).await;
+}
+
+/// Per-profile rewire on `aoe profile delete`. Drop-then-abort under the
+/// `disk_watch_handles` lock; see `unsubscribe_profile_disk_watch`.
+pub async fn rewire_disk_watch_for_profile_remove(state: &Arc<AppState>, profile: &str) {
+    unsubscribe_profile_disk_watch(state, profile).await;
+}
+
+/// Background task: reload `state.instances` from disk on every wake of
+/// `state.disk_changed`. Mirrors `status_poll_loop`'s lock-acquisition
+/// pattern but does NOT touch tmux or `state.status_tx`. Polling stays
+/// canonical per primitive §9.2; this task is pure latency reduction.
+async fn disk_watcher_consumer(state: Arc<AppState>) {
+    loop {
+        tokio::select! {
+            _ = state.shutdown.cancelled() => break,
+            _ = state.disk_changed.notified() => {}
+        }
+        let started = std::time::Instant::now();
+        let file_watch_for_load = state.file_watch.clone();
+        let fresh =
+            match tokio::task::spawn_blocking(move || load_all_instances(&file_watch_for_load))
+                .await
+            {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        target: "server.file_watch",
+                        error = %e,
+                        "disk reload failed"
+                    );
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "server.file_watch",
+                        error = %e,
+                        "spawn_blocking joined with error"
+                    );
+                    continue;
+                }
+            };
+        let count = fresh.len();
+        reload_state_instances_from_disk(&state, fresh, StatusSource::DiskOnly).await;
+        tracing::trace!(
+            target: "server.file_watch",
+            latency_us = started.elapsed().as_micros() as u64,
+            instance_count = count,
+            "disk reload completed"
+        );
+    }
+}
+
 /// Background task that periodically refreshes session statuses. On each
 /// tick, diffs pre- and post-refresh statuses and emits a `StatusChange`
 /// on `state.status_tx` for every transition. Keeping the diff here,
@@ -1607,36 +1970,25 @@ async fn status_poll_loop(state: Arc<AppState>) {
     loop {
         interval.tick().await;
 
-        // Snapshot prior statuses so we can detect transitions without
-        // holding the lock across the blocking tmux work.
         let prev: std::collections::HashMap<String, crate::session::Status> = {
             let instances = state.instances.read().await;
             instances.iter().map(|i| (i.id.clone(), i.status)).collect()
         };
 
-        // Run blocking tmux subprocess calls in a dedicated thread.
-        // Snapshot the suppression set BEFORE `batch_pane_metadata()` so
-        // a worker that unmarks between the scrape and the per-instance
-        // decision cannot combine "pane missing" metadata with a cleared
-        // mark and re-emit the phantom Error transition the suppression
-        // exists to prevent.
+        // Snapshot suppression BEFORE `batch_pane_metadata()` so a worker
+        // that unmarks between the scrape and the per-instance decision
+        // cannot combine "pane missing" metadata with a cleared mark and
+        // re-emit the phantom Error transition the suppression exists to
+        // prevent.
         let suppressed_ids =
             crate::session::recovery::snapshot_recently_restarted(&state.recently_restarted);
+        let file_watch_for_poll = state.file_watch.clone();
         let updated = tokio::task::spawn_blocking(move || {
-            let mut instances = load_all_instances().unwrap_or_default();
-
+            let mut instances = load_all_instances(&file_watch_for_poll).unwrap_or_default();
             crate::tmux::refresh_session_cache();
             let pane_metadata = crate::tmux::batch_pane_metadata().unwrap_or_default();
-
             for inst in &mut instances {
                 if suppressed_ids.contains(&inst.id) {
-                    // Suppress the status update: a recovery cascade just
-                    // ran for this id, and `last_start_time` was lost on
-                    // the disk reload above. Surfacing `Status::Error`
-                    // ("tmux session is gone") here would broadcast a
-                    // phantom transition before the agent has finished
-                    // settling. The TTL window is sized to cover the
-                    // worst-case cascade + cold-start latency.
                     inst.status = Status::Starting;
                     continue;
                 }
@@ -1644,54 +1996,14 @@ async fn status_poll_loop(state: Arc<AppState>) {
                 let metadata = pane_metadata.get(&session_name);
                 inst.update_status_with_metadata(metadata);
             }
-
             instances
         })
         .await;
 
-        if let Ok(mut instances) = updated {
-            // The poll loop refreshes from disk every tick, but the
-            // cockpit_status_listener's status writes are in-memory only
-            // (status is derived from live ACP events, not persisted
-            // per-event). Without re-applying them here the disk reload
-            // would silently revert cockpit sessions to whatever Status
-            // was last persisted (typically Idle from spawn) and the
-            // sidebar dot would never turn green after a prompt.
-            #[cfg(feature = "serve")]
-            {
-                type CockpitStatusOverlay = std::collections::HashMap<
-                    String,
-                    (
-                        Status,
-                        Option<chrono::DateTime<chrono::Utc>>,
-                        Option<chrono::DateTime<chrono::Utc>>,
-                    ),
-                >;
-                let overlay: CockpitStatusOverlay = {
-                    let state_instances = state.instances.read().await;
-                    state_instances
-                        .iter()
-                        .filter(|i| i.cockpit_mode)
-                        .map(|i| {
-                            (
-                                i.id.clone(),
-                                (i.status, i.last_accessed_at, i.idle_entered_at),
-                            )
-                        })
-                        .collect()
-                };
-                for inst in &mut instances {
-                    if !inst.cockpit_mode {
-                        continue;
-                    }
-                    if let Some((status, last_accessed, idle_entered)) = overlay.get(&inst.id) {
-                        inst.status = *status;
-                        inst.last_accessed_at = *last_accessed;
-                        inst.idle_entered_at = *idle_entered;
-                    }
-                }
-            }
-
+        if let Ok(instances) = updated {
+            // Diff BEFORE the helper: status_tx must observe the raw
+            // post-suppression, post-tmux-scrape values, NOT the cockpit
+            // overlay applied by the helper.
             let now = chrono::Utc::now();
             for inst in &instances {
                 if let Some(old) = prev.get(&inst.id) {
@@ -1706,30 +2018,7 @@ async fn status_poll_loop(state: Arc<AppState>) {
                     }
                 }
             }
-            // Merge by id rather than blind-replace: preserves the
-            // in-memory-only `#[serde(skip)]` runtime state on Instance
-            // (last_error, last_start_time, last_error_check,
-            // session_id_poller, retroactive_capture_excludes) that the
-            // disk reload otherwise resets to default every 2 s.
-            // Additions on disk surface here; ids absent from disk are
-            // dropped, matching the prior wholesale-replace semantics
-            // for create/delete propagation.
-            {
-                let mut current = state.instances.write().await;
-                let mut by_id: std::collections::HashMap<String, Instance> = current
-                    .drain(..)
-                    .map(|inst| (inst.id.clone(), inst))
-                    .collect();
-                let mut merged = Vec::with_capacity(instances.len());
-                for fresh in instances {
-                    if let Some(prior) = by_id.remove(&fresh.id) {
-                        merged.push(merge_runtime_fields(prior, fresh));
-                    } else {
-                        merged.push(fresh);
-                    }
-                }
-                *current = merged;
-            }
+            reload_state_instances_from_disk(&state, instances, StatusSource::TmuxApplied).await;
 
             #[cfg(feature = "serve")]
             cockpit_reconciler::reconcile_cockpit_workers(&state, &mut attempted_cockpit_spawns)
@@ -2191,8 +2480,9 @@ async fn cockpit_event_listener(state: Arc<AppState>) {
             let session_id_for_save = frame.session_id.clone();
             let profile_for_save = profile.clone();
             let acp_change_for_save = acp_change.clone();
+            let file_watch_for_save = state.file_watch.clone();
             let save_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-                let storage = crate::session::Storage::new(&profile_for_save)?;
+                let storage = crate::session::Storage::new(&profile_for_save, file_watch_for_save)?;
                 storage.update(|all, _groups| {
                     if let Some(inst) = all.iter_mut().find(|i| i.id == session_id_for_save) {
                         apply_acp_session_change(
@@ -2410,6 +2700,72 @@ pub(crate) fn derive_cockpit_status(event: &crate::cockpit::Event) -> Option<Sta
         // would otherwise stop the spinner mid-stream).
         Event::AcpSessionAssigned { .. } => Some(StatusIntent::HealError),
         _ => None,
+    }
+}
+
+/// Test-only constructors that integration tests in `tests/` need to drive
+/// `reload_state_instances_from_disk` and the dynamic-profile-rewire helpers
+/// without going through the full daemon. Mirrors the pattern at
+/// `src/tmux/mod.rs`'s `test_support` module: gated on
+/// `#[cfg(any(test, feature = "test-support"))]` so the surface stays out of
+/// production builds, and `#[doc(hidden)]` so it's invisible in rustdoc.
+#[cfg(all(feature = "serve", any(test, feature = "test-support")))]
+#[doc(hidden)]
+pub mod test_support {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, AtomicI64};
+
+    /// Build a minimal `Arc<AppState>` for helper-equivalence tests. Most
+    /// fields are seeded with empty / default values; only `instances`,
+    /// `recently_restarted`, and the file-watch trio are real. Cockpit
+    /// fields are stubbed because the helper's cockpit overlay reads them.
+    pub fn build_test_app_state(prior: Vec<Instance>) -> Arc<AppState> {
+        let app_dir = tempfile::tempdir().expect("tempdir");
+        let cockpit_db = app_dir.path().join("cockpit_events.db");
+        let event_store = Arc::new(
+            crate::cockpit::event_store::EventStore::open(&cockpit_db, 100).expect("event store"),
+        );
+        let cockpit_events_tx = broadcast::channel::<CockpitBroadcastFrame>(8).0;
+        let sink = std::sync::Arc::new(crate::cockpit::supervisor::ChannelSink {
+            tx: cockpit_events_tx.clone(),
+            event_store: event_store.clone(),
+        });
+        let supervisor = std::sync::Arc::new(
+            crate::cockpit::supervisor::Supervisor::with_capacity(sink, 1),
+        );
+        Arc::new(AppState {
+            profile: "test".to_string(),
+            read_only: false,
+            instances: RwLock::new(prior),
+            token_manager: Arc::new(TokenManager::new(None, Duration::from_secs(3600))),
+            login_manager: Arc::new(login::LoginManager::new(None)),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            devices: RwLock::new(Vec::new()),
+            behind_tunnel: false,
+            instance_locks: RwLock::new(HashMap::new()),
+            recently_restarted: crate::session::recovery::new_recently_restarted(),
+            cleanup_defaults_cache: RwLock::new(CleanupDefaultsCache {
+                refreshed_at: std::time::Instant::now(),
+                entries: HashMap::new(),
+            }),
+            remote_owner_cache: RwLock::new(HashMap::new()),
+            session_primaries: Arc::new(RwLock::new(HashMap::new())),
+            session_pause_counts: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
+            cockpit_events_tx,
+            cockpit_event_store: event_store,
+            cockpit_master_enabled: AtomicBool::new(false),
+            cockpit_supervisor: supervisor,
+            push: None,
+            push_enabled: false,
+            web_config: crate::session::config::WebConfig::default(),
+            last_web_activity: AtomicI64::new(0),
+            shutdown: CancellationToken::new(),
+            file_watch: FileWatchService::noop(),
+            disk_changed: Arc::new(tokio::sync::Notify::new()),
+            disk_watch_handles: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        })
     }
 }
 
