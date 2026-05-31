@@ -1330,7 +1330,7 @@ impl HomeView {
     /// Apply any pending session ID updates from background pollers.
     /// Returns true if any instance was updated.
     pub fn apply_session_id_updates(&mut self) -> bool {
-        let mut updates: Vec<(String, String)> = Vec::new();
+        let mut updates: Vec<(String, String, Option<String>)> = Vec::new();
 
         for inst in &self.instances {
             if let Some((_id, session_id)) = inst
@@ -1360,60 +1360,61 @@ impl HomeView {
                     continue;
                 }
                 if inst.agent_session_id.as_deref() != Some(session_id.as_str()) {
-                    updates.push((inst.id.clone(), session_id));
+                    let expected_prior = inst.agent_session_id.clone();
+                    updates.push((inst.id.clone(), session_id, expected_prior));
                 }
                 continue;
             }
         }
 
-        if !updates.is_empty() {
-            for (id, session_id) in &updates {
-                self.mutate_instance(id, |inst| {
-                    inst.agent_session_id = Some(session_id.clone());
-                });
-            }
-            // Group by profile so each affected sessions.json is rewritten
-            // once, regardless of how many sids the poller delivered this tick.
-            let mut by_profile: HashMap<String, Vec<(String, String)>> = HashMap::new();
-            for (id, session_id) in &updates {
-                if let Some(profile) = self.instance_map.get(id).map(|i| i.source_profile.clone()) {
-                    by_profile
-                        .entry(profile)
-                        .or_default()
-                        .push((id.clone(), session_id.clone()));
+        if updates.is_empty() {
+            return false;
+        }
+
+        let mut to_apply: Vec<(String, String)> = Vec::new();
+        let mut to_rollback: Vec<(String, Option<String>)> = Vec::new();
+
+        for (id, session_id, expected_prior) in &updates {
+            let Some(profile) = self.instance_map.get(id).map(|i| i.source_profile.clone()) else {
+                continue;
+            };
+            match crate::session::persist_session_to_storage(
+                &profile,
+                id,
+                session_id,
+                expected_prior.as_deref(),
+            ) {
+                crate::session::SidWrite::Applied => {
+                    to_apply.push((id.clone(), session_id.clone()));
                 }
-            }
-            for (profile, items) in by_profile {
-                if let Some(storage) = self.storages.get(&profile) {
-                    if let Err(e) = storage.update(|insts, _g| {
-                        for (id, session_id) in &items {
-                            if let Some(inst) = insts.iter_mut().find(|i| i.id == *id) {
-                                inst.agent_session_id = Some(session_id.clone());
+                crate::session::SidWrite::Skipped => {
+                    // Peer wrote during our poller observation; reload memory
+                    // from disk so the in-memory mirror matches the peer's value.
+                    if let Ok(storage) = crate::session::Storage::new(&profile) {
+                        if let Ok(disk_insts) = storage.load() {
+                            if let Some(disk_inst) = disk_insts.iter().find(|i| i.id == *id) {
+                                to_rollback.push((id.clone(), disk_inst.agent_session_id.clone()));
                             }
                         }
-                        Ok(())
-                    }) {
-                        tracing::error!(
-                            target: "session.store",
-                            "Bulk sid persist failed for profile {}: {}",
-                            profile,
-                            e
-                        );
-                    }
-                } else {
-                    tracing::warn!(
-                        target: "tui.home",
-                        profile = %profile,
-                        count = items.len(),
-                        "apply_session_id_updates: no storage registered for profile; falling back to per-id persist (N flock cycles)"
-                    );
-                    for (id, session_id) in &items {
-                        crate::session::persist_session_to_storage(&profile, id, session_id);
                     }
                 }
+                crate::session::SidWrite::Failed => {}
             }
         }
-        !updates.is_empty()
+
+        for (id, session_id) in &to_apply {
+            self.mutate_instance(id, |inst| {
+                inst.agent_session_id = Some(session_id.clone());
+            });
+        }
+        for (id, disk_sid) in &to_rollback {
+            let disk_sid = disk_sid.clone();
+            self.mutate_instance(id, |inst| {
+                inst.agent_session_id = disk_sid.clone();
+            });
+        }
+
+        !to_apply.is_empty() || !to_rollback.is_empty()
     }
 
     /// Drain the startup-recovery channel and apply each `RecoveryUpdate`

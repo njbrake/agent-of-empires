@@ -36,7 +36,7 @@ pub use groups::{
     is_archived_section_path, is_within_archived_section, Group, GroupTree, Item,
     ARCHIVED_SECTION_NAME, ARCHIVED_SECTION_PATH,
 };
-pub(crate) use instance::persist_session_to_storage;
+pub(crate) use instance::{persist_session_to_storage, ResumeIntent, SidWrite};
 pub use instance::{
     EnsureReadyError, EnsureReadyOutcome, Instance, SandboxInfo, StartOutcome, Status,
     TerminalInfo, WorkspaceInfo, WorkspaceRepo, WorktreeInfo,

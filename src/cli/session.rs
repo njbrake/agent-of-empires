@@ -40,7 +40,8 @@ pub enum SessionCommands {
     /// Auto-detect current session
     Current(CurrentArgs),
 
-    /// Set agent session ID for a session
+    /// Set the resume target for a session (pin a conversation or force a
+    /// one-shot fresh start)
     SetSessionId(SetSessionIdArgs),
 
     /// Set or clear the per-session diff base branch. The diff view
@@ -190,7 +191,9 @@ struct CaptureOutput {
 pub struct SetSessionIdArgs {
     /// Session ID or title
     identifier: String,
-    /// Agent session ID to set (pass empty string to clear)
+    /// Resume target: a UUID/sid pins the next launches to that
+    /// conversation; an empty string forces a one-shot fresh start (after
+    /// which the system reverts to auto-resume).
     session_id: String,
 }
 
@@ -1088,8 +1091,8 @@ async fn current_session(args: CurrentArgs) -> Result<()> {
 }
 
 async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
-    let new_id = if args.session_id.trim().is_empty() {
-        None
+    let new_intent = if args.session_id.trim().is_empty() {
+        crate::session::ResumeIntent::Cleared
     } else {
         let trimmed = args.session_id.trim().to_string();
         if !crate::session::is_valid_session_id(&trimmed) {
@@ -1098,20 +1101,27 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
                 trimmed
             );
         }
-        Some(trimmed)
+        crate::session::ResumeIntent::Use(trimmed)
     };
 
     let storage = Storage::new(profile)?;
     let (title, tool) = storage.update(|instances, _groups| {
         super::patch_instance(instances, &args.identifier, |inst| {
-            inst.agent_session_id = new_id.clone();
+            #[cfg(feature = "serve")]
+            if inst.cockpit_mode {
+                anyhow::bail!(
+                    "cannot set resume target on cockpit-mode session '{}'; cockpit manages its own conversation lifecycle via ACP",
+                    inst.title
+                );
+            }
+            inst.resume_intent = new_intent.clone();
             Ok((inst.title.clone(), inst.tool.clone()))
         })
     })?;
 
-    match new_id {
-        Some(ref id) => {
-            println!("✓ Set session ID for '{}': {}", title, id);
+    match &new_intent {
+        crate::session::ResumeIntent::Use(id) => {
+            println!("✓ Set resume target for '{}': {}", title, id);
             if let Some(agent) = crate::agents::get_agent(&tool) {
                 if matches!(
                     agent.resume_strategy,
@@ -1121,7 +1131,13 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
                 }
             }
         }
-        None => println!("✓ Cleared session ID for '{}'", title),
+        crate::session::ResumeIntent::Cleared => {
+            println!(
+                "✓ Cleared resume intent for '{}' (next launches will be fresh)",
+                title
+            );
+        }
+        crate::session::ResumeIntent::Default => unreachable!(),
     }
     Ok(())
 }
@@ -1347,6 +1363,67 @@ mod stale_history_suffix_tests {
             line,
             "  · alpha (resume failed for sid 22222222-2222-2222-2222-222222222222; \
              started fresh, prior history not loaded)"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "serve"))]
+mod cockpit_reject_tests {
+    use super::{set_session_id, SetSessionIdArgs};
+    use crate::session::{Instance, Storage};
+    use serial_test::serial;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    #[serial]
+    async fn set_session_id_rejects_cockpit_mode_session() {
+        let temp = tempdir().unwrap();
+        std::env::set_var("HOME", temp.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+        let storage = Storage::new("cockpit-reject").unwrap();
+        let mut inst = Instance::new("cockpit_session", "/tmp/x");
+        inst.cockpit_mode = true;
+        let id = inst.id.clone();
+        let on_disk = inst.clone();
+        storage
+            .update(|i, g| {
+                *i = vec![on_disk.clone()];
+                *g =
+                    crate::session::GroupTree::new_with_groups(std::slice::from_ref(&on_disk), &[])
+                        .get_all_groups();
+                Ok(())
+            })
+            .unwrap();
+
+        let result = set_session_id(
+            "cockpit-reject",
+            SetSessionIdArgs {
+                identifier: id.clone(),
+                session_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            },
+        )
+        .await;
+
+        let err = result.expect_err("set-session-id must reject cockpit-mode sessions");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("cockpit"),
+            "error must mention cockpit: {}",
+            msg
+        );
+
+        let loaded = storage.load().unwrap();
+        let inst_disk = loaded.iter().find(|i| i.id == id).unwrap();
+        assert_eq!(
+            inst_disk.resume_intent,
+            crate::session::ResumeIntent::Default,
+            "rejected call must not mutate intent",
+        );
+        assert_eq!(
+            inst_disk.agent_session_id, None,
+            "rejected call must not mutate sid",
         );
     }
 }

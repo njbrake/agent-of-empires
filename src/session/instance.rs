@@ -258,6 +258,34 @@ where
     Ok(opt.filter(|s| !s.trim().is_empty()))
 }
 
+/// User intent gating `acquire_session_id`, persisted independently of the
+/// poller's observation in `agent_session_id`. CLI/REST/TUI write intent;
+/// the poller writes observation. Disjoint writers, no race.
+///
+/// `#[serde(rename)]` pins wire names so a Rust-side variant rename
+/// cannot silently break existing `sessions.json` deserialisation.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "value")]
+pub(crate) enum ResumeIntent {
+    /// Fall back to the poller's observed `agent_session_id`.
+    #[default]
+    #[serde(rename = "Default")]
+    Default,
+    /// Pin to this sid: pass `--resume <sid>` regardless of observation.
+    #[serde(rename = "Use")]
+    Use(String),
+    /// Force a fresh start on the next launch. Auto-promotes to `Default`
+    /// after the launch completes (one-shot semantics).
+    #[serde(rename = "Cleared")]
+    Cleared,
+}
+
+impl ResumeIntent {
+    fn is_default(&self) -> bool {
+        matches!(self, ResumeIntent::Default)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instance {
     pub id: String,
@@ -370,6 +398,12 @@ pub struct Instance {
     )]
     pub agent_session_id: Option<String>,
 
+    /// User intent gating `acquire_session_id`. See `ResumeIntent` for
+    /// semantics. Owned by user-initiated paths (CLI, REST, TUI); never
+    /// written by the poller. Disjoint writers from `agent_session_id`.
+    #[serde(default, skip_serializing_if = "ResumeIntent::is_default")]
+    pub(crate) resume_intent: ResumeIntent,
+
     /// Runtime-only: which profile this instance was loaded from. Not persisted to disk.
     #[serde(default, skip_serializing)]
     pub source_profile: String,
@@ -462,6 +496,15 @@ pub struct Instance {
     /// will re-set it within one tick if the pane is genuinely dead).
     #[serde(skip)]
     pub pane_dead_observed: bool,
+
+    /// Mirrors the `is_existing` flag from the most recent
+    /// `acquire_session_id`. `start_with_resume_fallback` reads it
+    /// post-call to gate the settle probe; without this gate, every
+    /// fresh Claude launch would mislabel as `StartOutcome::Resumed`
+    /// because acquire always assigns a UUID. Stale-between-launches
+    /// is benign: every fallback re-runs acquire before reading.
+    #[serde(skip)]
+    pub(crate) last_acquired_existing_sid: bool,
 }
 
 /// Append yolo-mode flags or environment variables to a launch command.
@@ -541,54 +584,75 @@ fn append_resume_flags(
     }
 }
 
-/// Persist an agent session ID to storage and tmux env for a given instance.
-///
-/// Used during synchronous pre-launch (e.g. `persist_session_id` for Claude)
-/// when no poller is active yet. Post-launch persistence goes exclusively
-/// through the poller channel -> `apply_session_id_updates()` in the TUI
-/// thread. Concurrent calls within and across processes are serialised via
-/// `Storage::update`'s two-layer lock (in-process mutex + cross-process
-/// flock; see `storage.rs` module rustdoc).
-///
-/// Fire-and-forget: errors are logged at warn level. The poller dedupes
-/// on its `last_known` and `apply_session_id_updates` dedupes on in-memory
-/// state, so a transient persist failure stays disk-out-of-sync until the
-/// process restarts (which reloads from disk and re-emits via the agent's
-/// own session log on next start).
-pub(crate) fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str) {
+/// Outcome of a CAS-guarded `agent_session_id` or `resume_intent` write.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SidWrite {
+    /// Disk matched `expected_prior`; new value committed.
+    Applied,
+    /// Disk diverged (peer wrote between caller's read and this write);
+    /// caller should reload the in-memory mirror from disk.
+    Skipped,
+    /// I/O failure or row gone from disk; in-memory mirror is unchanged.
+    Failed,
+}
+
+/// CAS-write `agent_session_id` to disk. Caller passes the value the
+/// in-memory mirror held at last reconcile as `expected_prior`; the closure
+/// inside `Storage::update`'s flock skips the write if disk has diverged
+/// (peer-poller observed a different sid). On Skipped, callers should
+/// reload memory from disk to converge on the peer's value.
+pub(crate) fn persist_session_to_storage(
+    profile: &str,
+    instance_id: &str,
+    session_id: &str,
+    expected_prior: Option<&str>,
+) -> SidWrite {
     if !is_valid_session_id(session_id) {
         tracing::warn!(target: "session.store",
             "Refusing to persist invalid session ID {:?} for {}",
             session_id,
             instance_id
         );
-        return;
+        return SidWrite::Failed;
     }
 
     let storage = match super::storage::Storage::new(profile) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "session.store", "Failed to create storage for session ID persistence: {}", e);
-            return;
+            return SidWrite::Failed;
         }
     };
 
     let outcome = storage.update(|instances, _groups| {
         if let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) {
+            if inst.agent_session_id.as_deref() != expected_prior {
+                tracing::warn!(target: "session.store",
+                    instance_id = %instance_id,
+                    expected = ?expected_prior,
+                    disk = ?inst.agent_session_id,
+                    target = session_id,
+                    "sid CAS mismatch; skipping persist"
+                );
+                return Ok(SidWrite::Skipped);
+            }
             inst.agent_session_id = Some(session_id.to_string());
-            Ok(true)
+            Ok(SidWrite::Applied)
         } else {
-            Ok(false)
+            Ok(SidWrite::Failed)
         }
     });
 
     match outcome {
-        Ok(true) => {
+        Ok(SidWrite::Applied) => {
             tracing::debug!(target: "session.store", "Session ID persisted for {}", instance_id);
+            SidWrite::Applied
         }
-        Ok(false) => {}
+        Ok(other) => other,
         Err(e) => {
             tracing::warn!(target: "session.store", "Failed to persist session ID for {}: {}", instance_id, e);
+            SidWrite::Failed
         }
     }
 }
@@ -607,32 +671,90 @@ pub(crate) fn persist_session_to_storage(profile: &str, instance_id: &str, sessi
 /// `aoe` invocations) are serialised via `Storage::update`'s two-layer
 /// lock (in-process mutex + cross-process flock; see `storage.rs` module
 /// rustdoc).
-fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
+fn clear_session_id_on_disk(
+    profile: &str,
+    instance_id: &str,
+    expected_prior: Option<&str>,
+) -> SidWrite {
     let storage = match super::storage::Storage::new(profile) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(target: "session.store", "Failed to create storage to clear session ID: {}", e);
-            return;
+            return SidWrite::Failed;
         }
     };
 
     let outcome = storage.update(|instances, _groups| {
         if let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) {
-            if inst.agent_session_id.is_some() {
-                inst.agent_session_id = None;
-                return Ok(true);
+            if inst.agent_session_id.as_deref() != expected_prior {
+                tracing::warn!(target: "session.store",
+                    instance_id = %instance_id,
+                    expected = ?expected_prior,
+                    disk = ?inst.agent_session_id,
+                    "sid CAS mismatch; skipping clear"
+                );
+                return Ok(SidWrite::Skipped);
             }
+            inst.agent_session_id = None;
+            Ok(SidWrite::Applied)
+        } else {
+            Ok(SidWrite::Failed)
         }
-        Ok(false)
     });
 
     match outcome {
-        Ok(true) => {
+        Ok(SidWrite::Applied) => {
             tracing::debug!(target: "session.store", "Session ID cleared on disk for {}", instance_id);
+            SidWrite::Applied
         }
-        Ok(false) => {}
+        Ok(other) => other,
         Err(e) => {
             tracing::warn!(target: "session.store", "Failed to clear session ID for {}: {}", instance_id, e);
+            SidWrite::Failed
+        }
+    }
+}
+
+/// CAS-write `resume_intent = Default` to disk, used to auto-promote a
+/// one-shot intent (`Cleared`, or a `Use(X)` whose pin has been invalidated
+/// by the cascade) after the launch it gated. CAS-skipped if the user
+/// re-set their intent during the launch sequence.
+fn reset_resume_intent_to_default(
+    profile: &str,
+    instance_id: &str,
+    expected_prior: ResumeIntent,
+) -> SidWrite {
+    let storage = match super::storage::Storage::new(profile) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(target: "session.store", "Failed to create storage to reset resume_intent: {}", e);
+            return SidWrite::Failed;
+        }
+    };
+
+    let outcome = storage.update(|instances, _groups| {
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) {
+            if inst.resume_intent != expected_prior {
+                tracing::warn!(target: "session.store",
+                    instance_id = %instance_id,
+                    expected = ?expected_prior,
+                    disk = ?inst.resume_intent,
+                    "resume_intent CAS mismatch; skipping reset"
+                );
+                return Ok(SidWrite::Skipped);
+            }
+            inst.resume_intent = ResumeIntent::Default;
+            Ok(SidWrite::Applied)
+        } else {
+            Ok(SidWrite::Failed)
+        }
+    });
+
+    match outcome {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(target: "session.store", "Failed to reset resume_intent for {}: {}", instance_id, e);
+            SidWrite::Failed
         }
     }
 }
@@ -679,6 +801,7 @@ impl Instance {
             sandbox_info: None,
             terminal_info: None,
             agent_session_id: None,
+            resume_intent: ResumeIntent::Default,
             source_profile: String::new(),
             notify_on_waiting: None,
             notify_on_idle: None,
@@ -698,6 +821,7 @@ impl Instance {
             session_id_poller: None,
             retroactive_capture_excludes: HashSet::new(),
             pane_dead_observed: false,
+            last_acquired_existing_sid: false,
         }
     }
 
@@ -740,6 +864,53 @@ impl Instance {
                 self.agent_session_id = src.agent_session_id.clone();
             }
         }
+    }
+
+    /// Reload this instance from disk before a launch that would re-persist
+    /// peer-writable fields. Refreshes `agent_session_id` (poller-observed)
+    /// and `resume_intent` (user-set) from disk; carries runtime-only fields
+    /// (`#[serde(skip)]` + `source_profile`) onto the disk snapshot. Closes
+    /// the ~2s `status_poll_loop` lag window in which a CLI peer
+    /// `set-session-id` would otherwise be silently overwritten. No-op on
+    /// storage error or if the row is gone from disk.
+    fn reconcile_from_disk(&mut self) {
+        let Ok(storage) = super::storage::Storage::new(&self.effective_profile()) else {
+            tracing::warn!(target: "session.store",
+                session = %self.id,
+                "failed to open storage to reload disk state before launch; using in-memory value");
+            return;
+        };
+        let mut disk = match storage.load() {
+            Ok(instances) => match instances.into_iter().find(|i| i.id == self.id) {
+                Some(d) => d,
+                None => return,
+            },
+            Err(e) => {
+                tracing::warn!(target: "session.store",
+                    session = %self.id,
+                    error = %e,
+                    "failed to load disk state before launch; using in-memory value");
+                return;
+            }
+        };
+
+        // Carry runtime-only fields (`#[serde(skip)]`) and locally-mutated
+        // launch-time state from `self` onto the disk snapshot. This carry
+        // set is not required to match `merge_runtime_fields` exactly: each
+        // reconciliation path feeds a different consumer, and each
+        // consumer rewrites the runtime field it observes before reading
+        // (`last_acquired_existing_sid` is reset at the entry of
+        // `start_with_resume_fallback`; `pane_dead_observed` is rewritten
+        // by the TUI's status poller before its TUI-only consumers read).
+        disk.last_error_check = self.last_error_check;
+        disk.last_start_time = self.last_start_time;
+        disk.last_error = self.last_error.take();
+        disk.session_id_poller = self.session_id_poller.take();
+        disk.retroactive_capture_excludes = std::mem::take(&mut self.retroactive_capture_excludes);
+        disk.pane_dead_observed = self.pane_dead_observed;
+        disk.source_profile = std::mem::take(&mut self.source_profile);
+
+        *self = disk;
     }
 
     /// Splice TUI-mirrored, persisted fields from `src` onto `self`. Used by
@@ -1046,12 +1217,39 @@ impl Instance {
 
     /// Acquire a pre-launch session ID for the agent.
     ///
-    /// Returns `(session_id, is_existing)`. If a persisted ID exists, returns it
-    /// with `is_existing = true`. Otherwise, only Claude gets a new UUID here
-    /// (it requires `--session-id <uuid>` at launch). Other agents discover
-    /// their session ID post-launch via the poller (or retroactively via
-    /// `try_retroactive_capture()` when an existing tmux session is reattached).
+    /// Returns `(session_id, is_existing)`. Consults `resume_intent` first:
+    /// `Use(sid)` returns the user-pinned target; `Cleared` skips both the
+    /// observed sid and retroactive capture (forces a fresh start, generating
+    /// a Claude UUID if applicable); `Default` falls back to the observed sid
+    /// (`agent_session_id`), then retroactive capture, then fresh UUID for
+    /// Claude.
     pub fn acquire_session_id(&mut self) -> (Option<String>, bool) {
+        let result = self.acquire_session_id_inner();
+        self.last_acquired_existing_sid = result.1;
+        result
+    }
+
+    fn acquire_session_id_inner(&mut self) -> (Option<String>, bool) {
+        match &self.resume_intent {
+            ResumeIntent::Use(sid) => {
+                let sid = sid.clone();
+                self.agent_session_id = Some(sid.clone());
+                return (Some(sid), true);
+            }
+            ResumeIntent::Cleared => {
+                self.agent_session_id = None;
+                let session_id = match self.tool.as_str() {
+                    "claude" => Some(generate_claude_session_id()),
+                    _ => None,
+                };
+                if let Some(ref id) = session_id {
+                    self.agent_session_id = Some(id.clone());
+                }
+                return (session_id, false);
+            }
+            ResumeIntent::Default => {}
+        }
+
         if self.agent_session_id.is_some() {
             return (self.agent_session_id.clone(), true);
         }
@@ -1425,6 +1623,20 @@ impl Instance {
             return Ok(());
         }
 
+        // Refresh peer-writable persisted fields (`agent_session_id`,
+        // `resume_intent`) from disk before the launch decision. Closes the
+        // status-poll lag window for both the read side
+        // (`acquire_session_id`) and the write side (`persist_session_id`'s
+        // CAS baseline). Covers Tier-1 and Tier-2 of the resume-fallback
+        // cascade since both call this function.
+        self.reconcile_from_disk();
+
+        // CAS baseline for `persist_session_id`. `build_launch_command` ->
+        // `apply_session_flags` -> `acquire_session_id` may mutate
+        // `agent_session_id` (Claude UUID generation); capture before that.
+        let expected_prior_sid = self.agent_session_id.clone();
+        let expected_prior_intent = self.resume_intent.clone();
+
         let profile = self.effective_profile();
         let cmd = self.build_launch_command(skip_on_launch, &profile)?;
 
@@ -1436,7 +1648,12 @@ impl Instance {
         );
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
-        self.finalize_launch(session.name(), &profile);
+        self.finalize_launch(
+            session.name(),
+            &profile,
+            expected_prior_sid.as_deref(),
+            expected_prior_intent,
+        );
 
         Ok(())
     }
@@ -1444,11 +1661,6 @@ impl Instance {
     /// Build the launch command string the way `start_with_size_opts` would,
     /// but without creating a tmux session. Returns `None` for cockpit or
     /// other modes where there is no command to launch.
-    ///
-    /// Currently only called from `start_with_size_opts`; a future dead-pane
-    /// respawn path could route through here so `tmux respawn-pane` receives
-    /// the same command `tmux new-session` would have. For now the helper is
-    /// preparatory and has one caller.
     ///
     /// Side effects mirror the start path: agent status hooks are installed,
     /// and (for sandboxed sessions) on_launch hooks run inside the container.
@@ -1722,7 +1934,13 @@ impl Instance {
     }
 
     /// Post-launch setup: persist state, start pollers, and apply tmux options.
-    fn finalize_launch(&mut self, session_name: &str, profile: &str) {
+    fn finalize_launch(
+        &mut self,
+        session_name: &str,
+        profile: &str,
+        expected_prior_sid: Option<&str>,
+        expected_prior_intent: ResumeIntent,
+    ) {
         if let Err(e) = crate::tmux::env::set_hidden_env(
             session_name,
             crate::tmux::env::AOE_INSTANCE_ID_KEY,
@@ -1731,7 +1949,7 @@ impl Instance {
             tracing::warn!(target: "session.store", "Failed to set AOE_INSTANCE_ID in tmux env: {}", e);
         }
 
-        self.persist_session_id(profile);
+        self.persist_session_id(profile, expected_prior_sid, expected_prior_intent);
         self.maybe_start_poller();
 
         self.status = Status::Starting;
@@ -1769,9 +1987,114 @@ impl Instance {
         }
     }
 
-    fn persist_session_id(&self, profile: &str) {
-        if let Some(ref sid) = self.agent_session_id {
-            persist_session_to_storage(profile, &self.id, sid);
+    /// Atomic single-flock CAS+write of `agent_session_id` and (when
+    /// `expected_prior_intent == Cleared`) the auto-promote to `Default`.
+    /// A split would let a daemon crash freeze disk at `(new_sid, Cleared)`,
+    /// which the next launch's `acquire_session_id_inner` short-circuits
+    /// on, orphaning the conversation just created with `new_sid`.
+    ///
+    /// On sid CAS skip: rollback both fields from disk.
+    /// On intent CAS skip with sid match: persist sid, leave intent as
+    /// peer wrote it, reload intent in memory.
+    fn persist_session_id(
+        &mut self,
+        profile: &str,
+        expected_prior_sid: Option<&str>,
+        expected_prior_intent: ResumeIntent,
+    ) {
+        let new_sid = self.agent_session_id.clone();
+        let promote_cleared = matches!(expected_prior_intent, ResumeIntent::Cleared);
+
+        if let Some(ref sid) = new_sid {
+            if !is_valid_session_id(sid) {
+                tracing::warn!(target: "session.store",
+                    "Refusing to persist invalid session ID {:?} for {}",
+                    sid,
+                    self.id
+                );
+                return;
+            }
+        }
+
+        let storage = match super::storage::Storage::new(profile) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(target: "session.store",
+                    "Failed to create storage for finalize-launch persist for {}: {}",
+                    self.id,
+                    e
+                );
+                return;
+            }
+        };
+
+        let instance_id = self.id.clone();
+        let new_sid_for_closure = new_sid.clone();
+        let expected_prior_intent_for_closure = expected_prior_intent.clone();
+        let outcome = storage.update(|instances, _groups| {
+            let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) else {
+                return Ok(SidWrite::Failed);
+            };
+
+            if inst.agent_session_id.as_deref() != expected_prior_sid {
+                tracing::warn!(target: "session.store",
+                    instance_id = %instance_id,
+                    expected_sid = ?expected_prior_sid,
+                    disk_sid = ?inst.agent_session_id,
+                    "sid CAS mismatch in finalize persist; skipping both writes"
+                );
+                return Ok(SidWrite::Skipped);
+            }
+
+            inst.agent_session_id = new_sid_for_closure.clone();
+
+            if promote_cleared {
+                if inst.resume_intent == expected_prior_intent_for_closure {
+                    inst.resume_intent = ResumeIntent::Default;
+                } else {
+                    tracing::warn!(target: "session.store",
+                        instance_id = %instance_id,
+                        expected_intent = ?expected_prior_intent_for_closure,
+                        disk_intent = ?inst.resume_intent,
+                        "resume_intent CAS mismatch in finalize persist; sid persisted but intent left as peer wrote it"
+                    );
+                }
+            }
+
+            Ok(SidWrite::Applied)
+        });
+
+        match outcome {
+            Ok(SidWrite::Applied) => {
+                if promote_cleared {
+                    if let Ok(insts) = storage.load() {
+                        if let Some(disk) = insts.into_iter().find(|i| i.id == self.id) {
+                            self.resume_intent = disk.resume_intent;
+                        }
+                    }
+                }
+            }
+            Ok(SidWrite::Skipped) => {
+                if let Ok(insts) = storage.load() {
+                    if let Some(disk) = insts.into_iter().find(|i| i.id == self.id) {
+                        self.agent_session_id = disk.agent_session_id;
+                        self.resume_intent = disk.resume_intent;
+                    }
+                }
+            }
+            Ok(SidWrite::Failed) => {
+                tracing::warn!(target: "session.store",
+                    "Finalize persist found no instance row for {}",
+                    self.id
+                );
+            }
+            Err(e) => {
+                tracing::warn!(target: "session.store",
+                    "Failed to persist session state for {}: {}",
+                    self.id,
+                    e
+                );
+            }
         }
     }
 }
@@ -2211,7 +2534,6 @@ impl Instance {
             return Ok(StartOutcome::Fresh);
         }
 
-        let attempting_resume = should_attempt_resume(self.agent_session_id.as_deref(), &self.tool);
         // Defense in depth: every current caller runs `kill_clean()` (or
         // its equivalent) first, so this is normally false. It can still
         // be true if `kill_clean` raced the macOS tmux session cache
@@ -2227,6 +2549,32 @@ impl Instance {
         // pane could be left frozen) from the benign one (no resume was
         // attempted, the race is just kill_clean cache staleness).
         let pane_was_preexisting = self.tmux_session().is_ok_and(|s| s.exists());
+
+        // Reset before `start_with_size_opts` so the post-call read at line
+        // ~2562 reflects THIS call's `acquire_session_id` decision. Without
+        // this, when `pane_was_preexisting=true` (rare `kill_clean` cache
+        // race) `start_with_size_opts` short-circuits without running
+        // `acquire_session_id`, and the diagnostic warning below would emit
+        // the wrong branch using a value carried from a prior launch via
+        // `merge_runtime_fields`.
+        self.last_acquired_existing_sid = false;
+
+        self.start_with_size_opts(size, skip_on_launch)?;
+
+        // Computed post-`start_with_size_opts` so it reflects post-reconcile
+        // state. A pre-call read would miss a peer-CLI `Use(X)` write that
+        // landed since the daemon's last status_poll, causing the cascade
+        // to skip the very Use(X_dead) case Tier-1's downgrade is meant to
+        // handle.
+        //
+        // Gated on `last_acquired_existing_sid` so fresh launches (Cleared,
+        // no observed sid + Claude UUID generation) skip the probe and
+        // honestly report `Fresh`. Without this gate, every Claude launch
+        // would probe (~2s) and return `Resumed` because acquire always
+        // assigns a UUID, even when no `--resume` was passed.
+        let attempting_resume = self.last_acquired_existing_sid
+            && should_attempt_resume(self.agent_session_id.as_deref(), &self.tool);
+
         if pane_was_preexisting {
             if attempting_resume {
                 tracing::warn!(
@@ -2254,8 +2602,6 @@ impl Instance {
              tmux session for {} still exists on entry",
             self.id
         );
-
-        self.start_with_size_opts(size, skip_on_launch)?;
 
         if !attempting_resume || pane_was_preexisting {
             return Ok(StartOutcome::Fresh);
@@ -2298,8 +2644,27 @@ impl Instance {
             .with_context(|| format!("kill_clean before resume fallback for {}", self.id))?;
 
         self.agent_session_id = None;
-        clear_session_id_on_disk(&profile, &self.id);
+        let _ = clear_session_id_on_disk(&profile, &self.id, Some(&stale_sid));
         self.retroactive_capture_excludes.insert(stale_sid.clone());
+
+        // Tier-2 will retry through `acquire_session_id`. If the user had
+        // pinned the just-invalidated sid via `Use(stale_sid)`, retrying
+        // would loop on the dead pin. Downgrade to `Default` so Tier-2
+        // generates a fresh start.
+        //
+        // Two-flock window with the `clear_session_id_on_disk` call above:
+        // a daemon crash here leaves disk at `(None, Use(stale_sid))`,
+        // which the next launch self-heals via the cascade re-firing.
+        // Tracked for atomic single-flock unification in #1742.
+        if matches!(&self.resume_intent, ResumeIntent::Use(pinned) if pinned == &stale_sid) {
+            let prior = self.resume_intent.clone();
+            if matches!(
+                reset_resume_intent_to_default(&profile, &self.id, prior),
+                SidWrite::Applied
+            ) {
+                self.resume_intent = ResumeIntent::Default;
+            }
+        }
 
         self.start_with_size_opts(size, true).with_context(|| {
             format!(
@@ -4423,6 +4788,32 @@ mod tests {
     }
 
     #[test]
+    fn last_acquired_existing_sid_mirrors_acquire_bool() {
+        let mut inst = Instance::new("Test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        assert!(!inst.last_acquired_existing_sid);
+
+        let (sid_fresh, fresh_existing) = inst.acquire_session_id();
+        assert!(sid_fresh.is_some());
+        assert!(!fresh_existing);
+        assert!(!inst.last_acquired_existing_sid);
+
+        let (_, second_existing) = inst.acquire_session_id();
+        assert!(second_existing);
+        assert!(inst.last_acquired_existing_sid);
+
+        inst.resume_intent = ResumeIntent::Cleared;
+        let (_, cleared_existing) = inst.acquire_session_id();
+        assert!(!cleared_existing);
+        assert!(!inst.last_acquired_existing_sid);
+
+        inst.resume_intent = ResumeIntent::Use("019342ab-1234-7def-8901-abcdef012345".to_string());
+        let (_, use_existing) = inst.acquire_session_id();
+        assert!(use_existing);
+        assert!(inst.last_acquired_existing_sid);
+    }
+
+    #[test]
     fn test_has_custom_command_empty() {
         let inst = Instance::new("test", "/tmp/test");
         assert!(!inst.has_custom_command());
@@ -4863,7 +5254,8 @@ mod tests {
 
     mod resume_fallback {
         use super::super::{
-            clear_session_id_on_disk, should_attempt_resume, Instance, StartOutcome, Status,
+            clear_session_id_on_disk, should_attempt_resume, Instance, ResumeIntent, StartOutcome,
+            Status,
         };
         use serial_test::serial;
         use tempfile::tempdir;
@@ -4932,7 +5324,7 @@ mod tests {
                 })
                 .unwrap();
 
-            clear_session_id_on_disk("test-profile-already-none", &id);
+            let _ = clear_session_id_on_disk("test-profile-already-none", &id, None);
 
             let loaded = storage.load().unwrap();
             assert_eq!(loaded.len(), 1);
@@ -4961,11 +5353,665 @@ mod tests {
                 })
                 .unwrap();
 
-            clear_session_id_on_disk("clear-test", &id);
+            let _ = clear_session_id_on_disk("clear-test", &id, Some("stale-uuid-1234"));
 
             let loaded = storage.load().unwrap();
             assert_eq!(loaded.len(), 1);
             assert_eq!(loaded[0].agent_session_id, None);
+        }
+
+        #[test]
+        #[serial]
+        fn persist_session_to_storage_skips_on_cas_mismatch() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("cas-persist-mismatch").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.agent_session_id = Some("peer-wrote".to_string());
+            let id = inst.id.clone();
+            let xs = vec![inst];
+            storage
+                .update(|i, g| {
+                    *i = xs.to_vec();
+                    *g = crate::session::GroupTree::new_with_groups(&xs, &[]).get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            let outcome =
+                super::persist_session_to_storage("cas-persist-mismatch", &id, "ours", Some("old"));
+            assert_eq!(outcome, super::SidWrite::Skipped);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(loaded[0].agent_session_id.as_deref(), Some("peer-wrote"));
+        }
+
+        #[test]
+        #[serial]
+        fn persist_session_to_storage_writes_on_cas_match() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("cas-persist-match").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.agent_session_id = Some("old".to_string());
+            let id = inst.id.clone();
+            let xs = vec![inst];
+            storage
+                .update(|i, g| {
+                    *i = xs.to_vec();
+                    *g = crate::session::GroupTree::new_with_groups(&xs, &[]).get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            let outcome =
+                super::persist_session_to_storage("cas-persist-match", &id, "new", Some("old"));
+            assert_eq!(outcome, super::SidWrite::Applied);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(loaded[0].agent_session_id.as_deref(), Some("new"));
+        }
+
+        #[test]
+        #[serial]
+        fn clear_session_id_on_disk_skips_on_cas_mismatch() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("cas-clear-mismatch").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.agent_session_id = Some("peer-wrote".to_string());
+            let id = inst.id.clone();
+            let xs = vec![inst];
+            storage
+                .update(|i, g| {
+                    *i = xs.to_vec();
+                    *g = crate::session::GroupTree::new_with_groups(&xs, &[]).get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            let outcome = clear_session_id_on_disk("cas-clear-mismatch", &id, Some("stale"));
+            assert_eq!(outcome, super::SidWrite::Skipped);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(loaded[0].agent_session_id.as_deref(), Some("peer-wrote"));
+        }
+
+        #[test]
+        #[serial]
+        fn reconcile_from_disk_picks_up_peer_persist() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("reconcile-test").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "reconcile-test".to_string();
+            inst.agent_session_id = Some("old-sid".to_string());
+            let id = inst.id.clone();
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            // Simulate a peer CLI `set-session-id` write to disk.
+            let _ = super::persist_session_to_storage(
+                "reconcile-test",
+                &id,
+                "new-sid",
+                Some("old-sid"),
+            );
+
+            assert_eq!(inst.agent_session_id.as_deref(), Some("old-sid"));
+            inst.reconcile_from_disk();
+            assert_eq!(inst.agent_session_id.as_deref(), Some("new-sid"));
+        }
+
+        #[test]
+        #[serial]
+        fn reconcile_from_disk_picks_up_peer_clear() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("reconcile-clear").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "reconcile-clear".to_string();
+            inst.agent_session_id = Some("old-sid".to_string());
+            let id = inst.id.clone();
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            let _ = clear_session_id_on_disk("reconcile-clear", &id, Some("old-sid"));
+
+            inst.reconcile_from_disk();
+            assert_eq!(inst.agent_session_id, None);
+        }
+
+        #[test]
+        #[serial]
+        fn resume_intent_use_returns_pinned_sid_without_observation() {
+            let mut inst = Instance::new("intent-use", "/tmp/x");
+            inst.tool = "claude".to_string();
+            inst.agent_session_id = None;
+            inst.resume_intent = ResumeIntent::Use("user-pinned".to_string());
+
+            let (sid, is_existing) = inst.acquire_session_id();
+            assert_eq!(sid.as_deref(), Some("user-pinned"));
+            assert!(is_existing);
+            assert_eq!(inst.agent_session_id.as_deref(), Some("user-pinned"));
+        }
+
+        #[test]
+        #[serial]
+        fn resume_intent_use_overrides_observation() {
+            let mut inst = Instance::new("intent-use-override", "/tmp/x");
+            inst.tool = "claude".to_string();
+            inst.agent_session_id = Some("observed".to_string());
+            inst.resume_intent = ResumeIntent::Use("user-pinned".to_string());
+
+            let (sid, is_existing) = inst.acquire_session_id();
+            assert_eq!(sid.as_deref(), Some("user-pinned"));
+            assert!(is_existing);
+        }
+
+        #[test]
+        #[serial]
+        fn resume_intent_cleared_for_claude_generates_fresh_uuid() {
+            let mut inst = Instance::new("intent-cleared-claude", "/tmp/x");
+            inst.tool = "claude".to_string();
+            inst.agent_session_id = Some("observed".to_string());
+            inst.resume_intent = ResumeIntent::Cleared;
+
+            let (sid, is_existing) = inst.acquire_session_id();
+            assert!(
+                sid.is_some(),
+                "Claude must always have a session id at launch"
+            );
+            assert!(!is_existing, "Cleared intent must not report is_existing");
+            assert_ne!(sid.as_deref(), Some("observed"));
+            assert_eq!(inst.agent_session_id, sid);
+        }
+
+        #[test]
+        #[serial]
+        fn resume_intent_cleared_for_opencode_returns_none() {
+            let mut inst = Instance::new("intent-cleared-opencode", "/tmp/x");
+            inst.tool = "opencode".to_string();
+            inst.agent_session_id = Some("observed".to_string());
+            inst.resume_intent = ResumeIntent::Cleared;
+
+            let (sid, is_existing) = inst.acquire_session_id();
+            assert_eq!(sid, None);
+            assert!(!is_existing);
+            assert_eq!(inst.agent_session_id, None);
+        }
+
+        #[test]
+        #[serial]
+        fn resume_intent_default_uses_observed() {
+            let mut inst = Instance::new("intent-default", "/tmp/x");
+            inst.tool = "claude".to_string();
+            inst.agent_session_id = Some("observed".to_string());
+            inst.resume_intent = ResumeIntent::Default;
+
+            let (sid, is_existing) = inst.acquire_session_id();
+            assert_eq!(sid.as_deref(), Some("observed"));
+            assert!(is_existing);
+        }
+
+        #[test]
+        fn resume_intent_serde_round_trip() {
+            for intent in [
+                ResumeIntent::Default,
+                ResumeIntent::Use("abc".to_string()),
+                ResumeIntent::Cleared,
+            ] {
+                let json = serde_json::to_string(&intent).unwrap();
+                let back: ResumeIntent = serde_json::from_str(&json).unwrap();
+                assert_eq!(intent, back);
+            }
+        }
+
+        #[test]
+        fn resume_intent_wire_format_is_pinned() {
+            assert_eq!(
+                serde_json::to_string(&ResumeIntent::Default).unwrap(),
+                r#"{"kind":"Default"}"#
+            );
+            assert_eq!(
+                serde_json::to_string(&ResumeIntent::Use("abc".to_string())).unwrap(),
+                r#"{"kind":"Use","value":"abc"}"#
+            );
+            assert_eq!(
+                serde_json::to_string(&ResumeIntent::Cleared).unwrap(),
+                r#"{"kind":"Cleared"}"#
+            );
+        }
+
+        #[test]
+        fn resume_intent_missing_in_json_defaults_to_default() {
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.resume_intent = ResumeIntent::Use("X".to_string());
+            let json: serde_json::Value = serde_json::to_value(&inst).unwrap();
+            let mut obj = json.as_object().unwrap().clone();
+            obj.remove("resume_intent");
+            let stripped = serde_json::Value::Object(obj);
+
+            let back: Instance = serde_json::from_value(stripped).unwrap();
+            assert_eq!(back.resume_intent, ResumeIntent::Default);
+        }
+
+        #[test]
+        #[serial]
+        fn reset_resume_intent_to_default_auto_promotes_cleared() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("intent-promote").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "intent-promote".to_string();
+            inst.resume_intent = ResumeIntent::Cleared;
+            let id = inst.id.clone();
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            let outcome =
+                super::reset_resume_intent_to_default("intent-promote", &id, ResumeIntent::Cleared);
+            assert_eq!(outcome, super::SidWrite::Applied);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(loaded[0].resume_intent, ResumeIntent::Default);
+        }
+
+        #[test]
+        #[serial]
+        fn reset_resume_intent_to_default_skips_on_cas_mismatch() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("intent-mismatch").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "intent-mismatch".to_string();
+            inst.resume_intent = ResumeIntent::Use("peer-pinned".to_string());
+            let id = inst.id.clone();
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            let outcome = super::reset_resume_intent_to_default(
+                "intent-mismatch",
+                &id,
+                ResumeIntent::Cleared,
+            );
+            assert_eq!(outcome, super::SidWrite::Skipped);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(
+                loaded[0].resume_intent,
+                ResumeIntent::Use("peer-pinned".to_string())
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn reconcile_from_disk_picks_up_peer_resume_intent() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("intent-reconcile").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "intent-reconcile".to_string();
+            inst.resume_intent = ResumeIntent::Default;
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            storage
+                .update(|i, _g| {
+                    i[0].resume_intent = ResumeIntent::Use("peer-pinned".to_string());
+                    Ok(())
+                })
+                .unwrap();
+
+            assert_eq!(inst.resume_intent, ResumeIntent::Default);
+            inst.reconcile_from_disk();
+            assert_eq!(
+                inst.resume_intent,
+                ResumeIntent::Use("peer-pinned".to_string())
+            );
+        }
+
+        #[test]
+        fn acquire_default_with_no_observation_generates_uuid_for_claude() {
+            let mut inst = Instance::new("acquire-default-fresh", "/tmp/x");
+            inst.tool = "claude".to_string();
+            inst.agent_session_id = None;
+            inst.resume_intent = ResumeIntent::Default;
+
+            let (sid, is_existing) = inst.acquire_session_id();
+            assert!(sid.is_some());
+            assert!(!is_existing);
+            assert_eq!(inst.agent_session_id, sid);
+        }
+
+        #[test]
+        #[serial]
+        fn cascade_tier1_downgrades_use_pin_to_default_when_dead() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("cascade-use-downgrade").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "cascade-use-downgrade".to_string();
+            inst.resume_intent = ResumeIntent::Use("dead-sid".to_string());
+            let id = inst.id.clone();
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            let outcome = super::reset_resume_intent_to_default(
+                "cascade-use-downgrade",
+                &id,
+                ResumeIntent::Use("dead-sid".to_string()),
+            );
+            assert_eq!(outcome, super::SidWrite::Applied);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(loaded[0].resume_intent, ResumeIntent::Default);
+        }
+
+        #[test]
+        #[serial]
+        fn persist_session_id_reloads_memory_on_skipped() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("persist-skipped-reload").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "persist-skipped-reload".to_string();
+            inst.agent_session_id = Some("peer-wrote".to_string());
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            // Daemon thinks disk is "stale" but peer wrote "peer-wrote".
+            // After persist_session_id, in-memory should converge on disk.
+            inst.agent_session_id = Some("daemon-fresh".to_string());
+            inst.persist_session_id(
+                "persist-skipped-reload",
+                Some("stale"),
+                ResumeIntent::Default,
+            );
+
+            assert_eq!(inst.agent_session_id.as_deref(), Some("peer-wrote"));
+        }
+
+        #[test]
+        #[serial]
+        fn persist_session_id_atomic_writes_both_fields_on_match() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("persist-atomic-match").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "persist-atomic-match".to_string();
+            inst.agent_session_id = None;
+            inst.resume_intent = ResumeIntent::Cleared;
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            inst.agent_session_id = Some("019342ab-1234-7def-8901-abcdef012345".to_string());
+            inst.persist_session_id("persist-atomic-match", None, ResumeIntent::Cleared);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(
+                loaded[0].agent_session_id.as_deref(),
+                Some("019342ab-1234-7def-8901-abcdef012345"),
+                "sid must persist atomically with intent promotion"
+            );
+            assert_eq!(
+                loaded[0].resume_intent,
+                ResumeIntent::Default,
+                "Cleared must auto-promote to Default in the same flock"
+            );
+            assert_eq!(inst.resume_intent, ResumeIntent::Default);
+        }
+
+        #[test]
+        #[serial]
+        fn persist_session_id_writes_sid_only_on_default_intent() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("persist-default-intent").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "persist-default-intent".to_string();
+            inst.agent_session_id = None;
+            inst.resume_intent = ResumeIntent::Default;
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            inst.agent_session_id = Some("019342ab-1234-7def-8901-abcdef012345".to_string());
+            inst.persist_session_id("persist-default-intent", None, ResumeIntent::Default);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(
+                loaded[0].agent_session_id.as_deref(),
+                Some("019342ab-1234-7def-8901-abcdef012345"),
+            );
+            assert_eq!(loaded[0].resume_intent, ResumeIntent::Default);
+            assert_eq!(
+                inst.resume_intent,
+                ResumeIntent::Default,
+                "Default intent path must not mutate in-memory intent",
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn persist_session_id_persists_sid_when_intent_cas_mismatches() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("persist-intent-mismatch").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "persist-intent-mismatch".to_string();
+            inst.agent_session_id = None;
+            inst.resume_intent = ResumeIntent::Cleared;
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            storage
+                .update(|i, _g| {
+                    i[0].resume_intent = ResumeIntent::Use("peer-pinned".to_string());
+                    Ok(())
+                })
+                .unwrap();
+
+            inst.agent_session_id = Some("019342ab-1234-7def-8901-abcdef012345".to_string());
+            inst.persist_session_id("persist-intent-mismatch", None, ResumeIntent::Cleared);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(
+                loaded[0].agent_session_id.as_deref(),
+                Some("019342ab-1234-7def-8901-abcdef012345"),
+                "sid must persist even when peer rewrote intent",
+            );
+            assert_eq!(
+                loaded[0].resume_intent,
+                ResumeIntent::Use("peer-pinned".to_string()),
+                "peer's intent must survive when CAS mismatches",
+            );
+            assert_eq!(
+                inst.resume_intent,
+                ResumeIntent::Use("peer-pinned".to_string()),
+                "memory must converge on peer's intent",
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn persist_session_id_skipped_reloads_both_fields() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage =
+                crate::session::storage::Storage::new("persist-skipped-reload-both").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.source_profile = "persist-skipped-reload-both".to_string();
+            inst.agent_session_id = Some("peer-sid".to_string());
+            inst.resume_intent = ResumeIntent::Use("peer-pinned".to_string());
+            let on_disk = inst.clone();
+            storage
+                .update(|i, g| {
+                    *i = vec![on_disk.clone()];
+                    *g = crate::session::GroupTree::new_with_groups(
+                        std::slice::from_ref(&on_disk),
+                        &[],
+                    )
+                    .get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+
+            inst.agent_session_id = Some("daemon-fresh".to_string());
+            inst.resume_intent = ResumeIntent::Cleared;
+            inst.persist_session_id(
+                "persist-skipped-reload-both",
+                Some("stale"),
+                ResumeIntent::Cleared,
+            );
+
+            assert_eq!(inst.agent_session_id.as_deref(), Some("peer-sid"));
+            assert_eq!(
+                inst.resume_intent,
+                ResumeIntent::Use("peer-pinned".to_string()),
+                "intent must reload from disk on sid CAS skip",
+            );
         }
 
         #[cfg(feature = "serve")]

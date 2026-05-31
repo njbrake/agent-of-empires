@@ -294,7 +294,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `rename` — Rename a session
 * `capture` — Capture tmux pane output
 * `current` — Auto-detect current session
-* `set-session-id` — Set agent session ID for a session
+* `set-session-id` — Set the resume target for a session (pin a conversation or force a one-shot fresh start)
 * `set-base` — Set or clear the per-session diff base branch. The diff view compares the worktree against this ref instead of the auto-detected default. Useful when the PR target differs from the project default (stacked PRs, hotfix off `release/*`, renamed default branch). See #970
 * `snooze` — Snooze a session for a duration (temporary archive, auto wakes)
 * `unsnooze` — Wake a snoozed session immediately
@@ -428,14 +428,14 @@ Auto-detect current session
 
 ## `aoe session set-session-id`
 
-Set agent session ID for a session
+Set the resume target for a session (pin a conversation or force a one-shot fresh start)
 
 **Usage:** `aoe session set-session-id <IDENTIFIER> <SESSION_ID>`
 
 ###### **Arguments:**
 
 * `<IDENTIFIER>` — Session ID or title
-* `<SESSION_ID>` — Agent session ID to set (pass empty string to clear)
+* `<SESSION_ID>` — Resume target: a UUID/sid pins the next launches to that conversation; an empty string forces a one-shot fresh start (after which the system reverts to auto-resume)
 
 
 
