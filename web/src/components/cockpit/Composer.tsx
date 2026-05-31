@@ -901,7 +901,19 @@ export function Composer({
         onClose={() => setSwitchAgentOpen(false)}
         onPrefill={(text) => {
           composerRuntime.setText(text);
-          requestAnimationFrame(() => taRef.current?.focus());
+          requestAnimationFrame(() => {
+            const el = taRef.current;
+            if (!el) return;
+            el.focus();
+            const len = el.value.length;
+            try {
+              el.setSelectionRange(len, len);
+            } catch {
+              // ignore: non-text inputs can throw here
+            }
+            el.style.height = "auto";
+            el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+          });
         }}
         trigger="manual"
       />
