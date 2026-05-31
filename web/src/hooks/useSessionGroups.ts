@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Workspace } from "../lib/types";
 import { safeGetItem, safeRemoveItem, safeSetItem } from "../lib/safeStorage";
 import { buildSessionGroups, type SidebarGroup } from "../lib/sidebarGroups";
@@ -29,18 +29,28 @@ export function useSessionGroups(workspaces: Workspace[]): {
     [workspaces, idleDecayWindowMs, collapsedMap],
   );
 
+  // The updater stays pure: it reads the current value but performs no
+  // storage IO. Writing inside the updater is unsafe under React
+  // StrictMode, which double-invokes updaters in dev: the first pass's
+  // write would make the second pass's `loadCollapsed` read see the new
+  // value and compute the opposite result, so the toggle no-ops and
+  // storage desyncs from state. Persistence runs in an effect instead.
   const toggleGroupCollapsed = useCallback((groupId: string) => {
     setCollapsedMap((prev) => {
       const current = prev[groupId] ?? loadCollapsed(groupId);
-      const next = !current;
-      if (next) {
-        safeSetItem(`${COLLAPSED_KEY_PREFIX}${groupId}`, "1");
-      } else {
-        safeRemoveItem(`${COLLAPSED_KEY_PREFIX}${groupId}`);
-      }
-      return { ...prev, [groupId]: next };
+      return { ...prev, [groupId]: !current };
     });
   }, []);
+
+  useEffect(() => {
+    for (const [id, collapsed] of Object.entries(collapsedMap)) {
+      if (collapsed) {
+        safeSetItem(`${COLLAPSED_KEY_PREFIX}${id}`, "1");
+      } else {
+        safeRemoveItem(`${COLLAPSED_KEY_PREFIX}${id}`);
+      }
+    }
+  }, [collapsedMap]);
 
   return { groups, toggleGroupCollapsed };
 }
