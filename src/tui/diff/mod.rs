@@ -233,7 +233,10 @@ impl DiffView {
         let Some(session_id) = self.session_id.clone() else {
             return Ok(());
         };
-        let storage = crate::session::Storage::new(&self.profile)?;
+        let storage = crate::session::Storage::new(
+            &self.profile,
+            crate::file_watch::FileWatchService::noop(),
+        )?;
         let new_override = Some(self.base_branch.clone());
         let id_for_closure = session_id.clone();
         let new_override_for_closure = new_override.clone();

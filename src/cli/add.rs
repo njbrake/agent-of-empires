@@ -326,7 +326,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         }
     }
 
-    let storage = Storage::new(profile)?;
+    let storage = Storage::new(profile, crate::file_watch::FileWatchService::noop())?;
     // Phase 1 (unlocked): pre-flight read of the current persisted state to
     // resolve `--parent`, generate a non-colliding title, and make
     // best-effort duplicate / parent decisions before any side effects.

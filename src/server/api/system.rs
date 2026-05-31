@@ -721,8 +721,14 @@ pub async fn create_profile(
         )
             .into_response();
     }
-    match tokio::task::spawn_blocking(move || crate::session::create_profile(&body.name)).await {
-        Ok(Ok(())) => (StatusCode::CREATED, Json(serde_json::json!({"ok": true}))).into_response(),
+    let name_for_create = body.name.clone();
+    match tokio::task::spawn_blocking(move || crate::session::create_profile(&name_for_create))
+        .await
+    {
+        Ok(Ok(())) => {
+            crate::server::rewire_disk_watch_for_profile_add(&state, &body.name).await;
+            (StatusCode::CREATED, Json(serde_json::json!({"ok": true}))).into_response()
+        }
         Ok(Err(e)) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "create_failed", "message": e.to_string()})),
@@ -763,8 +769,14 @@ pub async fn delete_profile(
         )
             .into_response();
     }
-    match tokio::task::spawn_blocking(move || crate::session::delete_profile(&name)).await {
-        Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
+    let name_for_delete = name.clone();
+    match tokio::task::spawn_blocking(move || crate::session::delete_profile(&name_for_delete))
+        .await
+    {
+        Ok(Ok(())) => {
+            crate::server::rewire_disk_watch_for_profile_remove(&state, &name).await;
+            (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
+        }
         Ok(Err(e)) => (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "delete_failed", "message": e.to_string()})),

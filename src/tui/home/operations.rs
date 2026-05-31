@@ -71,8 +71,10 @@ impl HomeView {
 
         // Ensure target profile storage exists
         if !self.storages.contains_key(&target_profile) {
-            self.storages
-                .insert(target_profile.clone(), Storage::new(&target_profile)?);
+            self.storages.insert(
+                target_profile.clone(),
+                Storage::new(&target_profile, crate::file_watch::FileWatchService::noop())?,
+            );
         }
 
         self.add_instance(instance.clone());
@@ -217,8 +219,10 @@ impl HomeView {
                     anyhow::bail!("Profile '{}' does not exist", target_profile);
                 }
                 if !self.storages.contains_key(target_profile) {
-                    self.storages
-                        .insert(target_profile.to_string(), Storage::new(target_profile)?);
+                    self.storages.insert(
+                        target_profile.to_string(),
+                        Storage::new(target_profile, crate::file_watch::FileWatchService::noop())?,
+                    );
                 }
                 if !self.group_trees.contains_key(target_profile) {
                     self.group_trees.insert(
@@ -569,7 +573,10 @@ impl HomeView {
         // Ensure target profile storage exists when moving across profiles
         if let Some(tp) = new_profile {
             if tp != ctx.old_profile && !self.storages.contains_key(tp) {
-                self.storages.insert(tp.to_string(), Storage::new(tp)?);
+                self.storages.insert(
+                    tp.to_string(),
+                    Storage::new(tp, crate::file_watch::FileWatchService::noop())?,
+                );
             }
         }
 
@@ -694,8 +701,13 @@ impl HomeView {
 
                     // Ensure target profile storage exists
                     if !self.storages.contains_key(target_profile) {
-                        self.storages
-                            .insert(target_profile.to_string(), Storage::new(target_profile)?);
+                        self.storages.insert(
+                            target_profile.to_string(),
+                            Storage::new(
+                                target_profile,
+                                crate::file_watch::FileWatchService::noop(),
+                            )?,
+                        );
                     }
 
                     // Update source_profile and save (handles moving between profiles)

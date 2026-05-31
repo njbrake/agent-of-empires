@@ -399,7 +399,7 @@ pub async fn switch_cockpit_agent(
             }
         }
     }
-    if let Ok(storage) = crate::session::Storage::new(&profile_for_save) {
+    if let Ok(storage) = crate::session::Storage::new(&profile_for_save, state.file_watch.clone()) {
         if let Err(e) = storage.update(|instances, _groups| {
             if let Some(inst) = instances.iter_mut().find(|i| i.id == id_for_save) {
                 inst.cockpit_agent = Some(target_for_save.clone());
@@ -483,7 +483,7 @@ pub async fn cockpit_prompt(
                 .map(|i| i.source_profile.clone())
                 .unwrap_or_default()
         };
-        if let Ok(storage) = crate::session::Storage::new(&profile) {
+        if let Ok(storage) = crate::session::Storage::new(&profile, state.file_watch.clone()) {
             let id_clone = id.clone();
             let session_id_for_log = id.clone();
             match tokio::task::spawn_blocking(move || {
@@ -881,8 +881,9 @@ pub async fn cockpit_enable(
     }
     let id_for_save = id.clone();
     let profile_for_save = profile.clone();
+    let file_watch_for_save = state.file_watch.clone();
     let save_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let storage = crate::session::Storage::new(&profile_for_save)?;
+        let storage = crate::session::Storage::new(&profile_for_save, file_watch_for_save)?;
         storage.update(|all, _groups| {
             if let Some(slot) = all.iter_mut().find(|i| i.id == id_for_save) {
                 slot.cockpit_mode = true;
@@ -1043,8 +1044,9 @@ pub async fn cockpit_disable(
     }
     let id_for_save = id.clone();
     let profile_for_save = profile.clone();
+    let file_watch_for_save = state.file_watch.clone();
     let save_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let storage = crate::session::Storage::new(&profile_for_save)?;
+        let storage = crate::session::Storage::new(&profile_for_save, file_watch_for_save)?;
         storage.update(|all, _groups| {
             if let Some(slot) = all.iter_mut().find(|i| i.id == id_for_save) {
                 slot.cockpit_mode = false;
