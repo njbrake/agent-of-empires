@@ -37,6 +37,7 @@ if [[ ! -d node_modules ]]; then
   npm install
 fi
 # Chromium is required; install if the cache is empty (no-op when present).
+# Silent when already cached; re-runs verbosely so a fresh install or error is visible.
 npx playwright install chromium >/dev/null 2>&1 || npx playwright install chromium
 
 echo "Capturing screenshots..."
