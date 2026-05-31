@@ -833,8 +833,15 @@ impl EventStore {
         });
         match rows {
             Ok(iter) => {
-                for r in iter.flatten() {
-                    out.insert(r.0, r.1);
+                for r in iter {
+                    match r {
+                        Ok((session_id, created_at)) => {
+                            out.insert(session_id, created_at);
+                        }
+                        Err(e) => {
+                            warn!(target: "cockpit.event_store", "last_event_at_for_sessions row: {e}");
+                        }
+                    }
                 }
             }
             Err(e) => {
