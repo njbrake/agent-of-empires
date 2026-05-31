@@ -41,6 +41,7 @@ export type Action =
   | { kind: "frames"; frames: CockpitFrame[] }
   | { kind: "lagged"; skipped: number }
   | { kind: "user_prompt"; text: string; attachments?: CockpitAttachment[] }
+  | { kind: "prompt_send_rejected" }
   | { kind: "error"; message: string }
   | { kind: "clear_error" }
   | { kind: "lagged_resolved" }
@@ -389,6 +390,26 @@ function reducer(state: CockpitState, action: Action): CockpitState {
       turnActive: isTurnActive({
         pendingUserPromptSeq,
         lastStoppedSeq: state.lastStoppedSeq,
+      }),
+    };
+  }
+  if (action.kind === "prompt_send_rejected") {
+    // Optimistic submit already bumped pendingUserPromptSeq. When the
+    // prompt POST is rejected client-side (for example unsupported
+    // attachments), retire exactly one pending turn so Stop unlocks and
+    // the composer returns to idle without waiting for a Stopped frame
+    // that will never arrive.
+    const lastStoppedSeq = Math.min(
+      state.lastStoppedSeq + 1,
+      state.pendingUserPromptSeq,
+    );
+    return {
+      ...state,
+      inFlightTool: null,
+      lastStoppedSeq,
+      turnActive: isTurnActive({
+        pendingUserPromptSeq: state.pendingUserPromptSeq,
+        lastStoppedSeq,
       }),
     };
   }
@@ -1053,6 +1074,13 @@ export function useCockpit(
         );
         if (!res.ok) {
           const detail = await safeText(res);
+          // 4xx means the server rejected the prompt (validation,
+          // capability gate, unknown session), so there is no in-flight
+          // turn to cancel and no Stopped frame to retire our optimistic
+          // turn marker.
+          if (res.status >= 400 && res.status < 500) {
+            dispatch({ kind: "prompt_send_rejected" });
+          }
           dispatch({
             kind: "error",
             message: `Could not send prompt (${res.status}). ${detail}`.trim(),
