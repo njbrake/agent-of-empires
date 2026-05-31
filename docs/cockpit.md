@@ -468,6 +468,17 @@ Practical implications:
   next `aoe serve` reattaches.
 - To actually terminate a worker, run `aoe cockpit stop <session>` or
   `aoe cockpit stop --all`. To force-kill, `aoe cockpit kill <session>`.
+- **No orphaned agents on teardown.** Every termination path (idle
+  auto-stop, `aoe cockpit stop|kill|restart`, snooze/archive, daemon
+  `shutdown_all`, and a fresh spawn that supersedes a stale runner)
+  signals the runner's whole process group, so the agent subprocess and
+  its own children (the node ACP wrapper and the SDK child it execs) die
+  with the runner instead of reparenting to PID 1. Earlier releases
+  signalled only the runner pid, so superseded or torn-down runners
+  leaked `node` / `claude` processes that accumulated across daemon
+  restarts and e2e runs (#1689). A runner that is hard-killed with
+  `SIGKILL` (which cannot run its own cleanup) can still leak; prefer
+  the verbs above over `kill -9`.
 - During the detach window (between `aoe serve --stop` and the next
   `aoe serve`), the runner buffers up to 256 agent → daemon
   notification lines so per-stream chunks emitted while the daemon was

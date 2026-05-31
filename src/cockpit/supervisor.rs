@@ -1665,14 +1665,12 @@ impl<S: BroadcastSink> Supervisor<S> {
             handle.drain_task.abort();
         }
 
-        // SIGTERM every runner we knew about, so detached agents that
-        // outlived a previous daemon are also taken down by an explicit
-        // "kill them all" request.
-        #[cfg(unix)]
+        // Group-SIGTERM every runner we knew about, so detached agents that
+        // outlived a previous daemon (and their node/SDK grandchildren) are
+        // also taken down by an explicit "kill them all" request, not left
+        // orphaned under PID 1. See #1689.
         for (session_id, pid) in registry_pids {
-            use nix::sys::signal::{kill, Signal};
-            use nix::unistd::Pid;
-            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+            super::worker_registry::terminate_runner_group(pid);
             super::worker_registry::delete(&session_id).ok();
         }
         #[cfg(not(unix))]
@@ -2030,17 +2028,10 @@ impl<S: BroadcastSink> Supervisor<S> {
 /// then delete the entry. Used by `shutdown` and `shutdown_all` to take
 /// down detached workers explicitly.
 fn terminate_runner_for_session(session_id: &str) {
-    if let Ok(Some(record)) = super::worker_registry::load(session_id) {
-        #[cfg(unix)]
-        if super::worker_registry::is_pid_alive(record.pid) {
-            use nix::sys::signal::{kill, Signal};
-            use nix::unistd::Pid;
-            let _ = kill(Pid::from_raw(record.pid as i32), Signal::SIGTERM);
-        }
-        #[cfg(not(unix))]
-        let _ = record;
-    }
-    super::worker_registry::delete(session_id).ok();
+    // Group-kill (runner + agent + grandchildren) then delete the entry.
+    // Single-pid SIGTERM here used to orphan the agent's node/SDK children
+    // under PID 1; see worker_registry::terminate and #1689.
+    super::worker_registry::terminate(session_id);
 }
 
 #[derive(Debug)]
