@@ -121,7 +121,20 @@ impl EventStore {
             CREATE INDEX IF NOT EXISTS idx_cockpit_events_session_seq
                 ON cockpit_events(session_id, seq);
             CREATE INDEX IF NOT EXISTS idx_cockpit_events_session_created_at
-                ON cockpit_events(session_id, created_at);",
+                ON cockpit_events(session_id, created_at);
+            CREATE TABLE IF NOT EXISTS cockpit_attachments (
+                session_id    TEXT    NOT NULL,
+                seq           INTEGER NOT NULL,
+                attachment_id TEXT    NOT NULL,
+                kind          TEXT    NOT NULL,
+                mime_type     TEXT    NOT NULL,
+                name          TEXT,
+                data          BLOB    NOT NULL,
+                created_at    INTEGER NOT NULL,
+                PRIMARY KEY (session_id, attachment_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cockpit_attachments_session_seq
+                ON cockpit_attachments(session_id, seq);",
         )
         .context("create cockpit_events schema")?;
         debug!(
@@ -196,38 +209,64 @@ impl EventStore {
         // See #1049. The `event_json NOT LIKE` clauses match the
         // externally-tagged JSON discriminant for each pinned variant.
         if self.max_events_per_session > 0 {
-            let prune_sql = format!(
-                "DELETE FROM cockpit_events
-                 WHERE session_id = ?1
-                   AND seq <= (
-                     SELECT seq FROM cockpit_events
+            // Compute the prune cutoff seq once so the events delete and
+            // the attachments delete agree on the same threshold. Doing
+            // the events delete first would shift the OFFSET row out from
+            // under the attachments delete and leave orphaned blobs.
+            let cutoff: Option<i64> = conn
+                .query_row(
+                    "SELECT seq FROM cockpit_events
                      WHERE session_id = ?1
                      ORDER BY seq DESC
-                     LIMIT 1 OFFSET ?2
-                   )
-                   {clauses}",
-                clauses = non_substantive_not_like_clauses()
-            );
-            match conn.execute(
-                &prune_sql,
-                params![session_id, self.max_events_per_session as i64],
-            ) {
-                Ok(0) => {}
-                Ok(pruned) => {
-                    trace!(
-                        target: "cockpit.event_store",
-                        session = %session_id,
-                        pruned,
-                        cap = self.max_events_per_session,
-                        "pruned oldest events past retention cap"
-                    );
+                     LIMIT 1 OFFSET ?2",
+                    params![session_id, self.max_events_per_session as i64],
+                    |row| row.get(0),
+                )
+                .optional()
+                .unwrap_or(None);
+            if let Some(cutoff) = cutoff {
+                // The `non_substantive_not_like_clauses()` helper pins the
+                // snapshot variants (slash-command list, mode list, ACP
+                // session id) so a long session can't evict them. See #1049.
+                let prune_sql = format!(
+                    "DELETE FROM cockpit_events
+                     WHERE session_id = ?1
+                       AND seq <= ?2
+                       {clauses}",
+                    clauses = non_substantive_not_like_clauses()
+                );
+                match conn.execute(&prune_sql, params![session_id, cutoff]) {
+                    Ok(0) => {}
+                    Ok(pruned) => {
+                        trace!(
+                            target: "cockpit.event_store",
+                            session = %session_id,
+                            pruned,
+                            cap = self.max_events_per_session,
+                            "pruned oldest events past retention cap"
+                        );
+                    }
+                    Err(e) => {
+                        // Prune failure isn't fatal; the row is recorded,
+                        // we just exceed the cap until the next prune
+                        // succeeds. Log + swallow so callers don't have to
+                        // distinguish "record failed" from "trim failed".
+                        warn!(target: "cockpit.event_store", "prune {session_id}: {e}");
+                    }
                 }
-                Err(e) => {
-                    // Prune failure isn't fatal; the row is recorded,
-                    // we just exceed the cap until the next prune
-                    // succeeds. Log + swallow so callers don't have to
-                    // distinguish "record failed" from "trim failed".
-                    warn!(target: "cockpit.event_store", "prune {session_id}: {e}");
+                // Drop attachment blobs whose owning UserPromptSent has
+                // (or is about to be) pruned. Attachments only ever hang
+                // off prompts, never the pinned snapshot variants, so a
+                // flat `seq <= cutoff` delete cannot strand a blob whose
+                // event survived. This is what keeps the attachment table
+                // bounded alongside the event log rather than growing
+                // without limit as screenshots accumulate.
+                if let Err(e) = conn.execute(
+                    "DELETE FROM cockpit_attachments
+                     WHERE session_id = ?1 AND seq <= ?2",
+                    params![session_id, cutoff],
+                ) {
+                    warn!(target: "cockpit.event_store", "prune attachments {session_id}: {e}");
                 }
             }
         }
@@ -875,6 +914,104 @@ impl EventStore {
         out
     }
 
+    /// Persist one decoded attachment blob, keyed to the seq of the
+    /// `UserPromptSent` event it rides with so the retention prune and
+    /// `delete_session` can drop it in lockstep with that event. Called
+    /// from the prompt handler before the event is published, so a
+    /// client that receives the `UserPromptSent` can immediately fetch
+    /// the blob over the GET endpoint. Idempotent on
+    /// `(session_id, attachment_id)`.
+    pub fn record_attachment(&self, session_id: &str, seq: u64, blob: &AttachmentBlob) {
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        if let Err(e) = conn.execute(
+            "INSERT OR IGNORE INTO cockpit_attachments
+                (session_id, seq, attachment_id, kind, mime_type, name, data, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                session_id,
+                seq as i64,
+                blob.id,
+                blob.kind.as_str(),
+                blob.mime_type,
+                blob.name,
+                blob.data,
+                now_ms,
+            ],
+        ) {
+            warn!(
+                target: "cockpit.event_store",
+                session = %session_id,
+                attachment = %blob.id,
+                "insert attachment failed: {e}"
+            );
+        }
+    }
+
+    /// Fetch one attachment's MIME type and bytes for the replay GET
+    /// endpoint. Scoped by `session_id` so a valid token for one session
+    /// can't read another session's blob by guessing ids.
+    pub fn load_attachment(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Option<(String, Vec<u8>)> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        conn.query_row(
+            "SELECT mime_type, data FROM cockpit_attachments
+             WHERE session_id = ?1 AND attachment_id = ?2",
+            params![session_id, attachment_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )
+        .optional()
+        .unwrap_or_else(|e| {
+            warn!(
+                target: "cockpit.event_store",
+                session = %session_id,
+                attachment = %attachment_id,
+                "load attachment failed: {e}"
+            );
+            None
+        })
+    }
+
+    /// Latest prompt capabilities the agent advertised for this session,
+    /// or `None` if no `PromptCapabilities` event is on disk yet. Read by
+    /// the prompt handler to reject attachments the agent cannot accept,
+    /// mirroring `latest_plan`. Returns `(image, audio, embedded_context)`.
+    pub fn latest_prompt_capabilities(&self, session_id: &str) -> Option<(bool, bool, bool)> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let json: String = conn
+            .query_row(
+                "SELECT event_json FROM cockpit_events
+                 WHERE session_id = ?1
+                   AND event_json LIKE '{\"PromptCapabilities\":%'
+                 ORDER BY seq DESC LIMIT 1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()?;
+        match serde_json::from_str::<Event>(&json).ok()? {
+            Event::PromptCapabilities {
+                image,
+                audio,
+                embedded_context,
+            } => Some((image, audio, embedded_context)),
+            _ => None,
+        }
+    }
+
     /// Drop every event for a session. Called when the session is
     /// deleted or its substrate is switched away from cockpit, so the
     /// next cockpit_enable starts fresh from seq=1.
@@ -899,7 +1036,27 @@ impl EventStore {
                 warn!(target: "cockpit.event_store", "delete {session_id}: {e}");
             }
         }
+        // Cascade to attachment blobs so a deleted session leaves no
+        // orphaned bytes behind.
+        if let Err(e) = conn.execute(
+            "DELETE FROM cockpit_attachments WHERE session_id = ?1",
+            params![session_id],
+        ) {
+            warn!(target: "cockpit.event_store", "delete attachments {session_id}: {e}");
+        }
     }
+}
+
+/// A decoded attachment ready to persist: the storage-side counterpart
+/// of the wire `PromptAttachmentUpload`. Holds raw bytes (not base64) so
+/// the GET endpoint serves them directly. The matching metadata-only
+/// `PromptAttachmentRef` is what rides in the event log.
+pub struct AttachmentBlob {
+    pub id: String,
+    pub kind: crate::cockpit::state::PromptAttachmentKind,
+    pub mime_type: String,
+    pub name: Option<String>,
+    pub data: Vec<u8>,
 }
 
 /// Cheap discriminant string for `Event` so debug logs don't dump the
@@ -935,6 +1092,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::IncompatibleAgent { .. } => "incompatible_agent",
         Event::UserPromptSent { .. } => "user_prompt_sent",
         Event::UserDiffCommentsPrompt { .. } => "user_diff_comments_prompt",
+        Event::PromptCapabilities { .. } => "prompt_capabilities",
         Event::AcpSessionAssigned { .. } => "acp_session_assigned",
         Event::SessionContextReset { .. } => "session_context_reset",
         Event::SessionCleared => "session_cleared",
@@ -1103,14 +1261,21 @@ mod tests {
     fn duplicate_seq_is_idempotent() {
         let (_tmp, store) = open_store(1000);
         store
-            .record("s-1", 1, &Event::UserPromptSent { text: "hi".into() })
+            .record(
+                "s-1",
+                1,
+                &Event::UserPromptSent {
+                    text: "hi".into(),
+                    attachments: Vec::new(),
+                },
+            )
             .unwrap();
         // Second insert at the same seq must not double-count.
         store.record("s-1", 1, &Event::ThinkingStarted).unwrap();
         let replay = store.replay_from("s-1", 0);
         assert_eq!(replay.len(), 1);
         // The first write wins (INSERT OR IGNORE).
-        if let Event::UserPromptSent { text } = &replay[0].1 {
+        if let Event::UserPromptSent { text, .. } = &replay[0].1 {
             assert_eq!(text, "hi");
         } else {
             panic!("expected UserPromptSent");
@@ -1399,7 +1564,14 @@ mod tests {
     fn has_in_flight_turn_true_when_chunks_unterminated() {
         let (_tmp, store) = open_store(1000);
         store
-            .record("s-1", 1, &Event::UserPromptSent { text: "go".into() })
+            .record(
+                "s-1",
+                1,
+                &Event::UserPromptSent {
+                    text: "go".into(),
+                    attachments: Vec::new(),
+                },
+            )
             .unwrap();
         store
             .record(
@@ -1417,7 +1589,14 @@ mod tests {
     fn has_in_flight_turn_false_when_stopped_after_prompt() {
         let (_tmp, store) = open_store(1000);
         store
-            .record("s-1", 1, &Event::UserPromptSent { text: "go".into() })
+            .record(
+                "s-1",
+                1,
+                &Event::UserPromptSent {
+                    text: "go".into(),
+                    attachments: Vec::new(),
+                },
+            )
             .unwrap();
         store
             .record(
@@ -1444,7 +1623,14 @@ mod tests {
     fn has_in_flight_turn_false_when_agent_startup_error_after_prompt() {
         let (_tmp, store) = open_store(1000);
         store
-            .record("s-1", 1, &Event::UserPromptSent { text: "go".into() })
+            .record(
+                "s-1",
+                1,
+                &Event::UserPromptSent {
+                    text: "go".into(),
+                    attachments: Vec::new(),
+                },
+            )
             .unwrap();
         store
             .record(
@@ -1468,6 +1654,7 @@ mod tests {
                 1,
                 &Event::UserPromptSent {
                     text: "first".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();
@@ -1486,6 +1673,7 @@ mod tests {
                 3,
                 &Event::UserPromptSent {
                     text: "second".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();
@@ -1511,6 +1699,7 @@ mod tests {
                 1,
                 &Event::UserPromptSent {
                     text: "schedule a wake in 2m".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();
@@ -1531,6 +1720,7 @@ mod tests {
                 3,
                 &Event::UserPromptSent {
                     text: "btw, ping me when you wake".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();
@@ -1599,6 +1789,7 @@ mod tests {
                 1,
                 &Event::UserPromptSent {
                     text: "schedule a wake".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();
@@ -1619,6 +1810,7 @@ mod tests {
                 3,
                 &Event::UserPromptSent {
                     text: "ping me when you wake".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();
@@ -1648,6 +1840,7 @@ mod tests {
                 2,
                 &Event::UserPromptSent {
                     text: "Wake-up fired. Confirm.".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();
@@ -1672,6 +1865,7 @@ mod tests {
                 2,
                 &Event::UserPromptSent {
                     text: "first prompt past at".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();
@@ -1681,6 +1875,7 @@ mod tests {
                 3,
                 &Event::UserPromptSent {
                     text: "second prompt past at".into(),
+                    attachments: Vec::new(),
                 },
             )
             .unwrap();
@@ -1703,6 +1898,7 @@ mod tests {
                     1,
                     &Event::UserPromptSent {
                         text: "hello".into(),
+                        attachments: Vec::new(),
                     },
                 )
                 .unwrap();
@@ -1731,7 +1927,14 @@ mod tests {
     fn latest_status_event_returns_most_recent_lifecycle_event() {
         let (_tmp, store) = open_store(1000);
         store
-            .record("s-1", 1, &Event::UserPromptSent { text: "hi".into() })
+            .record(
+                "s-1",
+                1,
+                &Event::UserPromptSent {
+                    text: "hi".into(),
+                    attachments: Vec::new(),
+                },
+            )
             .unwrap();
         store.record("s-1", 2, &Event::ThinkingStarted).unwrap();
         store.record("s-1", 3, &Event::ThinkingEnded).unwrap();
@@ -1739,7 +1942,7 @@ mod tests {
         let latest = store.latest_status_event("s-1");
         assert!(matches!(
             latest,
-            Some(Event::UserPromptSent { text }) if text == "hi"
+            Some(Event::UserPromptSent { text, .. }) if text == "hi"
         ));
 
         // Stopped at seq 4 takes over as the most recent lifecycle event.

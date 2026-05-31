@@ -11,7 +11,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use super::approvals::ApprovalDecision;
-use super::state::{DiffComment, Event};
+use super::state::{DiffComment, Event, PromptAttachmentKind};
 
 /// One frame on the per-AppState cockpit broadcast channel: the cockpit
 /// session id plus the typed cockpit Event. Subscribed WebSocket
@@ -64,10 +64,32 @@ impl<'de> Deserialize<'de> for CockpitBroadcastFrame {
     }
 }
 
+/// One attachment as the web composer uploads it: the raw base64 bytes
+/// inline in the prompt POST. This is the untrusted request shape; the
+/// server decodes it, sniffs the magic bytes, enforces size/MIME/count
+/// caps and the agent's capability gate, then maps it to an ACP
+/// `ContentBlock` for the agent and a metadata-only
+/// `PromptAttachmentRef` for replay. Bytes never reach the event log.
+/// See #1000 / #965.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptAttachmentUpload {
+    pub kind: PromptAttachmentKind,
+    pub mime_type: String,
+    /// Standard base64 (no `data:` URL prefix). The client strips the
+    /// prefix before sending.
+    pub data: String,
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
 /// `POST /api/sessions/{id}/cockpit/prompt` body.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PromptRequest {
     pub text: String,
+    /// `#[serde(default)]` so text-only clients (and the TUI cockpit
+    /// verb) keep working unchanged.
+    #[serde(default)]
+    pub attachments: Vec<PromptAttachmentUpload>,
 }
 
 /// `POST /api/sessions/{id}/cockpit/prompt/diff-comments` body.

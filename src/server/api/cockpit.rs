@@ -13,12 +13,163 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::cockpit::approvals::Nonce;
+use crate::cockpit::event_store::AttachmentBlob;
 use crate::cockpit::protocol::{
-    ContextPrimerQuery, ContextPrimerResponse, DiffCommentsPromptRequest, PromptRequest,
-    ReplayQuery, ReplayResponse, ResolveApprovalRequest, SwitchAgentRequest, SwitchAgentResponse,
+    ContextPrimerQuery, ContextPrimerResponse, PromptAttachmentUpload, PromptRequest, ReplayQuery,
+    ReplayResponse, ResolveApprovalRequest, SwitchAgentRequest, SwitchAgentResponse,
+    DiffCommentsPromptRequest,
 };
+use crate::cockpit::state::PromptAttachmentKind;
 use crate::cockpit::supervisor::SupervisorError;
 use crate::server::AppState;
+
+/// Maximum attachments per prompt.
+const MAX_ATTACHMENTS: usize = 8;
+/// Maximum decoded size of a single attachment (10 MiB).
+const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+/// Maximum decoded size of all attachments on one prompt (20 MiB).
+const MAX_TOTAL_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+
+/// MIME types accepted per attachment kind. Conservative on purpose:
+/// `image/svg+xml` is excluded (scriptable XML), and embedded resources
+/// are limited to inert text/document types. The image kind is also
+/// magic-byte sniffed; a declared MIME that the bytes don't back is
+/// rejected. See #1000 / #965 and the design debate.
+fn mime_allowed(kind: PromptAttachmentKind, mime: &str) -> bool {
+    match kind {
+        PromptAttachmentKind::Image => {
+            matches!(
+                mime,
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+            )
+        }
+        PromptAttachmentKind::Audio => matches!(
+            mime,
+            "audio/mpeg" | "audio/wav" | "audio/x-wav" | "audio/webm" | "audio/ogg" | "audio/mp4"
+        ),
+        PromptAttachmentKind::Resource => matches!(
+            mime,
+            "text/plain" | "text/markdown" | "application/json" | "application/pdf"
+        ),
+    }
+}
+
+/// True if `bytes` start with a magic-number signature for a supported
+/// raster image. Guards against a client mislabeling arbitrary bytes as
+/// `image/png` to smuggle them past the allowlist.
+fn looks_like_image(bytes: &[u8]) -> bool {
+    let png = bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+    let jpeg = bytes.starts_with(&[0xFF, 0xD8, 0xFF]);
+    let gif = bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a");
+    let webp = bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP";
+    png || jpeg || gif || webp
+}
+
+/// Decode, size-check, MIME-check, magic-byte-sniff and capability-gate
+/// the uploaded attachments. Returns the decoded blobs ready to persist
+/// and forward, or an HTTP `(status, message)` to return verbatim.
+/// Runs entirely before the prompt is published so a rejected prompt
+/// never leaves a half-rendered attachment in the transcript.
+fn validate_attachments(
+    state: &AppState,
+    session_id: &str,
+    uploads: &[PromptAttachmentUpload],
+) -> Result<Vec<AttachmentBlob>, (StatusCode, String)> {
+    use base64::Engine as _;
+    if uploads.is_empty() {
+        return Ok(Vec::new());
+    }
+    if uploads.len() > MAX_ATTACHMENTS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("too many attachments (max {MAX_ATTACHMENTS})"),
+        ));
+    }
+    // Capability gate: the agent must advertise the matching prompt
+    // capability. `None` means the handshake hasn't reported caps yet;
+    // reject rather than forward bytes the agent may not accept.
+    let caps = state
+        .cockpit_event_store
+        .latest_prompt_capabilities(session_id);
+    let (image_ok, audio_ok, embedded_ok) = match caps {
+        Some(c) => c,
+        None => {
+            return Err((
+                StatusCode::CONFLICT,
+                "agent capabilities not known yet; cannot accept attachments".to_string(),
+            ))
+        }
+    };
+
+    let mut blobs = Vec::with_capacity(uploads.len());
+    let mut total = 0usize;
+    for up in uploads {
+        let kind_ok = match up.kind {
+            PromptAttachmentKind::Image => image_ok,
+            PromptAttachmentKind::Audio => audio_ok,
+            PromptAttachmentKind::Resource => embedded_ok,
+        };
+        if !kind_ok {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "the current agent does not accept {} attachments",
+                    up.kind.as_str()
+                ),
+            ));
+        }
+        if !mime_allowed(up.kind, &up.mime_type) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("unsupported attachment type: {}", up.mime_type),
+            ));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(up.data.as_bytes())
+            .map_err(|_| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    "attachment is not valid base64".to_string(),
+                )
+            })?;
+        if bytes.is_empty() {
+            return Err((StatusCode::BAD_REQUEST, "empty attachment".to_string()));
+        }
+        if bytes.len() > MAX_ATTACHMENT_BYTES {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "attachment exceeds {} MiB limit",
+                    MAX_ATTACHMENT_BYTES / (1024 * 1024)
+                ),
+            ));
+        }
+        if up.kind == PromptAttachmentKind::Image && !looks_like_image(&bytes) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "attachment bytes are not a supported image".to_string(),
+            ));
+        }
+        total += bytes.len();
+        if total > MAX_TOTAL_ATTACHMENT_BYTES {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "attachments exceed {} MiB total limit",
+                    MAX_TOTAL_ATTACHMENT_BYTES / (1024 * 1024)
+                ),
+            ));
+        }
+        blobs.push(AttachmentBlob {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind: up.kind,
+            mime_type: up.mime_type.clone(),
+            name: up.name.clone(),
+            data: bytes,
+        });
+    }
+    Ok(blobs)
+}
 
 #[derive(Debug, Deserialize)]
 pub struct SpawnCockpitRequest {
@@ -529,15 +680,27 @@ pub async fn cockpit_prompt(
         Err(rej) => return rej.into_response(),
     };
     touch_and_wake_if_sunk(&state, &id).await;
+    // Decode + validate + capability-gate attachments BEFORE publishing
+    // so a rejected prompt never leaves a half-rendered attachment in
+    // the transcript (the publish path is otherwise authoritative). See
+    // #1000 / #965.
+    let attachments = match validate_attachments(&state, &id, &req.attachments) {
+        Ok(a) => a,
+        Err((code, msg)) => return (code, msg).into_response(),
+    };
     // Publish the user's prompt into the event stream BEFORE forwarding
     // to the agent so the replay buffer / on-disk store captures it
     // even if the agent forward fails. The frontend treats UserPromptSent
     // as authoritative and dedupes against its own optimistic row.
     state
         .cockpit_supervisor
-        .publish_user_prompt(&id, req.text.clone())
+        .publish_user_prompt_with_attachments(&id, req.text.clone(), &attachments)
         .await;
-    match state.cockpit_supervisor.send_prompt(&id, &req.text).await {
+    match state
+        .cockpit_supervisor
+        .send_prompt(&id, &req.text, &attachments)
+        .await
+    {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {
             (StatusCode::NOT_FOUND, "session has no running cockpit").into_response()
@@ -587,7 +750,7 @@ pub async fn cockpit_prompt_diff_comments(
         .await;
     match state
         .cockpit_supervisor
-        .send_prompt(&id, &req.assembled_markdown)
+        .send_prompt(&id, &req.assembled_markdown, &[])
         .await
     {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
@@ -599,6 +762,37 @@ pub async fn cockpit_prompt_diff_comments(
             format!("prompt failed: {e}"),
         )
             .into_response(),
+    }
+}
+
+/// Serve one persisted prompt attachment's bytes for transcript replay.
+/// Scoped by session id so a token valid for one session can't read
+/// another's blob by guessing the attachment id. Inherits the global
+/// auth middleware. See #1000 / #965.
+pub async fn cockpit_attachment(
+    State(state): State<Arc<AppState>>,
+    Path((id, attachment_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match state
+        .cockpit_event_store
+        .load_attachment(&id, &attachment_id)
+    {
+        Some((mime, bytes)) => (
+            [
+                (axum::http::header::CONTENT_TYPE, mime),
+                (
+                    axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                    "nosniff".to_string(),
+                ),
+                (
+                    axum::http::header::CACHE_CONTROL,
+                    "private, max-age=31536000, immutable".to_string(),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        None => (StatusCode::NOT_FOUND, "attachment not found").into_response(),
     }
 }
 
