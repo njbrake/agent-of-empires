@@ -15,8 +15,10 @@ import {
   normaliseTurnCounters,
   setActivityLimit,
   type ApprovalDecision,
+  type CockpitAttachment,
   type CockpitFrame,
   type CockpitState,
+  type PromptAttachmentInput,
   type QueuedPrompt,
 } from "../lib/cockpitTypes";
 import { useCockpitPrefs } from "../lib/cockpitPrefs";
@@ -38,7 +40,7 @@ export type Action =
   | { kind: "frame"; frame: CockpitFrame }
   | { kind: "frames"; frames: CockpitFrame[] }
   | { kind: "lagged"; skipped: number }
-  | { kind: "user_prompt"; text: string }
+  | { kind: "user_prompt"; text: string; attachments?: CockpitAttachment[] }
   | { kind: "error"; message: string }
   | { kind: "clear_error" }
   | { kind: "lagged_resolved" }
@@ -372,6 +374,10 @@ function reducer(state: CockpitState, action: Action): CockpitState {
         id: `user-${Date.now()}-${state.activity.length}`,
         kind: "user_prompt",
         text: action.text,
+        attachments:
+          action.attachments && action.attachments.length > 0
+            ? action.attachments
+            : undefined,
         at: new Date().toISOString(),
       }),
       assistantMessage: "",
@@ -988,7 +994,10 @@ export function useCockpit(
   // the items it just sent; false on any disconnect / non-OK response /
   // network error so the queue stays intact for the next turn-end retry.
   const dispatchPromptNow = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (
+      text: string,
+      attachments?: PromptAttachmentInput[],
+    ): Promise<boolean> => {
       if (!sessionId) return false;
       if (statusRef.current !== "open") {
         dispatch({
@@ -997,22 +1006,49 @@ export function useCockpit(
         });
         return false;
       }
+      // Optimistic preview rows: render the attachment inline from a
+      // local data URL so the bubble shows immediately, before the
+      // server confirms and replay would otherwise back it with the
+      // GET endpoint. See #1000 / #965.
+      const previews: CockpitAttachment[] = (attachments ?? []).map(
+        (a, i) => ({
+          id: `local-${Date.now()}-${i}`,
+          kind: a.kind,
+          mimeType: a.mimeType,
+          name: a.name,
+          size: Math.floor((a.dataB64.length * 3) / 4),
+          url: `data:${a.mimeType};base64,${a.dataB64}`,
+        }),
+      );
       // Optimistically echo the user's message; the agent reply
       // streams back as session/update events on the WS. If the POST
       // fails we'll surface a banner and the user can retry; the
       // optimistic row stays so they see what they tried to send.
-      dispatch({ kind: "user_prompt", text });
+      dispatch({
+        kind: "user_prompt",
+        text,
+        attachments: previews.length > 0 ? previews : undefined,
+      });
       // Submit counts as activity so the force-end-turn watchdog
       // doesn't surface the escape hatch immediately on a fresh prompt
       // (the agent's first chunk can be a few seconds out).
       lastActivityRef.current = Date.now();
       try {
+        const body = {
+          text,
+          attachments: (attachments ?? []).map((a) => ({
+            kind: a.kind,
+            mime_type: a.mimeType,
+            data: a.dataB64,
+            name: a.name,
+          })),
+        };
         const res = await fetch(
           `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/prompt`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ text }),
+            body: JSON.stringify(body),
           },
         );
         if (!res.ok) {
@@ -1048,7 +1084,7 @@ export function useCockpit(
   // its own status guard for the drain effect, which can race the WS
   // reopen window (see #1144).
   const sendPrompt = useCallback(
-    async (text: string) => {
+    async (text: string, attachments?: PromptAttachmentInput[]) => {
       if (!sessionId) return;
       // Auto-wake an archived or actively-snoozed session before
       // routing. The tmux send path runs this via
@@ -1082,10 +1118,24 @@ export function useCockpit(
       const workerNotRunning = workerStateRef.current !== "running";
       const shouldEnqueue = wsClosed || workerNotRunning || state.turnActive || state.workerStopped || state.workerRestarting;
       if (shouldEnqueue) {
+        // The local prompt queue is text-only (persisted to
+        // localStorage, where megabytes of base64 would blow the
+        // quota). Attachments must go through the immediate POST, so
+        // surface why rather than silently dropping them. The composer
+        // keeps the text + attachments so the user can resend once the
+        // agent is idle. See #1000 / #965.
+        if (attachments && attachments.length > 0) {
+          dispatch({
+            kind: "error",
+            message:
+              "Attachments can only be sent while the agent is idle and connected. Your message was not sent; try again in a moment.",
+          });
+          return;
+        }
         dispatch({ kind: "enqueue_prompt", text });
         return;
       }
-      await dispatchPromptNow(text);
+      await dispatchPromptNow(text, attachments);
     },
     [
       sessionId,
