@@ -1728,6 +1728,18 @@ describe("useTerminal OSC 52 clipboard", () => {
     }
   });
 
+  it("swallows a rejected clipboard write", async () => {
+    writeText.mockRejectedValueOnce(new Error("no gesture"));
+    const div = await mountHook();
+    try {
+      expect(() => captured.oscHandlers[52]!("c;aGVsbG8=")).not.toThrow();
+      await flushAsync();
+      expect(writeText).toHaveBeenCalledWith("hello");
+    } finally {
+      div.remove();
+    }
+  });
+
   it("ignores an OSC 52 paste query (no clipboard write)", async () => {
     const div = await mountHook();
     try {
@@ -1745,6 +1757,148 @@ describe("useTerminal OSC 52 clipboard", () => {
       expect(() => captured.oscHandlers[52]!("c;!!!not base64!!!")).not.toThrow();
       await flushAsync();
       expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      div.remove();
+    }
+  });
+
+  // base64("hi") === "aGk=".
+  const HI_OSC = "c;aGk=";
+
+  function fireDrag(
+    viewport: HTMLElement,
+    from: { x: number; y: number },
+    to: { x: number; y: number },
+  ): void {
+    viewport.dispatchEvent(
+      new MouseEvent("mousedown", {
+        button: 0,
+        clientX: from.x,
+        clientY: from.y,
+        bubbles: true,
+      }),
+    );
+    window.dispatchEvent(
+      new MouseEvent("mouseup", {
+        button: 0,
+        clientX: to.x,
+        clientY: to.y,
+        bubbles: true,
+      }),
+    );
+  }
+
+  it("arms a ClipboardItem on drag release and resolves it from the OSC 52 payload", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText, write },
+      configurable: true,
+    });
+    class FakeClipboardItem {
+      constructor(public data: Record<string, Promise<Blob>>) {}
+    }
+    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
+    const div = await mountHook();
+    try {
+      const viewport = div.querySelector(".xterm") as HTMLElement;
+      fireDrag(viewport, { x: 10, y: 10 }, { x: 120, y: 90 });
+      // The gesture pre-arms a promise-valued clipboard write.
+      expect(write).toHaveBeenCalledTimes(1);
+      // The OSC 52 escape resolves that pending write; the direct writeText
+      // fallback is not used on the ClipboardItem path.
+      captured.oscHandlers[52]!(HI_OSC);
+      await flushAsync();
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("does not arm on a plain click (below the drag threshold)", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText, write },
+      configurable: true,
+    });
+    vi.stubGlobal(
+      "ClipboardItem",
+      class {
+        constructor(public d: unknown) {}
+      },
+    );
+    const div = await mountHook();
+    try {
+      const viewport = div.querySelector(".xterm") as HTMLElement;
+      fireDrag(viewport, { x: 10, y: 10 }, { x: 11, y: 11 });
+      expect(write).not.toHaveBeenCalled();
+      // An unarmed OSC 52 (e.g. the agent ran a copy itself) still writes.
+      captured.oscHandlers[52]!(HI_OSC);
+      await flushAsync();
+      expect(writeText).toHaveBeenCalledWith("hi");
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("falls back to writeText when promise ClipboardItem is unavailable", async () => {
+    vi.stubGlobal("ClipboardItem", undefined);
+    const div = await mountHook();
+    try {
+      const viewport = div.querySelector(".xterm") as HTMLElement;
+      fireDrag(viewport, { x: 10, y: 10 }, { x: 120, y: 90 });
+      captured.oscHandlers[52]!(HI_OSC);
+      await flushAsync();
+      expect(writeText).toHaveBeenCalledWith("hi");
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("clears the armed ClipboardItem write when no OSC 52 arrives in time", async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText, write },
+      configurable: true,
+    });
+    vi.stubGlobal(
+      "ClipboardItem",
+      class {
+        constructor(public d: unknown) {}
+      },
+    );
+    const div = await mountHook();
+    try {
+      const viewport = div.querySelector(".xterm") as HTMLElement;
+      fireDrag(viewport, { x: 10, y: 10 }, { x: 120, y: 90 });
+      expect(write).toHaveBeenCalledTimes(1);
+      // No OSC 52 lands: the timeout fires and disarms.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      // A late OSC 52 no longer resolves the (expired) item; it writes direct.
+      captured.oscHandlers[52]!(HI_OSC);
+      await flushAsync();
+      expect(writeText).toHaveBeenCalledWith("hi");
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("disarms the writeText fallback after its timeout", async () => {
+    vi.stubGlobal("ClipboardItem", undefined);
+    const div = await mountHook();
+    try {
+      const viewport = div.querySelector(".xterm") as HTMLElement;
+      fireDrag(viewport, { x: 10, y: 10 }, { x: 120, y: 90 });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(600);
+      });
+      // After the timeout the fallback resolver is cleared; a later OSC 52
+      // takes the direct-write path exactly once.
+      captured.oscHandlers[52]!(HI_OSC);
+      await flushAsync();
+      expect(writeText).toHaveBeenCalledTimes(1);
+      expect(writeText).toHaveBeenCalledWith("hi");
     } finally {
       div.remove();
     }
