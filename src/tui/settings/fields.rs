@@ -88,6 +88,7 @@ pub enum FieldKey {
     VolumeIgnores,
     VolumeIgnoresStrategy,
     MountSsh,
+    SelinuxRelabel,
     CustomInstruction,
     ContainerRuntime,
     // Tmux
@@ -1243,6 +1244,11 @@ fn build_sandbox_fields(
         global.sandbox.mount_ssh,
         sb.and_then(|s| s.mount_ssh),
     );
+    let (selinux_relabel, o_sel) = resolve_value(
+        scope,
+        global.sandbox.selinux_relabel,
+        sb.and_then(|s| s.selinux_relabel),
+    );
     let (custom_instruction, o_ci) = resolve_optional(
         scope,
         global.sandbox.custom_instruction.clone(),
@@ -1445,6 +1451,15 @@ fn build_sandbox_fields(
             category: SettingsCategory::Sandbox,
             has_override: o8,
             inherited_display: inherited_if(o8, FieldValue::Bool(global.sandbox.mount_ssh)),
+        },
+        SettingField {
+            key: FieldKey::SelinuxRelabel,
+            label: "SELinux Relabel",
+            description: "Append the :z SELinux relabel flag to sandbox bind mounts (needed on Fedora/RHEL; relabels host paths)",
+            value: FieldValue::Bool(selinux_relabel),
+            category: SettingsCategory::Sandbox,
+            has_override: o_sel,
+            inherited_display: inherited_if(o_sel, FieldValue::Bool(global.sandbox.selinux_relabel)),
         },
         SettingField {
             key: FieldKey::CustomInstruction,
@@ -2622,6 +2637,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::PortMappings, FieldValue::List(v)) => config.sandbox.port_mappings = v.clone(),
         (FieldKey::VolumeIgnores, FieldValue::List(v)) => config.sandbox.volume_ignores = v.clone(),
         (FieldKey::MountSsh, FieldValue::Bool(v)) => config.sandbox.mount_ssh = *v,
+        (FieldKey::SelinuxRelabel, FieldValue::Bool(v)) => config.sandbox.selinux_relabel = *v,
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => config.sandbox.auto_cleanup = *v,
         (FieldKey::CpuLimit, FieldValue::OptionalText(v)) => {
             config.sandbox.cpu_limit = v.clone();
@@ -2992,6 +3008,9 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::MountSsh, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.sandbox, |s, val| s.mount_ssh = val);
+        }
+        (FieldKey::SelinuxRelabel, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.sandbox, |s, val| s.selinux_relabel = val);
         }
         (FieldKey::SandboxAutoCleanup, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.sandbox, |s, val| s.auto_cleanup = val);

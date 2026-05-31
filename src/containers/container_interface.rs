@@ -86,6 +86,7 @@ pub fn docker_env_args(entries: &[EnvEntry]) -> (Vec<String>, Vec<(String, Strin
     (argv, inherit)
 }
 
+#[derive(Default)]
 pub struct ContainerConfig {
     pub working_dir: String,
     pub volumes: Vec<VolumeMount>,
@@ -96,6 +97,10 @@ pub struct ContainerConfig {
     pub cpu_limit: Option<String>,
     pub memory_limit: Option<String>,
     pub port_mappings: Vec<String>,
+    /// Append the SELinux relabel flag (`:z`) to host bind mounts so the container
+    /// can access them on SELinux-enforcing hosts (Fedora, RHEL). Set from
+    /// `sandbox.selinux_relabel`; only emitted for runtimes that support it.
+    pub selinux_relabel: bool,
 }
 
 pub trait ContainerRuntimeInterface {

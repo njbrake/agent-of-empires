@@ -25,6 +25,9 @@ pub(crate) struct RuntimeBase {
     pub supports_remove_volumes: bool,
     /// Whether this runtime supports `volume ls` / `volume rm` for named volumes
     pub supports_named_volumes: bool,
+    /// Whether this runtime supports the `:z`/`:Z` SELinux relabel volume flag
+    /// (Docker and Podman do; Apple Container does not).
+    pub supports_selinux_relabel: bool,
 }
 
 impl RuntimeBase {
@@ -37,6 +40,7 @@ impl RuntimeBase {
         supports_read_only_volumes: true,
         supports_remove_volumes: true,
         supports_named_volumes: true,
+        supports_selinux_relabel: true,
     };
 
     pub const APPLE_CONTAINER: Self = Self {
@@ -48,6 +52,7 @@ impl RuntimeBase {
         supports_read_only_volumes: false,
         supports_remove_volumes: false,
         supports_named_volumes: false,
+        supports_selinux_relabel: false,
     };
 
     pub const PODMAN: Self = Self {
@@ -62,6 +67,7 @@ impl RuntimeBase {
         supports_read_only_volumes: true,
         supports_remove_volumes: true,
         supports_named_volumes: true,
+        supports_selinux_relabel: true,
     };
 
     pub fn command(&self) -> Command {
@@ -182,10 +188,25 @@ impl RuntimeBase {
                     vol.container_path
                 );
             }
-            let mount = if vol.read_only && self.supports_read_only_volumes {
-                format!("{}:{}:ro", vol.host_path, vol.container_path)
-            } else {
+            let mut opts: Vec<&str> = Vec::new();
+            if vol.read_only && self.supports_read_only_volumes {
+                opts.push("ro");
+            }
+            if config.selinux_relabel && self.supports_selinux_relabel {
+                // `:z` (shared) relabels the host path to a container-accessible
+                // SELinux type. Shared rather than `:Z` because aoe mounts the
+                // credential dir into multiple sandbox containers.
+                opts.push("z");
+            }
+            let mount = if opts.is_empty() {
                 format!("{}:{}", vol.host_path, vol.container_path)
+            } else {
+                format!(
+                    "{}:{}:{}",
+                    vol.host_path,
+                    vol.container_path,
+                    opts.join(",")
+                )
             };
             args.push("-v".to_string());
             args.push(mount);
@@ -420,6 +441,7 @@ mod tests {
             cpu_limit: None,
             memory_limit: None,
             port_mappings: vec![],
+            ..Default::default()
         };
 
         let args = base.build_create_args("test-container", "alpine:latest", &config);
@@ -444,6 +466,7 @@ mod tests {
             cpu_limit: None,
             memory_limit: None,
             port_mappings: vec![],
+            ..Default::default()
         };
 
         let args = base.build_create_args("test-container", "alpine:latest", &config);
@@ -451,6 +474,55 @@ mod tests {
         // Should NOT include :ro suffix (Apple Container doesn't support it)
         assert!(args.contains(&"/host/path:/container/path".to_string()));
         assert!(!args.iter().any(|a| a.ends_with(":ro")));
+    }
+
+    #[test]
+    fn test_build_create_args_selinux_relabel() {
+        let base = RuntimeBase::PODMAN;
+        let config = ContainerConfig {
+            working_dir: "/workspace/project".to_string(),
+            volumes: vec![
+                VolumeMount {
+                    host_path: "/host/rw".to_string(),
+                    container_path: "/container/rw".to_string(),
+                    read_only: false,
+                },
+                VolumeMount {
+                    host_path: "/host/ro".to_string(),
+                    container_path: "/container/ro".to_string(),
+                    read_only: true,
+                },
+            ],
+            selinux_relabel: true,
+            ..Default::default()
+        };
+
+        let args = base.build_create_args("test-container", "alpine:latest", &config);
+
+        // Read-write mount gets :z; read-only gets :ro,z.
+        assert!(args.contains(&"/host/rw:/container/rw:z".to_string()));
+        assert!(args.contains(&"/host/ro:/container/ro:ro,z".to_string()));
+    }
+
+    #[test]
+    fn test_build_create_args_selinux_relabel_unsupported_runtime() {
+        let base = RuntimeBase::APPLE_CONTAINER;
+        let config = ContainerConfig {
+            working_dir: "/workspace/project".to_string(),
+            volumes: vec![VolumeMount {
+                host_path: "/host/path".to_string(),
+                container_path: "/container/path".to_string(),
+                read_only: false,
+            }],
+            selinux_relabel: true,
+            ..Default::default()
+        };
+
+        let args = base.build_create_args("test-container", "alpine:latest", &config);
+
+        // Apple Container doesn't support :z; the mount stays plain.
+        assert!(args.contains(&"/host/path:/container/path".to_string()));
+        assert!(!args.iter().any(|a| a.contains(":z")));
     }
 
     #[test]
@@ -493,6 +565,7 @@ mod tests {
             cpu_limit: Some("2".to_string()),
             memory_limit: Some("4g".to_string()),
             port_mappings: vec!["3000:3000".to_string()],
+            ..Default::default()
         };
 
         let args = base.build_create_args("test", "ubuntu:latest", &config);
@@ -532,6 +605,7 @@ mod tests {
             cpu_limit: None,
             memory_limit: None,
             port_mappings: vec![],
+            ..Default::default()
         };
 
         let args = base.build_create_args("test", "alpine:latest", &config);
@@ -562,6 +636,7 @@ mod tests {
             cpu_limit: None,
             memory_limit: None,
             port_mappings: vec![],
+            ..Default::default()
         };
 
         let args = base.build_create_args("test", "alpine:latest", &config);
@@ -585,6 +660,7 @@ mod tests {
             cpu_limit: None,
             memory_limit: None,
             port_mappings: vec!["3000:3000".to_string(), "5432:5432".to_string()],
+            ..Default::default()
         };
 
         let args = base.build_create_args("test", "alpine:latest", &config);
@@ -617,6 +693,7 @@ mod tests {
             cpu_limit: None,
             memory_limit: None,
             port_mappings: vec![],
+            ..Default::default()
         };
 
         let args = base.build_create_args("test", "alpine:latest", &config);
@@ -654,6 +731,7 @@ mod tests {
             cpu_limit: None,
             memory_limit: None,
             port_mappings: vec![],
+            ..Default::default()
         };
 
         let args = base.build_create_args("test", "alpine:latest", &config);
