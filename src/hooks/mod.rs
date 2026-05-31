@@ -2613,6 +2613,31 @@ hooks_auto_accept: false
     }
 
     #[test]
+    fn test_hook_command_session_id_locks_top_level_first_contract() {
+        // The grep regex `[{,]"session_id":"<UUID>"` cannot distinguish a
+        // nested object literal from the top-level field: a nested copy
+        // emitted textually before the top-level one is captured by
+        // `head -1`. This test pins the resulting behavior so any drift in
+        // the upstream payload schema (or in the extractor) shows up as a
+        // test failure rather than as silent wrong-UUID capture.
+        let tmp = TempDir::new().unwrap();
+        let nested = "11111111-2222-3333-4444-555555555555";
+        let top_level = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let payload =
+            format!(r#"{{"context":{{"session_id":"{nested}"}},"session_id":"{top_level}"}}"#);
+        let output = run_session_id_hook(&payload, "nested_first", tmp.path());
+        assert!(output.status.success());
+        let written = std::fs::read_to_string(tmp.path().join("nested_first").join("session_id"))
+            .expect("sidecar file");
+        assert_eq!(
+            written, nested,
+            "current extractor returns the nested UUID; replace with a JSON-aware \
+             parser if Claude ever emits a payload where a nested `session_id` \
+             precedes the top-level field"
+        );
+    }
+
+    #[test]
     fn test_hook_command_session_id_extracts_from_multi_line_payload() {
         let tmp = TempDir::new().unwrap();
         let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
