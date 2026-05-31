@@ -3388,6 +3388,35 @@ mod tests {
     use crate::session::{Config, ProfileConfig};
 
     #[test]
+    fn test_cockpit_auto_stop_idle_secs_applies_to_global_and_profile() {
+        let mut global = Config::default();
+        let mut profile = ProfileConfig::default();
+
+        // Pull the real field from the builder so the test tracks the
+        // production definition (label/category), then pin the value.
+        let mut field = build_fields_for_category(
+            SettingsCategory::Cockpit,
+            SettingsScope::Global,
+            &global,
+            &profile,
+        )
+        .into_iter()
+        .find(|f| f.key == FieldKey::CockpitAutoStopIdleSecs)
+        .expect("CockpitAutoStopIdleSecs field must exist in the Cockpit category");
+        field.value = FieldValue::Number(28800);
+
+        apply_field_to_config(&field, SettingsScope::Global, &mut global, &mut profile);
+        assert_eq!(global.cockpit.auto_stop_idle_secs, 28800);
+
+        apply_field_to_config(&field, SettingsScope::Profile, &mut global, &mut profile);
+        assert_eq!(
+            profile.cockpit.as_ref().and_then(|c| c.auto_stop_idle_secs),
+            Some(28800),
+            "profile scope must store the value as an override"
+        );
+    }
+
+    #[test]
     fn test_profile_field_has_no_override_after_global_change() {
         use crate::session::config::UpdateCheckMode;
         // Start with default configs
