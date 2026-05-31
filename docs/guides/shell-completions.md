@@ -62,10 +62,14 @@ aoe completion zsh > ~/.zfunc/_aoe
 aoe completion fish > ~/.config/fish/completions/aoe.fish
 ```
 
-**PowerShell:**
+**PowerShell** (write to a dedicated file, then dot-source it from your profile; redirecting straight into `$PROFILE` would overwrite the profile script itself):
 
 ```powershell
-aoe completion powershell > $PROFILE.CurrentUserAllHosts
+$dir = Split-Path -Parent $PROFILE.CurrentUserAllHosts
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+aoe completion powershell > "$dir\aoe.completion.ps1"
+# Add this line to $PROFILE.CurrentUserAllHosts:
+#   . "$PSScriptRoot\aoe.completion.ps1"
 ```
 
 **Elvish:**
