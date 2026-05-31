@@ -448,15 +448,16 @@ pub fn kill_runner_group(pid: u32) {
 }
 
 /// Reap the runner for `session_id`: SIGTERM its whole process group (if
-/// the registry entry exists and its pid is alive), then remove the
-/// registry entry and socket. The canonical teardown used by the
-/// supervisor's shutdown paths and by a fresh spawn that supersedes a
-/// stale runner, so no prior agent tree is left orphaned. See #1689.
+/// the registry entry exists), then remove the registry entry and socket.
+/// The canonical teardown used by the supervisor's shutdown paths and by a
+/// fresh spawn that supersedes a stale runner, so no prior agent tree is
+/// left orphaned. The SIGTERM is sent unconditionally: the process group
+/// can outlive its leader pid, so gating on leader liveness would skip the
+/// killpg and leak surviving descendants. `killpg` ignores ESRCH, so an
+/// already-empty group is a harmless no-op. See #1689.
 pub fn terminate(session_id: &str) {
     if let Ok(Some(record)) = load(session_id) {
-        if is_pid_alive(record.pid) {
-            terminate_runner_group(record.pid);
-        }
+        terminate_runner_group(record.pid);
     }
     delete(session_id).ok();
 }
