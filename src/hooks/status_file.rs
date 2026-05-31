@@ -5,10 +5,16 @@
 //! still reconcile agent-specific hook gaps from pane text.
 
 use std::path::PathBuf;
+use std::time::Duration;
+
+use uuid::Uuid;
 
 use crate::session::Status;
 
 use super::HOOK_STATUS_BASE;
+
+/// Maximum age before a sidecar `session_id` file is considered stale.
+pub(crate) const SESSION_ID_SIDECAR_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 
 /// Return the directory for a given instance's hook status file.
 pub fn hook_status_dir(instance_id: &str) -> PathBuf {
@@ -34,6 +40,27 @@ pub fn read_hook_status(instance_id: &str) -> Option<Status> {
             tracing::warn!(target: "hooks.status", "Unexpected hook status value: {:?}", other);
             None
         }
+    }
+}
+
+/// Read a Claude session UUID from the hook-written `session_id` sidecar.
+///
+/// Returns `None` when the file is absent, malformed (non-UUID), or older
+/// than [`SESSION_ID_SIDECAR_MAX_AGE`]. Filesystems that report
+/// `mtime > now` (clock skew) are treated as stale.
+pub fn read_hook_session_id(instance_id: &str) -> Option<String> {
+    let path = hook_status_dir(instance_id).join("session_id");
+    let metadata = std::fs::metadata(&path).ok()?;
+    let mtime = metadata.modified().ok()?;
+    if mtime.elapsed().ok()? > SESSION_ID_SIDECAR_MAX_AGE {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    let id = content.trim().to_string();
+    if Uuid::parse_str(&id).is_ok() {
+        Some(id)
+    } else {
+        None
     }
 }
 
@@ -238,6 +265,63 @@ mod tests {
         let body = format!(r#"{{"urgent":true,"urgent_expires_at":{}}}"#, future);
         let dir = write_attention_json(id, &body);
         assert!(read_hook_urgent(id));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    fn write_session_id_sidecar(instance_id: &str, content: &str) -> PathBuf {
+        let dir = hook_status_dir(instance_id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("session_id"), content).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_read_hook_session_id_returns_some_when_fresh_uuid() {
+        let id = "test_session_id_fresh";
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let dir = write_session_id_sidecar(id, uuid);
+        assert_eq!(read_hook_session_id(id), Some(uuid.to_string()));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_hook_session_id_returns_none_when_absent() {
+        assert_eq!(
+            read_hook_session_id("nonexistent_session_id_instance"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_read_hook_session_id_rejects_non_uuid() {
+        let id = "test_session_id_garbage";
+        let dir = write_session_id_sidecar(id, "not-a-uuid");
+        assert_eq!(read_hook_session_id(id), None);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_hook_session_id_rejects_stale_file() {
+        let id = "test_session_id_stale";
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let dir = write_session_id_sidecar(id, uuid);
+        let stale = std::time::SystemTime::now() - Duration::from_secs(10 * 60);
+        fs::File::options()
+            .write(true)
+            .open(dir.join("session_id"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(stale))
+            .unwrap();
+        assert_eq!(read_hook_session_id(id), None);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_hook_session_id_trims_trailing_whitespace() {
+        let id = "test_session_id_trim";
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let dir = write_session_id_sidecar(id, &format!("{uuid}\n"));
+        assert_eq!(read_hook_session_id(id), Some(uuid.to_string()));
         fs::remove_dir_all(dir).ok();
     }
 }

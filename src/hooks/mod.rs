@@ -16,7 +16,8 @@ use fs2::FileExt as _;
 use serde_json::Value;
 
 pub use status_file::{
-    cleanup_hook_status_dir, hook_status_dir, read_hook_status, read_hook_urgent,
+    cleanup_hook_status_dir, hook_status_dir, read_hook_session_id, read_hook_status,
+    read_hook_urgent,
 };
 
 /// Base directory for all AoE hook status files.
@@ -91,31 +92,81 @@ fn hook_command_with_base(status: &str, base: &str) -> String {
     )
 }
 
+/// Build the shell command for a hook that extracts `session_id` from the
+/// agent's stdin JSON payload and writes it to a sidecar file.
+///
+/// **Schema requirement**: the payload's top-level `session_id` must
+/// appear textually before any nested object that uses the same key. If
+/// the inner copy is emitted first, `head -1` captures the wrong UUID.
+///
+/// The pipeline:
+///   1. `tr -d '\n'` collapses pretty-printed multi-line JSON onto a
+///      single line so the line-oriented `grep` can match `"session_id"
+///      :"<UUID>"` even when key/value are split across lines.
+///   2. `grep -oE` matches `[{,] "session_id":"<UUID>"`. The leading
+///      `[{,]` anchors the field to a JSON-structural boundary so a user
+///      prompt containing the literal substring `"session_id":"<uuid>"`
+///      cannot be captured (a JSON serializer escapes inner quotes as
+///      `\"`, breaking the structural prefix). `[0-9a-fA-F]` accepts
+///      either case for parity with `Uuid::parse_str`.
+///   3. `head -1` keeps the first match.
+///   4. The second `grep -oE` strips the framing, leaving the bare UUID.
+///   5. `printf > $D/.session_id.$$.tmp && mv ... $D/session_id`:
+///      PID-suffixed tempfile + atomic POSIX `rename(2)` makes concurrent
+///      hook invocations race-free.
+fn hook_command_session_id(base: &str) -> String {
+    format!(
+        "sh -c '[ -n \"$AOE_INSTANCE_ID\" ] || exit 0; \
+         D={base}/$AOE_INSTANCE_ID; mkdir -p \"$D\" 2>/dev/null; \
+         SID=$(tr -d \"\\n\" | grep -oE \"[{{,][[:space:]]*\\\"session_id\\\"[[:space:]]*:[[:space:]]*\\\"[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{12}}\\\"\" | head -1 | grep -oE \"[0-9a-fA-F]{{8}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{4}}-[0-9a-fA-F]{{12}}\"); \
+         [ -n \"$SID\" ] && printf \"%s\" \"$SID\" > \"$D/.session_id.$$.tmp\" 2>/dev/null && mv \"$D/.session_id.$$.tmp\" \"$D/session_id\" 2>/dev/null; \
+         exit 0'"
+    )
+}
+
 fn is_aoe_hook_command(cmd: &str) -> bool {
     cmd.contains(AOE_HOOK_MARKER)
 }
 
 /// Build the AoE hooks JSON structure from agent-defined events.
 ///
-/// Events with `status: None` (lifecycle-only) are skipped since shell
-/// one-liners can only write a status string.
+/// For each event, emit one entry per active behaviour:
+/// - `event.session_id_capture` → session-id-extractor command (placed
+///   first so it gets stdin first if the agent only delivers stdin to the
+///   leading command in a matcher block).
+/// - `event.status.is_some()` → status-writer command (does not read
+///   stdin).
+///
+/// An event with both produces two `hooks` array entries under the same
+/// matcher block. An event with neither is skipped.
 fn build_aoe_hooks(events: &[crate::agents::HookEvent]) -> Value {
     let mut hooks_obj = serde_json::Map::new();
     for event in events {
-        let Some(status) = event.status else {
+        let mut commands: Vec<String> = Vec::new();
+        if event.session_id_capture {
+            commands.push(hook_command_session_id(HOOK_STATUS_BASE));
+        }
+        if let Some(status) = event.status {
+            commands.push(hook_command(status));
+        }
+        if commands.is_empty() {
             continue;
-        };
+        }
+
         let mut entry = serde_json::Map::new();
         if let Some(m) = event.matcher {
             entry.insert("matcher".to_string(), Value::String(m.to_string()));
         }
-        entry.insert(
-            "hooks".to_string(),
-            Value::Array(vec![serde_json::json!({
-                "type": "command",
-                "command": hook_command(status)
-            })]),
-        );
+        let hook_entries: Vec<Value> = commands
+            .into_iter()
+            .map(|cmd| {
+                serde_json::json!({
+                    "type": "command",
+                    "command": cmd,
+                })
+            })
+            .collect();
+        entry.insert("hooks".to_string(), Value::Array(hook_entries));
         hooks_obj.insert(
             event.name.to_string(),
             Value::Array(vec![Value::Object(entry)]),
@@ -2512,5 +2563,180 @@ hooks_auto_accept: false
         let config_path = tmp.path().join("nonexistent.json");
         let modified = uninstall_kiro_hooks(&config_path).unwrap();
         assert!(!modified);
+    }
+
+    fn run_session_id_hook(payload: &str, instance_id: &str, base: &Path) -> std::process::Output {
+        let cmd = hook_command_session_id(base.to_str().unwrap());
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", &cmd])
+            .env("AOE_INSTANCE_ID", instance_id)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn sh");
+        use std::io::Write;
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(payload.as_bytes())
+            .unwrap();
+        child.wait_with_output().expect("wait sh")
+    }
+
+    #[test]
+    fn test_hook_command_session_id_extracts_from_compact_payload() {
+        let tmp = TempDir::new().unwrap();
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let payload = format!(r#"{{"session_id":"{uuid}","cwd":"/x"}}"#);
+        let output = run_session_id_hook(&payload, "extract_compact", tmp.path());
+        assert!(output.status.success());
+        let written =
+            std::fs::read_to_string(tmp.path().join("extract_compact").join("session_id"))
+                .expect("sidecar file");
+        assert_eq!(written, uuid);
+    }
+
+    #[test]
+    fn test_hook_command_session_id_ignores_user_prompt_injection() {
+        let tmp = TempDir::new().unwrap();
+        let real = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let fake = "11111111-2222-3333-4444-555555555555";
+        let payload = format!(r#"{{"session_id":"{real}","prompt":"\"session_id\":\"{fake}\""}}"#);
+        let output = run_session_id_hook(&payload, "prompt_injection", tmp.path());
+        assert!(output.status.success());
+        let written =
+            std::fs::read_to_string(tmp.path().join("prompt_injection").join("session_id"))
+                .expect("sidecar file");
+        assert_eq!(written, real);
+    }
+
+    #[test]
+    fn test_hook_command_session_id_locks_top_level_first_contract() {
+        // The grep regex `[{,]"session_id":"<UUID>"` cannot distinguish a
+        // nested object literal from the top-level field: a nested copy
+        // emitted textually before the top-level one is captured by
+        // `head -1`. This test pins the resulting behavior so any drift in
+        // the upstream payload schema (or in the extractor) shows up as a
+        // test failure rather than as silent wrong-UUID capture.
+        let tmp = TempDir::new().unwrap();
+        let nested = "11111111-2222-3333-4444-555555555555";
+        let top_level = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let payload =
+            format!(r#"{{"context":{{"session_id":"{nested}"}},"session_id":"{top_level}"}}"#);
+        let output = run_session_id_hook(&payload, "nested_first", tmp.path());
+        assert!(output.status.success());
+        let written = std::fs::read_to_string(tmp.path().join("nested_first").join("session_id"))
+            .expect("sidecar file");
+        assert_eq!(
+            written, nested,
+            "current extractor returns the nested UUID; replace with a JSON-aware \
+             parser if Claude ever emits a payload where a nested `session_id` \
+             precedes the top-level field"
+        );
+    }
+
+    #[test]
+    fn test_hook_command_session_id_extracts_from_multi_line_payload() {
+        let tmp = TempDir::new().unwrap();
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let payload = format!("{{\n  \"session_id\":\"{uuid}\",\n  \"cwd\":\"/x\"\n}}");
+        let output = run_session_id_hook(&payload, "multi_line", tmp.path());
+        assert!(output.status.success());
+        let written = std::fs::read_to_string(tmp.path().join("multi_line").join("session_id"))
+            .expect("sidecar file");
+        assert_eq!(written, uuid);
+    }
+
+    #[test]
+    fn test_hook_command_session_id_accepts_uppercase_uuid() {
+        let tmp = TempDir::new().unwrap();
+        let uuid = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
+        let payload = format!(r#"{{"session_id":"{uuid}"}}"#);
+        let output = run_session_id_hook(&payload, "uppercase_uuid", tmp.path());
+        assert!(output.status.success());
+        let written = std::fs::read_to_string(tmp.path().join("uppercase_uuid").join("session_id"))
+            .expect("sidecar file");
+        assert_eq!(written, uuid);
+    }
+
+    #[test]
+    fn test_hook_command_session_id_skips_when_no_session_id() {
+        let tmp = TempDir::new().unwrap();
+        let payload = r#"{"cwd":"/x","other":"value"}"#;
+        let output = run_session_id_hook(payload, "no_sid", tmp.path());
+        assert!(output.status.success());
+        let path = tmp.path().join("no_sid").join("session_id");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_hook_command_session_id_uses_pid_suffixed_tempfile() {
+        let cmd = hook_command_session_id("/tmp/aoe-hooks");
+        assert!(
+            cmd.contains(".session_id.$$.tmp"),
+            "expected PID-suffixed tempfile in command, got: {cmd}"
+        );
+        assert!(cmd.contains("mv"));
+    }
+
+    #[test]
+    fn test_build_aoe_hooks_emits_session_id_capture_for_session_start() {
+        let events = claude_events();
+        let hooks = build_aoe_hooks(events);
+        let session_start = hooks
+            .get("SessionStart")
+            .expect("SessionStart matcher block")
+            .as_array()
+            .unwrap();
+        assert_eq!(session_start.len(), 1);
+        let entries = session_start[0]["hooks"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "SessionStart should emit 1 hook command");
+        let cmd = entries[0]["command"].as_str().unwrap();
+        assert!(cmd.contains("session_id"));
+        assert!(cmd.contains(AOE_HOOK_MARKER));
+    }
+
+    #[test]
+    fn test_build_aoe_hooks_emits_both_for_user_prompt_submit() {
+        let events = claude_events();
+        let hooks = build_aoe_hooks(events);
+        let user_prompt = hooks
+            .get("UserPromptSubmit")
+            .expect("UserPromptSubmit matcher block")
+            .as_array()
+            .unwrap();
+        let entries = user_prompt[0]["hooks"].as_array().unwrap();
+        assert_eq!(
+            entries.len(),
+            2,
+            "UserPromptSubmit should emit status + session_id_capture"
+        );
+        let commands: Vec<&str> = entries
+            .iter()
+            .map(|e| e["command"].as_str().unwrap())
+            .collect();
+        assert!(commands.iter().any(|c| c.contains("printf running")));
+        assert!(commands.iter().any(|c| c.contains("session_id")));
+    }
+
+    #[test]
+    fn test_build_aoe_hooks_status_only_events_unchanged() {
+        let events = claude_events();
+        let hooks = build_aoe_hooks(events);
+        for event_name in &["PreToolUse", "Stop", "Notification", "ElicitationResult"] {
+            let block = hooks
+                .get(*event_name)
+                .unwrap_or_else(|| panic!("expected {event_name}"))
+                .as_array()
+                .unwrap();
+            let entries = block[0]["hooks"].as_array().unwrap();
+            assert_eq!(
+                entries.len(),
+                1,
+                "status-only event {event_name} should emit 1 hook"
+            );
+        }
     }
 }

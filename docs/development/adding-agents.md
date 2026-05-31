@@ -288,6 +288,15 @@ cargo build
 
 Set `hook_config: Some(AgentHookConfig { ... })` in the agent def; the generic `install_hooks()` handles it.
 
+#### `HookEvent` flags
+
+Each entry in `events: &[HookEvent]` carries:
+
+- `name` — the agent's event name (e.g., `"PreToolUse"`).
+- `matcher` — optional pattern for events that need it (e.g., Claude's `Notification` matcher).
+- `status` — `Some("running" | "waiting" | "idle")` to install a status-writer command on this event, or `None` if the event is purely lifecycle.
+- `session_id_capture` — `true` to install an additional command that extracts the active `session_id` from the agent's stdin JSON and writes it atomically to `/tmp/aoe-hooks/<AOE_INSTANCE_ID>/session_id`. Read by [`session-resume`](../guides/session-resume.md)'s poller as the primary capture source. Currently used only by Claude on `SessionStart` and `UserPromptSubmit`; other agents either don't pre-mint UUIDs (so capture is post-launch from disk) or use a different payload schema (Cursor, Codex). Setting both `status: Some(...)` and `session_id_capture: true` emits two commands under the same matcher block; the session-id command is placed first so it consumes stdin before the status writer.
+
 ### Codex (custom TOML)
 
 Codex stores AoE status hooks in the `[hooks]` table in `.codex/config.toml`:

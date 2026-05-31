@@ -680,8 +680,8 @@ mod tests {
 
     #[test]
     fn test_supports_named_volumes_flags() {
-        assert!(RuntimeBase::DOCKER.supports_named_volumes);
-        assert!(RuntimeBase::PODMAN.supports_named_volumes);
-        assert!(!RuntimeBase::APPLE_CONTAINER.supports_named_volumes);
+        const { assert!(RuntimeBase::DOCKER.supports_named_volumes) };
+        const { assert!(RuntimeBase::PODMAN.supports_named_volumes) };
+        const { assert!(!RuntimeBase::APPLE_CONTAINER.supports_named_volumes) };
     }
 }

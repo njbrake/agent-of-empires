@@ -6,9 +6,12 @@ Agent of Empires can persist Claude Code conversation IDs so sessions resume the
 
 When you launch a Claude session through AoE, AoE generates a UUID and passes it to `claude --session-id <uuid>`. Claude uses that UUID for the conversation; AoE records it in `sessions.json`. On every subsequent launch of the same instance, AoE invokes `claude --resume <uuid>` so the conversation picks up where it left off.
 
-A background poller checks `~/.claude/projects/<project>/` every 2 seconds for the most recently modified session file. If the session ID rotates at runtime — for example after `/clear`, `--fork-session`, or starting a fresh `claude` invocation in the same tmux pane — the poller catches the new ID and AoE persists it transparently. Next launch resumes the new conversation, not the stale one.
+AoE tracks the active session ID via two converging sources:
 
-For sandboxed (Docker) sessions, the poller runs the same scan inside the container via `docker exec`, since Claude writes its session files to the container's filesystem rather than the host's.
+1. **Hook sidecar (primary, near-instant).** AoE installs `SessionStart` and `UserPromptSubmit` hooks into `~/.claude/settings.json`. These hooks extract the active `session_id` from Claude's stdin payload and write it atomically to `/tmp/aoe-hooks/<instance-id>/session_id`. The poller reads this file before scanning the filesystem, so runtime rotations via `/clear`, `--fork-session`, or `--continue` are picked up within one poll tick (~2 s).
+2. **Filesystem scan (fallback).** If the sidecar is absent, stale (> 5 min), or invalid, the poller falls back to scanning `~/.claude/projects/<project>/` for the most recent `.jsonl`. Sibling AoE instances sharing the same project path are filtered out via tmux env (`AOE_CAPTURED_SESSION_ID`) so each session keeps its own UUID.
+
+For sandboxed (Docker) sessions, the filesystem scan runs inside the container via `docker exec` (capped at 5 seconds per call). The hook sidecar is host-only today; sandboxed `/clear` adoption falls back to the filesystem scan and resolves within one poll tick.
 
 ## What's covered
 

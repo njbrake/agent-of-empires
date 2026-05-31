@@ -63,7 +63,7 @@ In the TUI, press `Ctrl+P` on the Worktree field and toggle **Attach to existing
 
 When you later remove the session, AoE only cleans up worktrees it created; attached ones are left alone.
 
-**Resume an existing Claude Code conversation.** After attaching, run `/resume` inside the Claude pane and pick the conversation you want. AoE's session-id poller watches `~/.claude/projects/<project>/` and persists the new id so the next launch reattaches to the same conversation automatically. Details in [Session Resume](guides/session-resume.md), including the `aoe session set-session-id` command for setting the Claude UUID explicitly.
+**Resume an existing Claude Code conversation.** After attaching, run `/resume` inside the Claude pane and pick the conversation you want. AoE installs hooks into `~/.claude/settings.json` to capture the active session ID and persists it so the next launch reattaches to the same conversation automatically. Details in [Session Resume](guides/session-resume.md), including the `aoe session set-session-id` command for setting the Claude UUID explicitly.
 
 ## Create a Sandboxed Session
 

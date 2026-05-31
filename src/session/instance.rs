@@ -1434,6 +1434,12 @@ impl Instance {
                 super::environment::redact_env_values(v)
             })
         );
+
+        if self.tool == "claude" {
+            let sidecar = crate::hooks::hook_status_dir(&self.id).join("session_id");
+            let _ = std::fs::remove_file(&sidecar);
+        }
+
         session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
 
         self.finalize_launch(session.name(), &profile);
@@ -1723,12 +1729,28 @@ impl Instance {
 
     /// Post-launch setup: persist state, start pollers, and apply tmux options.
     fn finalize_launch(&mut self, session_name: &str, profile: &str) {
-        if let Err(e) = crate::tmux::env::set_hidden_env(
+        let claude_sid: Option<String> = if self.tool == "claude" {
+            self.agent_session_id.clone()
+        } else {
+            None
+        };
+
+        let mut entries: Vec<(&str, &str, &str)> = vec![(
             session_name,
             crate::tmux::env::AOE_INSTANCE_ID_KEY,
             &self.id,
-        ) {
-            tracing::warn!(target: "session.store", "Failed to set AOE_INSTANCE_ID in tmux env: {}", e);
+        )];
+        if let Some(ref sid) = claude_sid {
+            entries.push((
+                session_name,
+                crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
+                sid.as_str(),
+            ));
+        }
+        if let Err(e) = crate::tmux::env::set_hidden_env_batch(&entries) {
+            let keys: Vec<&str> = entries.iter().map(|(_, k, _)| *k).collect();
+            tracing::warn!(target: "session.store",
+                "Failed to set tmux env keys [{}] at finalize_launch: {}", keys.join(", "), e);
         }
 
         self.persist_session_id(profile);
@@ -1870,11 +1892,16 @@ impl Instance {
                     Box::new(claude_poll_fn_sandboxed(
                         container_name,
                         self.container_workdir(),
+                        initial_known.clone(),
+                        instance_id.clone(),
+                        extra_excludes.clone(),
                     ))
                 } else {
                     Box::new(claude_poll_fn(
                         self.project_path.clone(),
                         initial_known.clone(),
+                        instance_id.clone(),
+                        extra_excludes.clone(),
                     ))
                 }
             }
