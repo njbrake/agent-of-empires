@@ -1,5 +1,6 @@
 //! TUI dialog components
 
+mod capture_key;
 mod changelog;
 mod command_palette;
 mod confirm;
@@ -27,6 +28,7 @@ mod sort_picker;
 mod tool_picker;
 mod update_confirm;
 
+pub use capture_key::CaptureKeyDialog;
 pub use changelog::ChangelogDialog;
 pub use command_palette::{
     builtin_commands, CommandPaletteDialog, PaletteAction, PaletteCommand, PaletteGroup,

@@ -24,7 +24,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::ViewMode;
-use crate::session::config::SortOrder;
+use crate::session::config::{HomeKeybinds, SortOrder};
 use crate::tui::dialogs::PaletteGroup;
 
 /// Logical action. Each variant is dispatched by `HomeView::run_action`.
@@ -160,8 +160,24 @@ fn context_holds(context: Context, ctx: &Ctx) -> bool {
 /// Resolve a key event to an action, honoring strict mode and context guards.
 /// Returns the first matching binding in table order; context-guarded entries
 /// are listed before the unguarded entries that share their chord.
-pub fn resolve(key: &KeyEvent, strict: bool, ctx: &Ctx) -> Option<ActionId> {
+///
+/// `overrides` carries the user-configurable home-screen keymap. Commands that
+/// appear in `HomeKeybinds` (currently just `search`) are resolved from it and
+/// the matching static `BINDINGS` row is skipped, so a rebind cleanly replaces
+/// the default chord rather than coexisting with it.
+pub fn resolve(
+    key: &KeyEvent,
+    strict: bool,
+    ctx: &Ctx,
+    overrides: &HomeKeybinds,
+) -> Option<ActionId> {
     for b in BINDINGS {
+        if b.id == ActionId::SearchStart {
+            if overrides.search.matches(key) {
+                return Some(ActionId::SearchStart);
+            }
+            continue;
+        }
         let chords = if strict { b.strict } else { b.non_strict };
         if context_holds(b.context, ctx) && chords.iter().any(|c| chord_matches(c, key)) {
             return Some(b.id);
@@ -172,8 +188,13 @@ pub fn resolve(key: &KeyEvent, strict: bool, ctx: &Ctx) -> Option<ActionId> {
 
 /// Human-readable label for a binding's primary chord in the given mode, e.g.
 /// `"D"`, `"Ctrl+D"`, `"F5"`. Returns `""` if the action has no binding in the
-/// requested mode (e.g. `NextWaiting` in strict).
-pub fn label(id: ActionId, strict: bool) -> String {
+/// requested mode (e.g. `NextWaiting` in strict). For commands driven by
+/// `overrides`, the label is rendered from the user's chord so help text and
+/// palette hotkeys reflect the active binding.
+pub fn label(id: ActionId, strict: bool, overrides: &HomeKeybinds) -> String {
+    if id == ActionId::SearchStart {
+        return overrides.search.display();
+    }
     let Some(b) = BINDINGS.iter().find(|b| b.id == id) else {
         return String::new();
     };
@@ -684,12 +705,18 @@ pub fn palette_id(id: ActionId) -> &'static str {
 mod tests {
     use super::*;
 
+    use crate::session::config::{KeyBinding, KeyCodeRepr};
+
     fn ctx() -> Ctx {
         Ctx {
             view_mode: ViewMode::Agent,
             sort_order: SortOrder::Newest,
             has_search: false,
         }
+    }
+
+    fn binds() -> HomeKeybinds {
+        HomeKeybinds::default()
     }
 
     fn key(c: char) -> KeyEvent {
@@ -703,6 +730,7 @@ mod tests {
     #[test]
     fn non_strict_resolution() {
         let c = ctx();
+        let b = binds();
         let cases = [
             ('d', ActionId::Delete),
             ('D', ActionId::Diff),
@@ -720,7 +748,7 @@ mod tests {
         ];
         for (ch, want) in cases {
             assert_eq!(
-                resolve(&key(ch), false, &c),
+                resolve(&key(ch), false, &c, &b),
                 Some(want),
                 "non-strict '{ch}'"
             );
@@ -730,6 +758,7 @@ mod tests {
     #[test]
     fn strict_relocation_is_consistent() {
         let c = ctx();
+        let b = binds();
         // Shift+letter (the uppercase code) drives the primary action; the
         // secondary action moves to Ctrl+letter. No bare lowercase action keys.
         let shifted = [
@@ -741,7 +770,7 @@ mod tests {
             ('O', ActionId::SortPicker),
         ];
         for (ch, want) in shifted {
-            assert_eq!(resolve(&key(ch), true, &c), Some(want), "strict '{ch}'");
+            assert_eq!(resolve(&key(ch), true, &c, &b), Some(want), "strict '{ch}'");
         }
         let ctrled = [
             ('d', ActionId::Diff),
@@ -753,7 +782,7 @@ mod tests {
         ];
         for (ch, want) in ctrled {
             assert_eq!(
-                resolve(&ctrl_key(ch), true, &c),
+                resolve(&ctrl_key(ch), true, &c, &b),
                 Some(want),
                 "strict Ctrl+{ch}"
             );
@@ -764,45 +793,60 @@ mod tests {
     fn strict_bare_lowercase_action_letters_are_unbound() {
         // They fall through to the dispatcher's typing-guard, not an action.
         let c = ctx();
+        let b = binds();
         for ch in [
             'd', 'r', 't', 'n', 'p', 's', 'x', 'm', 'e', 'i', 'z', 'g', 'o',
         ] {
-            assert_eq!(resolve(&key(ch), true, &c), None, "strict bare '{ch}'");
+            assert_eq!(resolve(&key(ch), true, &c, &b), None, "strict bare '{ch}'");
         }
     }
 
     #[test]
     fn search_cycle_overrides_new_session_when_active() {
         let mut c = ctx();
+        let b = binds();
         c.has_search = true;
         for strict in [false, true] {
-            assert_eq!(resolve(&key('n'), strict, &c), Some(ActionId::SearchNext));
-            assert_eq!(resolve(&key('N'), strict, &c), Some(ActionId::SearchPrev));
+            assert_eq!(
+                resolve(&key('n'), strict, &c, &b),
+                Some(ActionId::SearchNext)
+            );
+            assert_eq!(
+                resolve(&key('N'), strict, &c, &b),
+                Some(ActionId::SearchPrev)
+            );
         }
         // Without an active search, the same keys are new-session actions.
         c.has_search = false;
-        assert_eq!(resolve(&key('n'), false, &c), Some(ActionId::NewSession));
-        assert_eq!(resolve(&key('N'), true, &c), Some(ActionId::NewSession));
+        assert_eq!(
+            resolve(&key('n'), false, &c, &b),
+            Some(ActionId::NewSession)
+        );
+        assert_eq!(resolve(&key('N'), true, &c, &b), Some(ActionId::NewSession));
     }
 
     #[test]
     fn context_guards_gate_attention_and_terminal_actions() {
+        let b = binds();
         // Favorite/snooze only resolve in Attention sort.
         let mut c = ctx();
-        assert_eq!(resolve(&key('f'), false, &c), None);
+        assert_eq!(resolve(&key('f'), false, &c, &b), None);
         c.sort_order = SortOrder::Attention;
         assert_eq!(
-            resolve(&key('f'), false, &c),
+            resolve(&key('f'), false, &c, &b),
             Some(ActionId::ToggleFavorite)
         );
-        assert_eq!(resolve(&key('h'), false, &c), Some(ActionId::ToggleSnooze));
+        assert_eq!(
+            resolve(&key('h'), false, &c, &b),
+            Some(ActionId::ToggleSnooze)
+        );
 
         // Container toggle only resolves in Terminal view.
         let mut c = ctx();
-        assert_eq!(resolve(&key('c'), false, &c), None);
+        assert_eq!(resolve(&key('c'), false, &c, &b), None);
         c.view_mode = ViewMode::Terminal;
         assert_eq!(
-            resolve(&key('c'), false, &c),
+            resolve(&key('c'), false, &c, &b),
             Some(ActionId::ToggleContainer)
         );
     }
@@ -810,26 +854,100 @@ mod tests {
     #[test]
     fn ctrl_o_sorts_in_both_modes() {
         let c = ctx();
+        let b = binds();
         assert_eq!(
-            resolve(&ctrl_key('o'), false, &c),
+            resolve(&ctrl_key('o'), false, &c, &b),
             Some(ActionId::SortPicker)
         );
         assert_eq!(
-            resolve(&ctrl_key('o'), true, &c),
+            resolve(&ctrl_key('o'), true, &c, &b),
             Some(ActionId::SortPicker)
         );
     }
 
     #[test]
     fn labels_match_mode() {
-        assert_eq!(label(ActionId::Diff, false), "D");
-        assert_eq!(label(ActionId::Diff, true), "Ctrl+D");
-        assert_eq!(label(ActionId::Delete, true), "D");
-        assert_eq!(label(ActionId::Projects, false), "p");
-        assert_eq!(label(ActionId::Projects, true), "P");
-        assert_eq!(label(ActionId::Profiles, true), "Ctrl+P");
-        assert_eq!(label(ActionId::Restart, false), "e");
+        let b = binds();
+        assert_eq!(label(ActionId::Diff, false, &b), "D");
+        assert_eq!(label(ActionId::Diff, true, &b), "Ctrl+D");
+        assert_eq!(label(ActionId::Delete, true, &b), "D");
+        assert_eq!(label(ActionId::Projects, false, &b), "p");
+        assert_eq!(label(ActionId::Projects, true, &b), "P");
+        assert_eq!(label(ActionId::Profiles, true, &b), "Ctrl+P");
+        assert_eq!(label(ActionId::Restart, false, &b), "e");
         // NextWaiting has no strict binding.
-        assert_eq!(label(ActionId::NextWaiting, true), "");
+        assert_eq!(label(ActionId::NextWaiting, true, &b), "");
+    }
+
+    #[test]
+    fn search_default_resolves_slash_and_skips_static_row() {
+        let c = ctx();
+        let b = binds();
+        // Default `/` still triggers search (override carries the default).
+        assert_eq!(
+            resolve(&key('/'), false, &c, &b),
+            Some(ActionId::SearchStart)
+        );
+        assert_eq!(
+            resolve(&key('/'), true, &c, &b),
+            Some(ActionId::SearchStart)
+        );
+        assert_eq!(label(ActionId::SearchStart, false, &b), "/");
+    }
+
+    #[test]
+    fn search_override_replaces_default_chord() {
+        let c = ctx();
+        let b = HomeKeybinds {
+            search: KeyBinding {
+                key: KeyCodeRepr::Char('\\'),
+                modifiers: KeyModifiers::NONE,
+            },
+        };
+        // Rebound chord triggers search.
+        assert_eq!(
+            resolve(&key('\\'), false, &c, &b),
+            Some(ActionId::SearchStart)
+        );
+        // The old `/` no longer triggers SearchStart (static row is skipped).
+        assert_eq!(resolve(&key('/'), false, &c, &b), None);
+        // Label reflects the rebound chord.
+        assert_eq!(label(ActionId::SearchStart, false, &b), "\\");
+    }
+
+    #[test]
+    fn search_override_yields_to_context_gated_bindings() {
+        // Regression for the bindings.rs:174 precedence bug flagged on
+        // PR #1682: if the user rebinds search to a chord that a
+        // context-gated binding ahead of SearchStart in the BINDINGS
+        // table also owns (e.g. `n` for SearchNext while a search is
+        // active), the context-gated binding must still win. Without
+        // the in-loop override check, rebinding search to `n` made
+        // SearchStart shadow SearchNext during active searches.
+        let mut c = ctx();
+        c.has_search = true;
+        let b = HomeKeybinds {
+            search: KeyBinding {
+                key: KeyCodeRepr::Char('n'),
+                modifiers: KeyModifiers::NONE,
+            },
+        };
+        for strict in [false, true] {
+            assert_eq!(
+                resolve(&key('n'), strict, &c, &b),
+                Some(ActionId::SearchNext),
+                "strict={strict}: SearchNext must beat overridden SearchStart while search is active",
+            );
+        }
+        // Without an active search, the SearchNext context fails, so the
+        // override at SearchStart's table position is reached. SearchStart
+        // is listed ahead of NewSession in BINDINGS so the override wins
+        // over NewSession (an acceptable rebind conflict the user opts
+        // into by picking `n`).
+        c.has_search = false;
+        assert_eq!(
+            resolve(&key('n'), false, &c, &b),
+            Some(ActionId::SearchStart)
+        );
     }
 }

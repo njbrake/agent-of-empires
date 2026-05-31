@@ -551,6 +551,7 @@ impl HomeView {
                 self.sort_order,
                 self.strict_hotkeys,
                 live_on_enter,
+                &self.home_keybinds,
                 &mut self.help_scroll,
             );
         }

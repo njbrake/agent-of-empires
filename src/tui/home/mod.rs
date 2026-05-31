@@ -567,6 +567,11 @@ pub struct HomeView {
     // dictation / stray keystrokes triggering destructive actions).
     pub(super) strict_hotkeys: bool,
 
+    /// User-configurable home-screen keymap. Drives `bindings::resolve` for
+    /// rebindable commands (currently `search`). Re-read from config on
+    /// settings save via `refresh_from_config`.
+    pub(super) home_keybinds: crate::session::config::HomeKeybinds,
+
     // When true, pressing `q` to leave the home screen shows a quit
     // confirmation first (guards against accidental exits, #1569).
     pub(super) confirm_before_quit: bool,
@@ -729,6 +734,7 @@ impl HomeView {
             .cloned()
             .unwrap_or_else(|| resolved.status_hooks.clone());
         let strict_hotkeys = resolved.session.strict_hotkeys;
+        let home_keybinds = resolved.keybinds.home.clone();
         let confirm_before_quit = resolved.session.confirm_before_quit;
         let idle_decay_window =
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
@@ -852,6 +858,7 @@ impl HomeView {
             status_hook_config,
             status_hook_configs,
             strict_hotkeys,
+            home_keybinds,
             confirm_before_quit,
             active_tui_count: 1,
             idle_decay_window,
@@ -3739,6 +3746,7 @@ impl HomeView {
         self.status_hook_config = config.status_hooks.clone();
         self.refresh_status_hook_config_cache();
         self.strict_hotkeys = config.session.strict_hotkeys;
+        self.home_keybinds = config.keybinds.home.clone();
         self.confirm_before_quit = config.session.confirm_before_quit;
         self.row_tag_mode = config.session.row_tag;
         self.profile_default_attach_mode = config.session.default_attach_mode;

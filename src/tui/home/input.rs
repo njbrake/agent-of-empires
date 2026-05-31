@@ -1800,7 +1800,7 @@ impl HomeView {
             sort_order: self.sort_order,
             has_search: !self.search_matches.is_empty(),
         };
-        if let Some(id) = bindings::resolve(&key, self.strict_hotkeys, &ctx) {
+        if let Some(id) = bindings::resolve(&key, self.strict_hotkeys, &ctx, &self.home_keybinds) {
             return self.run_action(id, update_info);
         }
 
@@ -2213,7 +2213,8 @@ impl HomeView {
 
     fn open_command_palette(&mut self) {
         let serve_enabled = cfg!(feature = "serve");
-        let mut entries: Vec<PaletteCommand> = builtin_commands(serve_enabled, self.strict_hotkeys);
+        let mut entries: Vec<PaletteCommand> =
+            builtin_commands(serve_enabled, self.strict_hotkeys, &self.home_keybinds);
 
         // Quit lives in the registry but is excluded from `builtin_commands`
         // (no palette metadata) so it can sit in the Settings group at the end;
@@ -2223,7 +2224,7 @@ impl HomeView {
             title: "Quit Agent of Empires".to_string(),
             group: PaletteGroup::Settings,
             keywords: vec!["exit", "close"],
-            hotkey: bindings::label(ActionId::Quit, self.strict_hotkeys),
+            hotkey: bindings::label(ActionId::Quit, self.strict_hotkeys, &self.home_keybinds),
             payload: PaletteAction::Invoke(ActionId::Quit),
         });
 

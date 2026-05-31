@@ -11,9 +11,9 @@ use crate::session::{
     repo_config_to_profile, save_config, save_profile_config, save_repo_config, Config,
     ProfileConfig, RepoConfig,
 };
-use crate::tui::dialogs::CustomInstructionDialog;
+use crate::tui::dialogs::{CaptureKeyDialog, CustomInstructionDialog};
 
-pub use fields::{FieldKey, FieldValue, SettingField, SettingsCategory};
+pub use fields::{FieldKey, FieldValue, HomeKeybindCmd, SettingField, SettingsCategory};
 pub use input::SettingsAction;
 
 /// Which scope of settings is being edited
@@ -125,6 +125,12 @@ pub struct SettingsView {
 
     /// Custom instruction editor dialog
     pub(super) custom_instruction_dialog: Option<CustomInstructionDialog>,
+
+    /// Capture-key dialog for the configurable home-screen keybinds.
+    /// Opened by pressing Enter on a `FieldValue::KeyBinding` row;
+    /// drains and dispatches to `handle_capture_key` on every keystroke
+    /// while present.
+    pub(super) capture_key_dialog: Option<CaptureKeyDialog>,
 
     /// Scroll offset for the fields panel (in lines)
     pub(super) fields_scroll_offset: u16,
@@ -239,6 +245,7 @@ impl SettingsView {
             editing_input: None,
             list_edit_state: None,
             custom_instruction_dialog: None,
+            capture_key_dialog: None,
             fields_scroll_offset: 0,
             fields_viewport_height: 0,
             fields_content_width: 0,
@@ -279,6 +286,13 @@ impl SettingsView {
 
         push_section(&mut rows, "Appearance");
         push_tab(&mut rows, SettingsCategory::Theme);
+        // Keybinds are global-only in v1: the non-Global apply path no-ops
+        // FieldKey::Keybind (see src/tui/settings/fields.rs), so showing the
+        // tab in Profile / Repo scope would let users edit and save with no
+        // persisted effect.
+        if scope == SettingsScope::Global {
+            push_tab(&mut rows, SettingsCategory::Keybinds);
+        }
 
         push_section(&mut rows, "Sessions");
         push_tab(&mut rows, SettingsCategory::Session);
@@ -558,6 +572,7 @@ impl SettingsView {
         self.editing_input.is_some()
             || self.list_edit_state.is_some()
             || self.custom_instruction_dialog.is_some()
+            || self.capture_key_dialog.is_some()
             || self.search_input.is_some()
     }
 

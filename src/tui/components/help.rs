@@ -10,12 +10,15 @@ use ratatui::prelude::*;
 use ratatui::widgets::*;
 use unicode_width::UnicodeWidthStr;
 
-use crate::session::config::SortOrder;
+use crate::session::config::{HomeKeybinds, SortOrder};
 use crate::tui::styles::Theme;
 
 /// Width of the key column, in cells. 11 fits the longest key strings
-/// in either keymap (`Home/End/G`, `Shift+drag` = 10 cells) with one
-/// cell of padding before the description.
+/// in the stock keymap (`Home/End/G`, `Shift+drag` = 10 cells) with one
+/// cell of padding before the description. Rebinds (via the Keybinds
+/// settings tab) can produce wider chords; `key_field_width` lifts the
+/// floor at runtime so a longer user chord doesn't crash into the
+/// description.
 const KEY_FIELD_WIDTH: usize = 11;
 /// Cells of left indent before each shortcut row.
 const ROW_INDENT: usize = 2;
@@ -30,7 +33,11 @@ const SMALL_VIEWPORT_WIDTH: u16 = 40;
 /// Same idea for height: drop top/bottom margin below this.
 const SMALL_VIEWPORT_HEIGHT: u16 = 16;
 
-fn shortcuts(strict: bool, live_on_enter: bool) -> Vec<(&'static str, Vec<(String, String)>)> {
+fn shortcuts(
+    strict: bool,
+    live_on_enter: bool,
+    keybinds: &HomeKeybinds,
+) -> Vec<(&'static str, Vec<(String, String)>)> {
     use crate::tui::home::bindings::{self, HelpSection as Sec};
 
     let (enter_desc, tab_desc) = if live_on_enter {
@@ -50,9 +57,9 @@ fn shortcuts(strict: bool, live_on_enter: bool) -> Vec<(&'static str, Vec<(Strin
     let mut other: Vec<(String, String)> = Vec::new();
     for b in bindings::BINDINGS {
         let Some(help) = &b.help else { continue };
-        let mut label = bindings::label(b.id, strict);
+        let mut label = bindings::label(b.id, strict, keybinds);
         if label.is_empty() {
-            label = bindings::label(b.id, false);
+            label = bindings::label(b.id, false, keybinds);
         }
         if label.is_empty() {
             continue;
@@ -126,8 +133,13 @@ struct HelpSection {
     rows: Vec<(String, String)>,
 }
 
-fn build_sections(strict: bool, sort_order: SortOrder, live_on_enter: bool) -> Vec<HelpSection> {
-    let raw = shortcuts(strict, live_on_enter);
+fn build_sections(
+    strict: bool,
+    sort_order: SortOrder,
+    live_on_enter: bool,
+    keybinds: &HomeKeybinds,
+) -> Vec<HelpSection> {
+    let raw = shortcuts(strict, live_on_enter, keybinds);
     let sort_label = format!("(current sort: {})", sort_order.label());
     raw.into_iter()
         .map(|(title, keys)| {
@@ -145,16 +157,32 @@ fn section_height(section: &HelpSection) -> usize {
     1 + section.rows.len()
 }
 
+/// Effective key-column width for the current section set. Floors at the
+/// `KEY_FIELD_WIDTH` constant so the stock layout is unchanged, but lifts
+/// when a user-configured chord (e.g. `Ctrl+Shift+F1`) is wider than the
+/// static budget. Layout (`min_column_width`) and rendering
+/// (`render_column_lines`) MUST share the same value or the description
+/// column will be misaligned.
+fn key_field_width(sections: &[HelpSection]) -> usize {
+    sections
+        .iter()
+        .flat_map(|s| s.rows.iter().map(|(key, _)| key.width()))
+        .max()
+        .unwrap_or(0)
+        .max(KEY_FIELD_WIDTH)
+}
+
 /// Minimum width a column needs to render every row of every section
 /// without truncating the description.
 fn min_column_width(sections: &[HelpSection]) -> u16 {
+    let key_width = key_field_width(sections);
     let row_width = sections
         .iter()
         .flat_map(|s| s.rows.iter().map(|(_, d)| d.width()))
         .max()
         .unwrap_or(0)
         + ROW_INDENT
-        + KEY_FIELD_WIDTH;
+        + key_width;
     let title_width = sections.iter().map(|s| s.title.width()).max().unwrap_or(0);
     row_width.max(title_width) as u16
 }
@@ -210,6 +238,9 @@ fn render_column_lines(
     indices: &[usize],
     theme: &Theme,
 ) -> Vec<Line<'static>> {
+    // Must agree with `min_column_width` so the description column lines
+    // up with the layout budget; both feed off the same function.
+    let key_width = key_field_width(sections);
     let mut lines: Vec<Line> = Vec::new();
     for (i, &si) in indices.iter().enumerate() {
         let section = &sections[si];
@@ -218,7 +249,7 @@ fn render_column_lines(
             Style::default().fg(theme.accent).bold(),
         )));
         for (key, desc) in &section.rows {
-            let pad = KEY_FIELD_WIDTH.saturating_sub(key.width());
+            let pad = key_width.saturating_sub(key.width());
             let key_cell = format!("{}{}{}", " ".repeat(ROW_INDENT), key, " ".repeat(pad));
             lines.push(Line::from(vec![
                 Span::styled(key_cell, Style::default().fg(theme.waiting)),
@@ -280,6 +311,7 @@ impl HelpOverlay {
     /// clamped to the valid range so that overshoot from input handlers
     /// (for example, treating `End` as `u16::MAX`) is naturally
     /// corrected on the next paint.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         frame: &mut Frame,
         area: Rect,
@@ -287,6 +319,7 @@ impl HelpOverlay {
         sort_order: SortOrder,
         strict_hotkeys: bool,
         live_on_enter: bool,
+        keybinds: &HomeKeybinds,
         scroll: &mut u16,
     ) {
         if area.width == 0 || area.height == 0 {
@@ -295,7 +328,7 @@ impl HelpOverlay {
         let dialog_area = compute_dialog_area(area);
         frame.render_widget(Clear, dialog_area);
 
-        let sections = build_sections(strict_hotkeys, sort_order, live_on_enter);
+        let sections = build_sections(strict_hotkeys, sort_order, live_on_enter, keybinds);
 
         let version = format!(" Agent of Empires v{} ", env!("CARGO_PKG_VERSION"));
         let block = Block::default()
@@ -381,7 +414,7 @@ mod tests {
     #[test]
     fn help_contains_resize_shortcut() {
         for strict in [false, true] {
-            let all = shortcuts(strict, false);
+            let all = shortcuts(strict, false, &HomeKeybinds::default());
             let views_section = all.iter().find(|(name, _)| *name == "Views");
             assert!(views_section.is_some(), "Views section should exist");
             let (_, keys) = views_section.unwrap();
@@ -409,7 +442,7 @@ mod tests {
         ];
         for (desc_sub, non_strict_key, strict_key) in cases {
             for (strict, expected_key) in [(false, non_strict_key), (true, strict_key)] {
-                let all = shortcuts(strict, false);
+                let all = shortcuts(strict, false, &HomeKeybinds::default());
                 let found = all.iter().any(|(_, keys)| {
                     keys.iter()
                         .any(|(k, desc)| k == expected_key && desc.contains(desc_sub))
@@ -428,7 +461,7 @@ mod tests {
         // non-strict) but did not advertise it in the help overlay. Lock the
         // listing in so a future binding rename keeps the docs honest.
         for (strict, expected_key) in [(false, "h"), (true, "H")] {
-            let all = shortcuts(strict, false);
+            let all = shortcuts(strict, false, &HomeKeybinds::default());
             let attention = all
                 .iter()
                 .find(|(name, _)| name.starts_with("Attention"))
@@ -448,7 +481,7 @@ mod tests {
         // so users see them together instead of scattered across Navigation
         // and Actions.
         for strict in [false, true] {
-            let all = shortcuts(strict, false);
+            let all = shortcuts(strict, false, &HomeKeybinds::default());
             let attention = all
                 .iter()
                 .find(|(name, _)| name.starts_with("Attention"))
@@ -480,7 +513,7 @@ mod tests {
         // Asserts both keymaps surface the Ctrl+K command palette entry in
         // their "Other" section so users can discover the palette from `?`.
         for strict in [false, true] {
-            let all = shortcuts(strict, false);
+            let all = shortcuts(strict, false, &HomeKeybinds::default());
             let other = all
                 .iter()
                 .find(|(name, _)| *name == "Other")
@@ -501,7 +534,7 @@ mod tests {
         // `default_attach_mode` so the two rows aren't lying.
         for strict in [false, true] {
             for live_on_enter in [false, true] {
-                let all = shortcuts(strict, live_on_enter);
+                let all = shortcuts(strict, live_on_enter, &HomeKeybinds::default());
                 let actions_name = if strict {
                     "Actions (strict mode)"
                 } else {
@@ -599,7 +632,7 @@ mod tests {
         // Sanity check: the chosen 4 → 3 split keeps max column height
         // below the naive [1, 3, 0] alternative that would happen if we
         // pushed all extras to one column.
-        let sections = build_sections(false, SortOrder::Newest, false);
+        let sections = build_sections(false, SortOrder::Newest, false, &HomeKeybinds::default());
         let heights: Vec<usize> = sections.iter().map(section_height).collect();
         let cols = distribute_sections(sections.len(), 3);
         let max_h = cols
@@ -627,7 +660,16 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                HelpOverlay::render(frame, area, &theme, SortOrder::Newest, false, false, scroll);
+                HelpOverlay::render(
+                    frame,
+                    area,
+                    &theme,
+                    SortOrder::Newest,
+                    false,
+                    false,
+                    &HomeKeybinds::default(),
+                    scroll,
+                );
             })
             .unwrap();
         terminal.backend().buffer().clone()

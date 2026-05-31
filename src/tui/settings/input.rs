@@ -6,6 +6,7 @@ use tui_input::Input;
 
 use crate::tui::dialogs::{CustomInstructionDialog, DialogResult};
 
+use super::fields::find_conflict;
 use super::{FieldKey, FieldValue, ListEditState, SettingsFocus, SettingsScope, SettingsView};
 
 /// Result of handling a key event in the settings view
@@ -44,6 +45,52 @@ impl SettingsView {
                 }
                 DialogResult::Cancel => {
                     self.custom_instruction_dialog = None;
+                    return SettingsAction::Continue;
+                }
+                DialogResult::Continue => {
+                    return SettingsAction::Continue;
+                }
+            }
+        }
+
+        // Handle the capture-key dialog. The dialog returns the new
+        // chord on Submit; the outer handler runs the conflict scan
+        // against the in-memory `global_config.keybinds.home` and
+        // either commits or re-arms the dialog with an error.
+        if let Some(ref mut dialog) = self.capture_key_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Submit(candidate) => {
+                    let cmd = dialog.command();
+                    if let Some(conflict) =
+                        find_conflict(&self.global_config.keybinds.home, &candidate, cmd)
+                    {
+                        // Re-arm the dialog with a status-line error so the
+                        // user can retype without losing the modal.
+                        if let Some(d) = self.capture_key_dialog.as_mut() {
+                            d.set_error(format!(
+                                "'{}' is already bound to \"{}\"",
+                                candidate.display(),
+                                conflict.label()
+                            ));
+                        }
+                        return SettingsAction::Continue;
+                    }
+                    // Commit: write the new chord into both the field
+                    // value (so the row redraws) and the global config
+                    // (so save persists it on Ctrl+s).
+                    let field = &mut self.fields[self.selected_field];
+                    if let FieldValue::KeyBinding {
+                        ref mut current, ..
+                    } = field.value
+                    {
+                        *current = candidate;
+                    }
+                    self.apply_field_to_config(self.selected_field);
+                    self.capture_key_dialog = None;
+                    return SettingsAction::Continue;
+                }
+                DialogResult::Cancel => {
+                    self.capture_key_dialog = None;
                     return SettingsAction::Continue;
                 }
                 DialogResult::Continue => {
@@ -320,6 +367,17 @@ impl SettingsView {
                             // never land the cursor here in the first
                             // place; this arm just makes the match
                             // exhaustive.
+                        }
+                        FieldValue::KeyBinding { .. } => {
+                            // Open the capture-key dialog. The dialog
+                            // is responsible for the conflict scan; on
+                            // submit it returns the new chord and the
+                            // outer handler writes it to the field
+                            // value plus the global config.
+                            if let FieldKey::Keybind(cmd) = field.key {
+                                self.capture_key_dialog =
+                                    Some(crate::tui::dialogs::CaptureKeyDialog::new(cmd));
+                            }
                         }
                     }
                 } else if self.focus == SettingsFocus::Categories {
@@ -1065,7 +1123,8 @@ impl SettingsView {
             | FieldKey::LoggingMaxSizeMib
             | FieldKey::LoggingKeepCount
             | FieldKey::LoggingShowSpans
-            | FieldKey::SessionIdPollerMaxThreads => {}
+            | FieldKey::SessionIdPollerMaxThreads
+            | FieldKey::Keybind(_) => {}
             FieldKey::HostEnvironment => {
                 config.environment = None;
             }
@@ -1155,6 +1214,7 @@ impl SettingsView {
         if self.editing_input.is_some()
             || self.list_edit_state.is_some()
             || self.custom_instruction_dialog.is_some()
+            || self.capture_key_dialog.is_some()
             || self.show_help
             || self.search_input.is_some()
         {
@@ -1219,6 +1279,7 @@ impl SettingsView {
         let suppress = self.editing_input.is_some()
             || self.list_edit_state.is_some()
             || self.custom_instruction_dialog.is_some()
+            || self.capture_key_dialog.is_some()
             || self.show_help
             || self.search_input.is_some();
         let new_pos = if suppress { None } else { Some((col, row)) };
@@ -1523,13 +1584,18 @@ mod tests {
         fn category_nav_skips_section_dividers() {
             use crate::tui::settings::CategoryRow;
             let (_t, mut view) = fresh_view();
-            // Constructor lands on the first Tab (Theme, the only tab
-            // in Appearance). One Down should jump over the next
-            // section header ("Sessions") and onto Session.
+            // Constructor lands on the first Tab (Theme). Walk Down
+            // through Appearance's tabs, then verify the next Down skips
+            // the "Sessions" section header onto Session.
             let start = view.selected_category;
             assert!(
                 matches!(view.categories[start], CategoryRow::Tab(_)),
                 "initial selected_category must be a Tab"
+            );
+            assert_eq!(
+                view.current_category(),
+                crate::tui::settings::SettingsCategory::Theme,
+                "initial category must be Theme"
             );
             press(&mut view, KeyCode::Down);
             assert!(
@@ -1538,16 +1604,32 @@ mod tests {
             );
             assert_eq!(
                 view.current_category(),
-                crate::tui::settings::SettingsCategory::Session,
-                "Down from Theme should land on Session, skipping the Sessions section header"
+                crate::tui::settings::SettingsCategory::Keybinds,
+                "Down from Theme should land on Keybinds, the next tab in Appearance"
             );
-            // Going back up should return to Theme, skipping the
-            // Appearance section header.
+            press(&mut view, KeyCode::Down);
+            assert!(
+                matches!(view.categories[view.selected_category], CategoryRow::Tab(_)),
+                "after second Down, selected_category must still point at a Tab"
+            );
+            assert_eq!(
+                view.current_category(),
+                crate::tui::settings::SettingsCategory::Session,
+                "Down from Keybinds should land on Session, skipping the Sessions section header"
+            );
+            // Going back up should return to Keybinds, then Theme, skipping
+            // the Appearance section header.
+            press(&mut view, KeyCode::Up);
+            assert_eq!(
+                view.current_category(),
+                crate::tui::settings::SettingsCategory::Keybinds,
+                "Up from Session should return to Keybinds, skipping the Sessions section header"
+            );
             press(&mut view, KeyCode::Up);
             assert_eq!(
                 view.current_category(),
                 crate::tui::settings::SettingsCategory::Theme,
-                "Up from Session should return to Theme, skipping the Sessions/Appearance headers"
+                "Up from Keybinds should return to Theme, skipping the Appearance header"
             );
         }
 

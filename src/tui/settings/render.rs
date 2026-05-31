@@ -692,6 +692,14 @@ impl SettingsView {
             FieldValue::List(items) => {
                 self.render_list_field(frame, value_area, items, index, is_selected, theme);
             }
+            FieldValue::KeyBinding { current, default } => {
+                let display = if current == default {
+                    current.display()
+                } else {
+                    format!("{}  (default: {})", current.display(), default.display())
+                };
+                self.render_text_field(frame, value_area, &display, index, is_selected, theme);
+            }
             FieldValue::SectionHeader => {
                 // Already handled by the early return at the top of
                 // render_field; reaching this arm would mean the early

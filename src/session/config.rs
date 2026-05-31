@@ -55,6 +55,14 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
 
+    /// Configurable home-screen keybindings. Defaults reproduce the
+    /// hardcoded bindings (search = `/`, ...) so users without a
+    /// `keybinds` block in their JSON see no change. v1 is Global-only;
+    /// profile overrides are intentionally out of scope (see
+    /// `profile_config.rs`).
+    #[serde(default)]
+    pub keybinds: KeybindsConfig,
+
     /// Environment variables injected into the host command line for every
     /// session spawned at global scope. Entries are `KEY=value`, `KEY=$VAR`
     /// (read VAR from the host env), `KEY=$$literal` (escape a `$`), or
@@ -89,6 +97,275 @@ pub struct ToolSessionConfig {
     /// Only Alt+ single-character bindings are supported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hotkey: Option<String>,
+}
+
+/// User-rebindable home-screen keymap. v1 (PR-A) ships with `search`
+/// only; remaining home-screen commands (new_session, restart_session,
+/// archive, favorite, snooze, delete, rename, group, settings) land in
+/// PR-B without churning the on-disk format.
+///
+/// Why explicit struct fields per command rather than `HashMap<String,
+/// KeyBinding>`: every command is known at compile time, so the
+/// conflict scan over `HomeKeybindCmd::iter()` is exhaustive and adding
+/// a new command is a deliberate code change rather than a typo in a
+/// JSON key.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct KeybindsConfig {
+    #[serde(default)]
+    pub home: HomeKeybinds,
+}
+
+/// Home-screen keybindings. Each field is the chord that triggers the
+/// named action. v1 (PR-A) lists only `search`; PR-B extends the
+/// struct without breaking the on-disk format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeKeybinds {
+    /// Chord that opens the home-screen incremental search bar. Default
+    /// `/` matches the prior hardcoded binding.
+    #[serde(default = "default_search_binding")]
+    pub search: KeyBinding,
+}
+
+impl Default for HomeKeybinds {
+    fn default() -> Self {
+        Self {
+            search: default_search_binding(),
+        }
+    }
+}
+
+fn default_search_binding() -> KeyBinding {
+    KeyBinding {
+        key: KeyCodeRepr::Char('/'),
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    }
+}
+
+/// A single chord: one printable key (or function key) plus a set of
+/// modifier flags. Serializes through `KeyCodeRepr` for a stable
+/// on-disk form regardless of crossterm's internal layout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyBinding {
+    pub key: KeyCodeRepr,
+    #[serde(default = "default_modifiers", with = "key_modifiers_serde")]
+    pub modifiers: crossterm::event::KeyModifiers,
+}
+
+fn default_modifiers() -> crossterm::event::KeyModifiers {
+    crossterm::event::KeyModifiers::NONE
+}
+
+/// Strip the redundant `SHIFT` bit from a runtime key event when the
+/// code is already an uppercase character. See `KeyBinding::matches`
+/// for the rationale; this is the runtime-side mirror of
+/// `sanitize_modifiers` in `src/tui/dialogs/capture_key.rs`.
+fn normalize_event_modifiers(
+    mods: crossterm::event::KeyModifiers,
+    code: &crossterm::event::KeyCode,
+) -> crossterm::event::KeyModifiers {
+    let mut out = mods;
+    if let crossterm::event::KeyCode::Char(c) = code {
+        if c.is_uppercase() {
+            out.remove(crossterm::event::KeyModifiers::SHIFT);
+        }
+    }
+    out
+}
+
+impl KeyBinding {
+    /// True when the given crossterm key event matches this binding,
+    /// modifier-exact. Mirrors `bindings.rs::chord_matches` so a
+    /// modified key never silently triggers a bare-letter binding.
+    ///
+    /// Cross-platform note: on Windows (and on Linux since crossterm
+    /// 0.29's "Add shift modifier to uppercase char events on unix"
+    /// change) `KeyCode::Char('D') + KeyModifiers::SHIFT` is emitted
+    /// for Shift+letter, while on older Linux/macOS terminals the same
+    /// physical key arrives as `Char('D') + NONE`. The capture dialog
+    /// strips the redundant Shift bit on uppercase chars at storage
+    /// time (`sanitize_modifiers` in `capture_key.rs`), so we apply
+    /// the same normalization to the incoming event before comparing.
+    /// Without this, a binding captured on one platform would silently
+    /// stop matching on the other.
+    pub fn matches(&self, event: &crossterm::event::KeyEvent) -> bool {
+        self.key.matches(&event.code)
+            && normalize_event_modifiers(event.modifiers, &event.code) == self.modifiers
+    }
+
+    /// Render the chord as a `Ctrl+/`, `Shift+F5`, `a` style label for
+    /// the settings UI.
+    pub fn display(&self) -> String {
+        use crossterm::event::KeyModifiers;
+        let mut parts: Vec<&str> = Vec::new();
+        if self.modifiers.contains(KeyModifiers::CONTROL) {
+            parts.push("Ctrl");
+        }
+        if self.modifiers.contains(KeyModifiers::ALT) {
+            parts.push("Alt");
+        }
+        if self.modifiers.contains(KeyModifiers::SHIFT) {
+            parts.push("Shift");
+        }
+        let key = self.key.display();
+        if parts.is_empty() {
+            key
+        } else {
+            format!("{}+{}", parts.join("+"), key)
+        }
+    }
+}
+
+/// Serializable wrapper around `crossterm::event::KeyCode`. Only the
+/// variants the home-screen dispatcher emits are representable; less
+/// common codes (caps lock, media keys, etc.) are intentionally
+/// rejected at the binding layer rather than silently round-tripped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum KeyCodeRepr {
+    /// A printable character. Stored verbatim, including punctuation
+    /// like `/` and `\\` that the home-screen dispatcher matches today.
+    Char(char),
+    /// A function key (`F1` through `F12`).
+    F(u8),
+    Enter,
+    Tab,
+    BackTab,
+    Backspace,
+    Esc,
+    Insert,
+    Delete,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl KeyCodeRepr {
+    /// True when this representation describes the same logical key as
+    /// the given crossterm `KeyCode`.
+    pub fn matches(&self, code: &crossterm::event::KeyCode) -> bool {
+        use crossterm::event::KeyCode;
+        match (self, code) {
+            (KeyCodeRepr::Char(a), KeyCode::Char(b)) => a == b,
+            (KeyCodeRepr::F(a), KeyCode::F(b)) => a == b,
+            (KeyCodeRepr::Enter, KeyCode::Enter) => true,
+            (KeyCodeRepr::Tab, KeyCode::Tab) => true,
+            (KeyCodeRepr::BackTab, KeyCode::BackTab) => true,
+            (KeyCodeRepr::Backspace, KeyCode::Backspace) => true,
+            (KeyCodeRepr::Esc, KeyCode::Esc) => true,
+            (KeyCodeRepr::Insert, KeyCode::Insert) => true,
+            (KeyCodeRepr::Delete, KeyCode::Delete) => true,
+            (KeyCodeRepr::Home, KeyCode::Home) => true,
+            (KeyCodeRepr::End, KeyCode::End) => true,
+            (KeyCodeRepr::PageUp, KeyCode::PageUp) => true,
+            (KeyCodeRepr::PageDown, KeyCode::PageDown) => true,
+            (KeyCodeRepr::Up, KeyCode::Up) => true,
+            (KeyCodeRepr::Down, KeyCode::Down) => true,
+            (KeyCodeRepr::Left, KeyCode::Left) => true,
+            (KeyCodeRepr::Right, KeyCode::Right) => true,
+            _ => false,
+        }
+    }
+
+    /// Build a `KeyCodeRepr` from a crossterm `KeyCode`. Returns
+    /// `None` for codes the home-screen does not support so the
+    /// capture dialog can reject them with a clear error.
+    pub fn from_code(code: crossterm::event::KeyCode) -> Option<Self> {
+        use crossterm::event::KeyCode;
+        Some(match code {
+            KeyCode::Char(c) => KeyCodeRepr::Char(c),
+            KeyCode::F(n) => KeyCodeRepr::F(n),
+            KeyCode::Enter => KeyCodeRepr::Enter,
+            KeyCode::Tab => KeyCodeRepr::Tab,
+            KeyCode::BackTab => KeyCodeRepr::BackTab,
+            KeyCode::Backspace => KeyCodeRepr::Backspace,
+            KeyCode::Esc => KeyCodeRepr::Esc,
+            KeyCode::Insert => KeyCodeRepr::Insert,
+            KeyCode::Delete => KeyCodeRepr::Delete,
+            KeyCode::Home => KeyCodeRepr::Home,
+            KeyCode::End => KeyCodeRepr::End,
+            KeyCode::PageUp => KeyCodeRepr::PageUp,
+            KeyCode::PageDown => KeyCodeRepr::PageDown,
+            KeyCode::Up => KeyCodeRepr::Up,
+            KeyCode::Down => KeyCodeRepr::Down,
+            KeyCode::Left => KeyCodeRepr::Left,
+            KeyCode::Right => KeyCodeRepr::Right,
+            _ => return None,
+        })
+    }
+
+    /// Human label suitable for the settings UI. Punctuation rounds to
+    /// the literal character; function keys render as `F1`, etc.
+    pub fn display(&self) -> String {
+        match self {
+            KeyCodeRepr::Char(c) => c.to_string(),
+            KeyCodeRepr::F(n) => format!("F{n}"),
+            KeyCodeRepr::Enter => "Enter".to_string(),
+            KeyCodeRepr::Tab => "Tab".to_string(),
+            KeyCodeRepr::BackTab => "BackTab".to_string(),
+            KeyCodeRepr::Backspace => "Backspace".to_string(),
+            KeyCodeRepr::Esc => "Esc".to_string(),
+            KeyCodeRepr::Insert => "Insert".to_string(),
+            KeyCodeRepr::Delete => "Delete".to_string(),
+            KeyCodeRepr::Home => "Home".to_string(),
+            KeyCodeRepr::End => "End".to_string(),
+            KeyCodeRepr::PageUp => "PageUp".to_string(),
+            KeyCodeRepr::PageDown => "PageDown".to_string(),
+            KeyCodeRepr::Up => "Up".to_string(),
+            KeyCodeRepr::Down => "Down".to_string(),
+            KeyCodeRepr::Left => "Left".to_string(),
+            KeyCodeRepr::Right => "Right".to_string(),
+        }
+    }
+}
+
+/// Serde shim for `crossterm::event::KeyModifiers`. Stored as a sorted
+/// list of lowercase names (`["ctrl", "shift"]`) so the on-disk form
+/// is stable and human-readable.
+mod key_modifiers_serde {
+    use crossterm::event::KeyModifiers;
+    use serde::de::Error as DeError;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(value: &KeyModifiers, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut names: Vec<&'static str> = Vec::new();
+        if value.contains(KeyModifiers::CONTROL) {
+            names.push("ctrl");
+        }
+        if value.contains(KeyModifiers::ALT) {
+            names.push("alt");
+        }
+        if value.contains(KeyModifiers::SHIFT) {
+            names.push("shift");
+        }
+        names.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<KeyModifiers, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let names: Vec<String> = Vec::deserialize(deserializer)?;
+        let mut mods = KeyModifiers::NONE;
+        for name in &names {
+            match name.as_str() {
+                "ctrl" | "control" => mods |= KeyModifiers::CONTROL,
+                "alt" => mods |= KeyModifiers::ALT,
+                "shift" => mods |= KeyModifiers::SHIFT,
+                other => {
+                    return Err(D::Error::custom(format!("unknown key modifier: {other}")));
+                }
+            }
+        }
+        Ok(mods)
+    }
 }
 
 /// Persistent logging configuration. Drives the default tracing
@@ -1563,6 +1840,60 @@ mod tests {
         assert_eq!(config.default_profile, "custom");
         // Other fields should have defaults
         assert!(!config.worktree.enabled);
+    }
+
+    // Tests for KeyBinding cross-platform matching
+    #[test]
+    fn test_keybinding_matches_uppercase_char_with_or_without_shift() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // Binding captured/stored as "uppercase D with no extra modifiers"
+        // (the capture dialog strips the redundant SHIFT bit at write
+        // time). The runtime event must match whether the underlying
+        // terminal reported the SHIFT bit (Windows / newer Unix crossterm)
+        // or not (older Unix / legacy paths).
+        let binding = KeyBinding {
+            key: KeyCodeRepr::Char('D'),
+            modifiers: KeyModifiers::NONE,
+        };
+        let without_shift = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE);
+        let with_shift = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::SHIFT);
+        assert!(binding.matches(&without_shift));
+        assert!(binding.matches(&with_shift));
+    }
+
+    #[test]
+    fn test_keybinding_matches_ctrl_shift_uppercase_normalizes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // Ctrl+Shift+D: capture stores `code=Char('D'), mods=CTRL` after
+        // stripping the redundant SHIFT bit. The runtime event from a
+        // crossterm version that includes SHIFT (CTRL|SHIFT) must still
+        // match the stored CTRL-only form.
+        let binding = KeyBinding {
+            key: KeyCodeRepr::Char('D'),
+            modifiers: KeyModifiers::CONTROL,
+        };
+        let ctrl_only = KeyEvent::new(KeyCode::Char('D'), KeyModifiers::CONTROL);
+        let ctrl_with_shift = KeyEvent::new(
+            KeyCode::Char('D'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        );
+        assert!(binding.matches(&ctrl_only));
+        assert!(binding.matches(&ctrl_with_shift));
+    }
+
+    #[test]
+    fn test_keybinding_lowercase_char_modifier_exact() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        // A bare lowercase chord must not silently match the modified
+        // form: a binding on `n` should not fire on Ctrl+n. The
+        // uppercase-normalization only strips redundant SHIFT, never
+        // CTRL or ALT.
+        let binding = KeyBinding {
+            key: KeyCodeRepr::Char('n'),
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(binding.matches(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)));
+        assert!(!binding.matches(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)));
     }
 
     // Tests for ThemeConfig
