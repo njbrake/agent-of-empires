@@ -1243,7 +1243,9 @@ export function applyEvent(
     // order, so checking `activity` here captures "any prompt with a
     // lower seq than this reset"; later prompts won't retroactively
     // surface the suppressed row.
-    const hasPriorPrompt = next.activity.some((r) => r.kind === "user_prompt");
+    const hasPriorPrompt = next.activity.some(
+      (r) => r.kind === "user_prompt" || r.kind === "user_diff_comments",
+    );
     if (!hasPriorPrompt) {
       return next;
     }

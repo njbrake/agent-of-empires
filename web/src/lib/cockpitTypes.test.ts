@@ -421,6 +421,23 @@ describe("applyEvent / UserDiffCommentsPrompt (#1123)", () => {
     expect(next.turnActive).toBe(true);
   });
 
+  it("counts as a prior user turn for SessionContextReset (#1123)", () => {
+    // A session whose only turn is a diff-comments prompt must still
+    // surface the context-reset row + arm the primer; otherwise it is
+    // wrongly treated as a 0-message session.
+    let state = applyEvent(emptyCockpitState(), diffCommentsFrame(1));
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { SessionContextReset: { reason: "session/load failed: bad id" } },
+    });
+    expect(state.activity.some((r) => r.kind === "context_reset")).toBe(true);
+    expect(state.contextPrimerAvailable).toEqual({
+      resetSeq: 2,
+      reason: "session/load failed: bad id",
+    });
+  });
+
   it("reconstructs the diff-comments turn on replay (no optimistic row)", () => {
     // The send dialog posts directly, so there is never a placeholder to
     // promote; the server echo simply appends the typed row.
