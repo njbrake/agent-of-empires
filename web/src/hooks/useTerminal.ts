@@ -1327,6 +1327,10 @@ export function useTerminal(
               reject(new Error("osc52 clipboard timeout"));
             }, OSC52_CLIPBOARD_TIMEOUT_MS);
           });
+          // Attach our own rejection handler so a timeout never surfaces as an
+          // unhandled rejection if the clipboard implementation drops the
+          // promise (the write() consumer below also sees it; both fire).
+          pending.catch(() => {});
           navigator.clipboard.write([new ClipboardItem({ "text/plain": pending })]).catch(() => {
             // Rejected when no OSC 52 arrived within the timeout (drag
             // selected nothing) or the engine declined the async write.

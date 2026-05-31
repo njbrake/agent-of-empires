@@ -1765,6 +1765,18 @@ describe("useTerminal OSC 52 clipboard", () => {
   // base64("hi") === "aGk=".
   const HI_OSC = "c;aGk=";
 
+  // Stand-in for the browser ClipboardItem. A real ClipboardItem consumes
+  // the promise value (it awaits it to perform the write), so it never leaks
+  // an unhandled rejection when the hook's timeout rejects the pending blob.
+  // The fake must do the same or the timeout tests trip Vitest's
+  // unhandled-rejection guard (process exits non-zero even with all tests
+  // green).
+  class FakeClipboardItem {
+    constructor(public data: Record<string, Promise<Blob>>) {
+      for (const v of Object.values(data)) void Promise.resolve(v).catch(() => {});
+    }
+  }
+
   function fireDrag(
     viewport: HTMLElement,
     from: { x: number; y: number },
@@ -1794,9 +1806,6 @@ describe("useTerminal OSC 52 clipboard", () => {
       value: { writeText, write },
       configurable: true,
     });
-    class FakeClipboardItem {
-      constructor(public data: Record<string, Promise<Blob>>) {}
-    }
     vi.stubGlobal("ClipboardItem", FakeClipboardItem);
     const div = await mountHook();
     try {
@@ -1820,12 +1829,7 @@ describe("useTerminal OSC 52 clipboard", () => {
       value: { writeText, write },
       configurable: true,
     });
-    vi.stubGlobal(
-      "ClipboardItem",
-      class {
-        constructor(public d: unknown) {}
-      },
-    );
+    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
     const div = await mountHook();
     try {
       const viewport = div.querySelector(".xterm") as HTMLElement;
@@ -1860,12 +1864,7 @@ describe("useTerminal OSC 52 clipboard", () => {
       value: { writeText, write },
       configurable: true,
     });
-    vi.stubGlobal(
-      "ClipboardItem",
-      class {
-        constructor(public d: unknown) {}
-      },
-    );
+    vi.stubGlobal("ClipboardItem", FakeClipboardItem);
     const div = await mountHook();
     try {
       const viewport = div.querySelector(".xterm") as HTMLElement;
