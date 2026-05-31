@@ -565,10 +565,14 @@ pub(crate) fn persist_session_to_storage(profile: &str, instance_id: &str, sessi
         return;
     }
 
-    // FIXME: PR3 will thread the per-process Arc<FileWatchService> through
-    // Instance and the persist/clear helpers so writes from the owning
-    // process surface via the in-process Local fast path. Until then the
-    // kernel watcher still picks up the change a few ms later.
+    // Deferred: threading the per-process `Arc<FileWatchService>` through
+    // `Instance` would require a `#[serde(skip)]` field plus re-injection
+    // on every disk load (post-recovery worker, session-id poller, restart
+    // cascade), touching the full deserialization surface. Behavior is
+    // unchanged with `noop()` here: the writer in this process loses the
+    // Local fast-path delivery, but the kernel watcher in any subscribing
+    // process still picks up the rename within the primitive's debounce
+    // window (~75ms). Tracked as a follow-up to the TUI consumer PR.
     let storage = match super::storage::Storage::new(
         profile,
         crate::file_watch::FileWatchService::noop(),
@@ -615,7 +619,11 @@ pub(crate) fn persist_session_to_storage(profile: &str, instance_id: &str, sessi
 /// lock (in-process mutex + cross-process flock; see `storage.rs` module
 /// rustdoc).
 fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
-    // FIXME: PR3 will thread the per-process Arc<FileWatchService> here.
+    // Deferred for the same reason as `persist_session_to_storage` above:
+    // the noop here loses the in-process Local fast-path delivery, but
+    // the kernel watcher still picks up the rename within ~75ms. Threading
+    // the Arc through `Instance` would touch the full deserialization
+    // surface; tracked as a follow-up.
     let storage = match super::storage::Storage::new(
         profile,
         crate::file_watch::FileWatchService::noop(),
