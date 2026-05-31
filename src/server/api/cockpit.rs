@@ -284,6 +284,7 @@ pub async fn spawn_cockpit(
             &instance.tool,
             explicit.as_deref(),
             &instance.source_profile,
+            std::path::Path::new(&instance.project_path),
         )
         .await;
 
@@ -469,6 +470,7 @@ pub async fn switch_cockpit_agent(
             &instance.tool,
             instance.cockpit_agent.as_deref(),
             &instance.source_profile,
+            std::path::Path::new(&instance.project_path),
         )
         .await;
     if from_agent == target {
@@ -1135,13 +1137,22 @@ pub async fn cockpit_enable(
     // when it declares an `agent_cockpit_cmd` in its profile config.
     let agent_name = state
         .cockpit_supervisor
-        .pick_agent_for_tool(&instance.tool, instance.cockpit_agent.as_deref(), &profile)
+        .pick_agent_for_tool(
+            &instance.tool,
+            instance.cockpit_agent.as_deref(),
+            &profile,
+            std::path::Path::new(&instance.project_path),
+        )
         .await;
     let registry = state.cockpit_supervisor.registry_snapshot().await;
     let resolvable = registry.get(&agent_name).is_some()
         || state
             .cockpit_supervisor
-            .custom_agent_has_cockpit_cmd(&instance.tool, &profile)
+            .custom_agent_has_cockpit_cmd(
+                &instance.tool,
+                &profile,
+                std::path::Path::new(&instance.project_path),
+            )
             .await;
     if !resolvable {
         return (

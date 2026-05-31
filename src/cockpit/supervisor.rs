@@ -523,12 +523,15 @@ impl<S: BroadcastSink> Supervisor<S> {
     ///      `aoe-agent` (our bundled multi-provider agent)
     ///
     /// `profile` is the session's source profile (`""` resolves the
-    /// user's default) and is only consulted for step 3.
+    /// user's default) and `project_path` is its working directory;
+    /// both are consulted for step 3 so repo-local `agent_cockpit_cmd`
+    /// overrides are honored.
     pub async fn pick_agent_for_tool(
         &self,
         tool: &str,
         explicit_override: Option<&str>,
         profile: &str,
+        project_path: &std::path::Path,
     ) -> String {
         if let Some(name) = explicit_override {
             if !name.is_empty() {
@@ -545,7 +548,10 @@ impl<S: BroadcastSink> Supervisor<S> {
         // Step 3: custom agent with a configured ACP command resolves to
         // its own name; spawn builds the spec from config (no registry
         // mutation).
-        if self.custom_agent_has_cockpit_cmd(tool, profile).await {
+        if self
+            .custom_agent_has_cockpit_cmd(tool, profile, project_path)
+            .await
+        {
             return tool.to_string();
         }
         // Step 4: legacy fallbacks.
@@ -557,12 +563,18 @@ impl<S: BroadcastSink> Supervisor<S> {
     }
 
     /// True iff `tool` is a custom agent that declares an
-    /// `agent_cockpit_cmd` in the given profile's resolved config.
-    pub async fn custom_agent_has_cockpit_cmd(&self, tool: &str, profile: &str) -> bool {
+    /// `agent_cockpit_cmd` in its profile + repo-resolved config.
+    pub async fn custom_agent_has_cockpit_cmd(
+        &self,
+        tool: &str,
+        profile: &str,
+        project_path: &std::path::Path,
+    ) -> bool {
         let tool = tool.to_string();
         let profile = profile.to_string();
+        let project_path = project_path.to_path_buf();
         tokio::task::spawn_blocking(move || {
-            crate::session::profile_config::resolve_config_or_warn(&profile)
+            crate::session::repo_config::resolve_config_with_repo_or_warn(&profile, &project_path)
                 .session
                 .agent_cockpit_cmd
                 .get(&tool)
@@ -986,12 +998,16 @@ impl<S: BroadcastSink> Supervisor<S> {
         };
 
         // Resolve the spec config-aware: built-ins come from the
-        // registry, custom agents from this session's profile-resolved
-        // `agent_cockpit_cmd`. Read off-thread; config resolution touches
-        // disk.
+        // registry, custom agents from this session's profile + repo
+        // resolved `agent_cockpit_cmd`. Read off-thread; config
+        // resolution touches disk.
         let profile_for_cfg = source_profile.clone().unwrap_or_default();
+        let cwd_for_cfg = cwd.clone();
         let resolved_cfg = tokio::task::spawn_blocking(move || {
-            crate::session::profile_config::resolve_config_or_warn(&profile_for_cfg)
+            crate::session::repo_config::resolve_config_with_repo_or_warn(
+                &profile_for_cfg,
+                &cwd_for_cfg,
+            )
         })
         .await
         .map_err(|e| {

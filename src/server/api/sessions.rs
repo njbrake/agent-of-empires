@@ -268,7 +268,11 @@ impl SessionResponse {
             // per-row config read.
             #[cfg(feature = "serve")]
             acp_capable: {
-                let resolved = inst.cockpit_agent.as_deref().unwrap_or(inst.tool.as_str());
+                let resolved = inst
+                    .cockpit_agent
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(inst.tool.as_str());
                 builtin_acp_registry().get(resolved).is_some()
             },
             claude_fullscreen: claude_fullscreen && inst.tool == "claude",
@@ -403,23 +407,27 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<SessionsE
         .collect();
 
     // Overlay custom-agent ACP capability (built-ins were resolved in the
-    // constructor). Resolve each distinct profile's config at most once.
+    // constructor). Cache by (profile, project_path) since repo-local
+    // config can override agent_cockpit_cmd, so each distinct pair is
+    // resolved at most once.
     #[cfg(feature = "serve")]
     {
         use std::collections::HashMap;
-        let mut cockpit_cmd_by_profile: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut cockpit_cmd_cache: HashMap<(String, String), HashMap<String, String>> =
+            HashMap::new();
         for (resp, inst) in sessions.iter_mut().zip(instances.iter()) {
             if resp.acp_capable {
                 continue;
             }
-            let profile = inst.source_profile.clone();
-            let map = cockpit_cmd_by_profile
-                .entry(profile.clone())
-                .or_insert_with(|| {
-                    crate::session::profile_config::resolve_config_or_warn(&profile)
-                        .session
-                        .agent_cockpit_cmd
-                });
+            let key = (inst.source_profile.clone(), inst.project_path.clone());
+            let map = cockpit_cmd_cache.entry(key).or_insert_with(|| {
+                crate::session::repo_config::resolve_config_with_repo_or_warn(
+                    &inst.source_profile,
+                    std::path::Path::new(&inst.project_path),
+                )
+                .session
+                .agent_cockpit_cmd
+            });
             resp.acp_capable = custom_agent_acp_capable(map, &inst.tool);
         }
     }
@@ -1949,8 +1957,9 @@ pub async fn create_session(
                     .filter(|s| !s.is_empty())
                     .unwrap_or(instance.tool.as_str());
                 let capable = acp_registry.get(resolved).is_some()
-                    || crate::session::profile_config::resolve_config_or_warn(
+                    || crate::session::repo_config::resolve_config_with_repo_or_warn(
                         &instance.source_profile,
+                        std::path::Path::new(&instance.project_path),
                     )
                     .session
                     .agent_cockpit_cmd
@@ -2027,8 +2036,9 @@ pub async fn create_session(
             // into the new session renders the right substrate immediately.
             #[cfg(feature = "serve")]
             if !resp.acp_capable {
-                let cockpit_cmd = crate::session::profile_config::resolve_config_or_warn(
+                let cockpit_cmd = crate::session::repo_config::resolve_config_with_repo_or_warn(
                     &instance.source_profile,
+                    std::path::Path::new(&instance.project_path),
                 )
                 .session
                 .agent_cockpit_cmd;
@@ -2067,7 +2077,12 @@ pub async fn create_session(
             {
                 let agent = state
                     .cockpit_supervisor
-                    .pick_agent_for_tool(&tool, agent_override.as_deref(), &source_profile)
+                    .pick_agent_for_tool(
+                        &tool,
+                        agent_override.as_deref(),
+                        &source_profile,
+                        std::path::Path::new(&project_path),
+                    )
                     .await;
                 let cwd = std::path::PathBuf::from(project_path);
                 let supervisor = state.cockpit_supervisor.clone();
