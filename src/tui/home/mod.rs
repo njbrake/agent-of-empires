@@ -703,7 +703,30 @@ pub struct HomeView {
     /// `#[tokio::test]`); the heartbeat reload is still canonical and
     /// covers correctness in that case.
     pub(super) _disk_adapter: Option<tokio::task::AbortHandle>,
+
+    /// Set by per-config-file forwarder tasks; swapped to `false` by the
+    /// tick loop when it consumes the kick. Cap-1 fan-in: multiple events
+    /// across the global config and any number of per-profile configs
+    /// between two ticks collapse into one `refresh_from_config` call.
+    /// Distinct from `disk_dirty` because the storage-mirror reload calls
+    /// `reload_storage_only` while the config reload calls
+    /// `refresh_from_config`; the two paths must remain independently
+    /// schedulable on the same tick (config first, then storage; see
+    /// `App::run`).
+    pub(super) config_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Per-key subscription pairs for config files. Key is `"<global>"`
+    /// for the `<app_dir>/config.toml` subscription and a profile name
+    /// for each `<profile_dir>/config.toml` subscription. Reuses
+    /// `DiskWatchEntry` so the drop-then-abort teardown protocol is
+    /// identical to the storage-mirror migration.
+    pub(super) config_watch_handles: HashMap<String, DiskWatchEntry>,
 }
+
+/// Sentinel key for the global `<app_dir>/config.toml` entry in
+/// `HomeView::config_watch_handles`. Not a valid profile name (profile
+/// names cannot contain `<` or `>`), so it cannot collide with a real
+/// per-profile subscription.
+const GLOBAL_CONFIG_KEY: &str = "<global>";
 
 /// Per-profile subscription pair. Held in `HomeView::disk_watch_handles`
 /// keyed by profile name. The drop order on remove is canonical: drop the
@@ -813,6 +836,8 @@ impl HomeView {
         } else {
             None
         };
+
+        let config_dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
         let mut view = Self {
             storages,
@@ -950,6 +975,8 @@ impl HomeView {
             disk_watch_handles: HashMap::new(),
             disk_combined_tx,
             _disk_adapter: disk_adapter,
+            config_dirty,
+            config_watch_handles: HashMap::new(),
         };
 
         view.tool_hotkey_cache = input::build_tool_hotkey_cache(&view.tool_configs);
@@ -1058,6 +1085,7 @@ impl HomeView {
         view.update_selected();
         let initial_profiles: Vec<String> = view.storages.keys().cloned().collect();
         view.rewire_disk_subscriptions(&initial_profiles)?;
+        view.rewire_config_subscriptions(&initial_profiles)?;
         Ok(view)
     }
 
@@ -1099,6 +1127,7 @@ impl HomeView {
             if profile_set_changed {
                 let names: Vec<String> = current_profiles.clone();
                 self.rewire_disk_subscriptions(&names)?;
+                self.rewire_config_subscriptions(&names)?;
             }
         }
 
@@ -1300,6 +1329,171 @@ impl HomeView {
                 target: "tui.file_watch",
                 added = ?added,
                 "rewire_disk_subscriptions: added"
+            );
+        }
+        Ok(())
+    }
+
+    /// Reconcile the per-key config-file subscriptions against the live
+    /// profile set + the always-present global key. Mirrors
+    /// `rewire_disk_subscriptions`, with two differences:
+    ///
+    /// 1. The global key (`<app_dir>/config.toml`) is always present and
+    ///    is never subject to add/remove churn; it is subscribed on the
+    ///    first call and skipped on subsequent calls.
+    /// 2. Per-profile configs subscribe on `<profile_dir>/config.toml`
+    ///    with a 100ms trailing debounce (per design §6; collapses vim
+    ///    `:w` write-tempfile + rename + chmod sequences).
+    ///
+    /// Drop order on remove is canonical (drop the `SubscriptionHandle`
+    /// FIRST, then abort the forwarder; primitive §12 rule 3 + design §7)
+    /// so the source channel closes and the forwarder's `rx.recv()`
+    /// returns `None` naturally before the abort fires as a safeguard.
+    ///
+    /// Service ownership: this method reuses `self.file_watch.clone()`,
+    /// the single `Arc<FileWatchService>` constructed once for this TUI
+    /// process (per the file-watch service design's "one Arc per
+    /// process" rule). It must NEVER construct a second service.
+    /// Cross-process config edits (user `$EDITOR` save, peer
+    /// `aoe profile create/delete`) propagate through the kernel
+    /// watcher; in-process config writes are out of scope here because
+    /// `Storage::update` does not write config files (only sessions /
+    /// groups), so no `notify_local_change` is wired on this path.
+    pub(super) fn rewire_config_subscriptions(&mut self, current: &[String]) -> anyhow::Result<()> {
+        use crate::file_watch::{FileMatcher, WatchSpec};
+        use std::time::Duration;
+
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Ok(());
+        }
+
+        if !self.config_watch_handles.contains_key(GLOBAL_CONFIG_KEY) {
+            match crate::session::get_app_dir() {
+                Ok(app_dir) => {
+                    let target = app_dir.join("config.toml");
+                    let spec = WatchSpec {
+                        dir: app_dir,
+                        matcher: FileMatcher::Exact(target),
+                        debounce: Some(Duration::from_millis(100)),
+                    };
+                    match self.file_watch.subscribe_channel(spec, 4) {
+                        Ok((mut rx, handle)) => {
+                            let dirty = std::sync::Arc::clone(&self.config_dirty);
+                            let join = tokio::spawn(async move {
+                                while rx.recv().await.is_some() {
+                                    dirty.store(true, std::sync::atomic::Ordering::Release);
+                                }
+                            });
+                            self.config_watch_handles.insert(
+                                GLOBAL_CONFIG_KEY.to_string(),
+                                DiskWatchEntry {
+                                    handle,
+                                    forwarder: join.abort_handle(),
+                                },
+                            );
+                            tracing::debug!(
+                                target: "tui.file_watch",
+                                "rewire_config_subscriptions: subscribed global config.toml"
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "tui.file_watch",
+                                error = %e,
+                                "global config subscribe_channel failed; \
+                                 falling back to settings-close + profile-switch reload"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "tui.file_watch",
+                        error = %e,
+                        "skipping global config subscribe; app dir resolution failed"
+                    );
+                }
+            }
+        }
+
+        let added: Vec<String> = current
+            .iter()
+            .filter(|p| !self.config_watch_handles.contains_key(p.as_str()))
+            .cloned()
+            .collect();
+        let removed: Vec<String> = self
+            .config_watch_handles
+            .keys()
+            .filter(|k| k.as_str() != GLOBAL_CONFIG_KEY && !current.contains(k))
+            .cloned()
+            .collect();
+
+        for name in &removed {
+            if let Some(entry) = self.config_watch_handles.remove(name) {
+                let DiskWatchEntry { handle, forwarder } = entry;
+                drop(handle);
+                forwarder.abort();
+            }
+        }
+        if !removed.is_empty() {
+            tracing::debug!(
+                target: "tui.file_watch",
+                removed = ?removed,
+                "rewire_config_subscriptions: removed"
+            );
+        }
+
+        for name in &added {
+            let dir = match crate::session::get_profile_dir(name) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "tui.file_watch",
+                        profile = %name,
+                        error = %e,
+                        "skipping config subscribe; profile dir resolution failed"
+                    );
+                    continue;
+                }
+            };
+            let target = dir.join("config.toml");
+            let spec = WatchSpec {
+                dir: dir.clone(),
+                matcher: FileMatcher::Exact(target),
+                debounce: Some(Duration::from_millis(100)),
+            };
+            match self.file_watch.subscribe_channel(spec, 4) {
+                Ok((mut rx, handle)) => {
+                    let dirty = std::sync::Arc::clone(&self.config_dirty);
+                    let join = tokio::spawn(async move {
+                        while rx.recv().await.is_some() {
+                            dirty.store(true, std::sync::atomic::Ordering::Release);
+                        }
+                    });
+                    self.config_watch_handles.insert(
+                        name.clone(),
+                        DiskWatchEntry {
+                            handle,
+                            forwarder: join.abort_handle(),
+                        },
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "tui.file_watch",
+                        profile = %name,
+                        error = %e,
+                        "config subscribe_channel failed; \
+                         falling back to settings-close + profile-switch reload for this profile"
+                    );
+                }
+            }
+        }
+        if !added.is_empty() {
+            tracing::debug!(
+                target: "tui.file_watch",
+                added = ?added,
+                "rewire_config_subscriptions: added"
             );
         }
         Ok(())

@@ -1108,7 +1108,25 @@ impl App {
             // scoped to `sessions.json` / `groups.json`; the heartbeat
             // path keeps the full `reload()` so the status-hook config
             // cache and mouse-capture toggle stay refreshed.
+            //
+            // Config kick is processed FIRST so that `refresh_from_config`
+            // can invalidate any cached profile-derived state before the
+            // storage-mirror block reads it (e.g. a profile rename in
+            // config landing in the same tick as a sessions.json write).
+            // Same `live_idle` gate: retuning `tool_hotkey_cache` mid
+            // live-send would surprise the user.
             let live_idle = self.home.live_send.is_none();
+            let config_kick = live_idle
+                && self
+                    .home
+                    .config_dirty
+                    .swap(false, std::sync::atomic::Ordering::Acquire);
+            if config_kick {
+                self.home.refresh_from_config();
+                refresh_needed = true;
+                needs_full_refresh = true;
+            }
+
             let watcher_kick = live_idle
                 && self
                     .home
