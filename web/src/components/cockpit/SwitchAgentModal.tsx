@@ -91,10 +91,13 @@ export function SwitchAgentModal({
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    // Only flag this load as stale. abortRef belongs to the primer
+    // fetch in handleConfirm; aborting it here would cancel an in-flight
+    // handoff when an unrelated dep (currentAgent, rateLimited) changes.
+    // The agents fetch itself takes no signal, so there is nothing else
+    // to cancel.
     return () => {
       cancelled = true;
-      abortRef.current?.abort();
-      abortRef.current = null;
     };
   }, [open, currentAgent, rateLimited]);
 
@@ -246,8 +249,11 @@ export function SwitchAgentModal({
         <div className="mt-5 flex justify-end gap-2">
           <button
             type="button"
-            onClick={onClose}
-            className="rounded border border-surface-700 px-3 py-1 text-xs font-medium hover:bg-surface-800"
+            onClick={() => {
+              if (!submitting) onClose();
+            }}
+            disabled={submitting}
+            className="rounded border border-surface-700 px-3 py-1 text-xs font-medium hover:bg-surface-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
             Cancel
           </button>
