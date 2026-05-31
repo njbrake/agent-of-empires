@@ -999,10 +999,15 @@ export function WorkingSpinner({
     return () => window.clearInterval(t);
   }, [lastActivityRef]);
 
-  const state: "thinking" | "tool" | "working" = thinking
-    ? "thinking"
-    : tool
-      ? "tool"
+  // tool is the more specific, I/O-bound signal: a tool in flight means
+  // the agent is blocked waiting on its result, which the user needs to
+  // see over the compute-bound "thinking" state. Prefer it when both are
+  // set (the claude-agent-acp adapter can leave `thinking` latched true
+  // through a tool run by skipping ThinkingEnded). See #1213.
+  const state: "thinking" | "tool" | "working" = tool
+    ? "tool"
+    : thinking
+      ? "thinking"
       : "working";
   // Swap the rattle verb for an explicit "waiting on model" badge
   // with a live elapsed counter once the inactivity gap is clearly
