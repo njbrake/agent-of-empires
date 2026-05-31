@@ -2521,6 +2521,26 @@ fn wakeup_lifecycle_signal_from_update(
     }
 }
 
+/// Classify a notification for both watchdog lanes. Returns
+/// `(lifecycle_signal, wakeup_signal)`.
+///
+/// During post-load history replay suppression we intentionally surface no
+/// signal, so stale replay frames cannot suppress or disarm watchdogs for a
+/// new prompt epoch.
+fn classify_watchdog_notification_signals(
+    update: &agent_client_protocol::schema::SessionUpdate,
+    profile: &agent_profiles::AgentProfile,
+    suppressing_history_replay: bool,
+) -> (Option<LifecycleSignal>, Option<LifecycleSignal>) {
+    if suppressing_history_replay {
+        return (None, None);
+    }
+    (
+        classify_lifecycle_signal(update),
+        wakeup_lifecycle_signal_from_update(update, profile),
+    )
+}
+
 /// Parse Claude's ExitPlanMode tool input into a structured `Plan`.
 /// Claude ships the plan markdown in `raw_input.plan`; we extract its
 /// bullet- or number-prefixed lines as `PlanStep`s with status=Pending,
@@ -3331,9 +3351,10 @@ async fn run_connection_task<W, R>(
     //     so a session that never receives a single notification still
     //     fires Stopped after RESUME_IDLE_GRACE rather than immediately.
     //   - `first_event_after_attach`: set true on the first inbound
-    //     notification after attach. Once the runner forwards any
-    //     notification the turn is observable, so the watchdog disarms;
-    //     it exists only for the case where the runner stays silent.
+    //     lifecycle-bearing notification after attach (progress, tool
+    //     lifecycle, terminal usage, wakeup). Ambient updates like mode
+    //     or available-command refreshes do not prove turn progress, so
+    //     they must not disarm the watchdog.
     //   - `prompt_sent_since_attach`: set when the user issues a prompt
     //     after attach; the user's real PromptRequest will own the next
     //     Stopped, so the watchdog must stand down.
@@ -3362,11 +3383,6 @@ async fn run_connection_task<W, R>(
                 async move {
                     last_event_at
                         .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
-                    // Disarm the resume-idle watchdog: the runner is
-                    // forwarding notifications, so the in-flight turn is
-                    // observable and any further silence is normal mid-turn
-                    // reasoning, not an orphaned turn whose response was lost.
-                    first_event_after_attach.store(true, Ordering::Relaxed);
                     let suppressing = suppress.load(Ordering::Relaxed);
                     // Snapshot the prompt epoch ONCE per notification so
                     // every signal derived from this update shares the
@@ -3378,31 +3394,24 @@ async fn run_connection_task<W, R>(
                     // started racing it.
                     let envelope_epoch =
                         current_prompt_epoch.load(Ordering::Relaxed);
-                    // Classify before consuming `notification.update` in
-                    // the event mapping below; emit only when we're not
-                    // in the post-load history-replay window so stale
-                    // chunks from a prior turn can't influence the
-                    // current prompt's silent-orphan state machine.
-                    let lifecycle_signal = if suppressing {
-                        None
-                    } else {
-                        classify_lifecycle_signal(&notification.update)
-                    };
-                    // Derive `WakeupPending` directly from the source
-                    // update so it only fires on a successful
-                    // `ToolCallUpdate { status: Completed, title:
-                    // ScheduleWakeup }`. Scanning `mapped_events` for
-                    // `Event::WakeupScheduled` instead would let the
-                    // initial `ToolCall` frame (tool not yet completed)
-                    // and any in-progress / failed completion trip
-                    // suppression for `delay + base_grace`, masking a
-                    // real adapter wedge. See CodeRabbit review on
-                    // PR #1406.
-                    let wakeup_signal = if suppressing {
-                        None
-                    } else {
-                        wakeup_lifecycle_signal_from_update(&notification.update, profile)
-                    };
+                    // Classify watchdog signals before consuming
+                    // `notification.update` in the event mapping below.
+                    // During post-load replay suppression this returns no
+                    // signal so stale chunks from a prior turn cannot
+                    // influence the current prompt's watchdog state.
+                    let (lifecycle_signal, wakeup_signal) =
+                        classify_watchdog_notification_signals(
+                            &notification.update,
+                            profile,
+                            suppressing,
+                        );
+                    // Disarm resume-idle only on lifecycle-bearing
+                    // notifications (progress/tool/terminal/wakeup). Pure
+                    // ambient updates (mode, command list, metadata) are
+                    // not proof of in-flight turn progress.
+                    if lifecycle_signal.is_some() || wakeup_signal.is_some() {
+                        first_event_after_attach.store(true, Ordering::Relaxed);
+                    }
                     let mapped_events = map_update_to_events(notification.update, profile);
                     // Deliver lifecycle signals BEFORE publishing the
                     // user-visible event vector. The watchdog uses
@@ -6189,6 +6198,52 @@ mod tests {
             &agent_profiles::CLAUDE,
         );
         assert!(matches!(sig, Some(LifecycleSignal::WakeupPending { .. })));
+    }
+
+    #[test]
+    fn classify_watchdog_notification_signals_ignores_ambient_updates() {
+        use agent_client_protocol::schema::{
+            AvailableCommand as AcpAvailableCommand, AvailableCommandsUpdate,
+        };
+        let update = SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+            AcpAvailableCommand::new("review", "Review changes"),
+        ]));
+        let (lifecycle, wakeup) =
+            classify_watchdog_notification_signals(&update, &agent_profiles::CLAUDE, false);
+        assert!(
+            lifecycle.is_none() && wakeup.is_none(),
+            "ambient updates must not count as watchdog activity"
+        );
+    }
+
+    #[test]
+    fn classify_watchdog_notification_signals_marks_lifecycle_updates() {
+        use agent_client_protocol::schema::{ToolCallUpdate, ToolCallUpdateFields};
+        let update = SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+            "tc-lifecycle-1",
+            ToolCallUpdateFields::new(),
+        ));
+        let (lifecycle, wakeup) =
+            classify_watchdog_notification_signals(&update, &agent_profiles::CLAUDE, false);
+        assert!(
+            lifecycle.is_some() && wakeup.is_none(),
+            "tool lifecycle updates must disarm the resume-idle watchdog"
+        );
+    }
+
+    #[test]
+    fn classify_watchdog_notification_signals_suppresses_during_history_replay() {
+        use agent_client_protocol::schema::{ToolCallUpdate, ToolCallUpdateFields};
+        let update = SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+            "tc-suppressed-1",
+            ToolCallUpdateFields::new(),
+        ));
+        let (lifecycle, wakeup) =
+            classify_watchdog_notification_signals(&update, &agent_profiles::CLAUDE, true);
+        assert!(
+            lifecycle.is_none() && wakeup.is_none(),
+            "post-load replay suppression must block watchdog signals"
+        );
     }
 
     #[test]
