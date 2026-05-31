@@ -29,12 +29,12 @@ Gemini CLI, etc.) is the *server*. Any ACP-conformant agent works.
 
 ## In this section
 
-- **[Setup](cockpit/setup.md)** — requirements, `aoe cockpit doctor`, enabling per session and globally, escape hatches, cross-machine attach, and the headless CLI verbs.
-- **[Interface](cockpit/interface.md)** — the TUI and web cockpit views, keybinds, composer behavior, queued prompts, and timeline card grouping.
-- **[Modes, approvals & model controls](cockpit/controls.md)** — permission modes, YOLO, approval cards, notifications, and the model / reasoning-effort selectors.
-- **[Persistence & recovery](cockpit/persistence.md)** — worker survival across `aoe serve` restart, session deletion, and conversation persistence.
-- **[Troubleshooting](cockpit/troubleshooting.md)** — the security model plus a field guide to every failure mode and its fix.
-- **[Multi-agent support](cockpit/multi-agent.md)** — per-agent feature matrix and how the cockpit profile resolves.
+- **[Setup](cockpit/setup.md)**: requirements, `aoe cockpit doctor`, enabling per session and globally, escape hatches, cross-machine attach, and the headless CLI verbs.
+- **[Interface](cockpit/interface.md)**: the TUI and web cockpit views, keybinds, composer behavior, queued prompts, and timeline card grouping.
+- **[Modes, approvals & model controls](cockpit/controls.md)**: permission modes, YOLO, approval cards, notifications, and the model / reasoning-effort selectors.
+- **[Persistence & recovery](cockpit/persistence.md)**: worker survival across `aoe serve` restart, session deletion, and conversation persistence.
+- **[Troubleshooting](cockpit/troubleshooting.md)**: the security model plus a field guide to every failure mode and its fix.
+- **[Multi-agent support](cockpit/multi-agent.md)**: per-agent feature matrix and how the cockpit profile resolves.
 
 ## Supported agents
 

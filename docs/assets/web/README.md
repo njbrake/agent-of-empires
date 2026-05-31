@@ -30,10 +30,10 @@ cockpit shots) through the live Playwright harness
 
 ## Current images
 
-- `web/dashboard.png` — dashboard home: sidebar, session summary.
-- `web/terminal.png` — a session's agent terminal in the desktop split.
-- `web/diff.png` — the web diff view with a changed file open.
-- `web/settings.png` — the settings view and its tab groups.
-- `cockpit/overview.png` — a cockpit turn: plan, tool-call cards, agent text.
-- `cockpit/interface.png` — the cockpit composer and cards on a phone viewport.
-- `cockpit/approval.png` — a destructive-action approval card.
+- `web/dashboard.png`: dashboard home with sidebar and session summary.
+- `web/terminal.png`: a session's agent terminal in the desktop split.
+- `web/diff.png`: the web diff view with a changed file open.
+- `web/settings.png`: the settings view and its tab groups.
+- `cockpit/overview.png`: a cockpit turn with plan, tool-call cards, agent text.
+- `cockpit/interface.png`: the cockpit composer and cards on a phone viewport.
+- `cockpit/approval.png`: a destructive-action approval card.

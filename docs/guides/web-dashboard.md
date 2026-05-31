@@ -8,10 +8,10 @@ The web dashboard lets you monitor and interact with agent sessions from any bro
 
 This page is the overview: how to run `aoe serve`, the access and auth modes, the security model, and PWA install. The rest of the surface has its own pages:
 
-- **[Dashboard & workspaces](web/dashboard.md)** — the layout, status glyphs, the session-creation wizard, sidebar sort, triage (pin / archive / snooze), command palette, and the first-run tutorial.
-- **[Terminal view](web/terminal.md)** — the agent and paired terminals, reconnect behavior, the WebSocket close-code reference, and read-only mode.
-- **[Diff view](web/diff.md)** — reviewing changed files, the flat / tree file list, per-session base override, and inline review comments.
-- **[Settings & profiles](web/settings.md)** — the settings tabs, profile picker, connected-device tracking, and step-up elevation.
+- **[Dashboard & workspaces](web/dashboard.md)**: the layout, status glyphs, the session-creation wizard, sidebar sort, triage (pin / archive / snooze), command palette, and the first-run tutorial.
+- **[Terminal view](web/terminal.md)**: the agent and paired terminals, reconnect behavior, the WebSocket close-code reference, and read-only mode.
+- **[Diff view](web/diff.md)**: reviewing changed files, the flat / tree file list, per-session base override, and inline review comments.
+- **[Settings & profiles](web/settings.md)**: the settings tabs, profile picker, connected-device tracking, and step-up elevation.
 
 Mobile and touch behavior is documented inline on each page, next to the surface it applies to.
 
