@@ -4544,15 +4544,20 @@ async fn run_connection_task<W, R>(
                         //     #1240.
                         let reason = if rate_limited {
                             "rate_limited"
+                        } else if force_stopped {
+                            // Explicit user "Force stop" wins over the
+                            // orphan/unresponsive watchdog reasons: it's the
+                            // proximate cause of THIS turn ending (we broke
+                            // the loop the moment the user clicked), so it
+                            // must not be masked by a prompt_orphaned flag
+                            // that was set earlier. The drain task treats it
+                            // like `agent_unresponsive` (kill process group +
+                            // respawn) but the reason string keeps the
+                            // user-initiated signal distinct in postmortems.
+                            // See #1727.
+                            "user_forced"
                         } else if prompt_orphaned {
                             "prompt_orphaned"
-                        } else if force_stopped {
-                            // Explicit user "Force stop": the drain task
-                            // treats this like `agent_unresponsive` (kill
-                            // process group + respawn) but the reason
-                            // string keeps the user-initiated signal
-                            // distinct in postmortems. See #1727.
-                            "user_forced"
                         } else if agent_unresponsive {
                             "agent_unresponsive"
                         } else if shutdown {
