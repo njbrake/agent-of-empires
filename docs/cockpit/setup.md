@@ -27,7 +27,7 @@ aoe cockpit doctor
 Sample output on a machine where Claude is installed but the others
 aren't:
 
-```
+```text
 Cockpit doctor  (Beta)
 ======================
 
@@ -214,7 +214,7 @@ choice stays explicit.
 
 ## CLI reference
 
-```
+```text
 aoe cockpit doctor [--json] [--fix]
 aoe cockpit agents
 aoe cockpit ps [--json]
