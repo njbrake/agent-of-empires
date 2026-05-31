@@ -189,6 +189,7 @@ impl App {
         available_tools: AvailableTools,
         suppress_first_run_dialogs: bool,
         mosh_active: bool,
+        file_watch: std::sync::Arc<crate::file_watch::FileWatchService>,
     ) -> Result<Self> {
         let no_agents = !available_tools.any_available();
         let active_profile = if profile.is_empty() {
@@ -196,7 +197,7 @@ impl App {
         } else {
             Some(profile.to_string())
         };
-        let mut home = HomeView::new(active_profile, available_tools)?;
+        let mut home = HomeView::new(active_profile, available_tools, file_watch)?;
 
         // Check if we need to show welcome or changelog dialogs
         let mut config = Config::load_or_warn();
@@ -1097,29 +1098,37 @@ impl App {
                 needs_full_refresh = true;
             }
 
-            // Defer the 5s disk reload while the user is in live-send.
-            // The reload is on the UI thread and rebuilds the sidebar
-            // tree from disk, which causes a visible hitch in the
-            // preview. The user can't change session config from inside
-            // live mode anyway. Leaving `last_disk_refresh` un-advanced
-            // when we skip means the first tick outside live-send
-            // re-checks the interval and reloads immediately if it's
-            // been ≥5s since the last successful reload (so a change
-            // on disk during a long live-send session is picked up on
-            // exit instead of sitting stale for another 5s window).
-            if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL && self.home.live_send.is_none()
-            {
-                self.home.reload()?;
-                // Pick up a Settings > Interaction > Mouse Capture toggle from
-                // disk and apply it now, so capture turns on/off within the
-                // reload window instead of waiting for a restart.
-                let profile = self.home.active_profile.as_deref().unwrap_or("default");
-                let mouse_capture_allowed = crate::session::resolve_config(profile)
-                    .map(|c| crate::tui::mouse_capture_requested(&c.session))
-                    .unwrap_or(self.mouse_capture_allowed);
-                if mouse_capture_allowed != self.mouse_capture_allowed {
-                    self.mouse_capture_allowed = mouse_capture_allowed;
-                    self.sync_mouse_capture(terminal)?;
+            // Disk reload: heartbeat (canonical defense-in-depth per
+            // file_watch primitive §9.2) plus the file-watch-driven kick.
+            // Both gate on `live_send.is_none()` so reloads never interrupt
+            // a paste-in-progress; the dirty flag stays latched (Acquire
+            // pairs with the forwarder/adapter Release) until the next
+            // eligible tick. The watcher path uses `reload_storage_only`
+            // (storage + profile rediscovery only) because the watcher is
+            // scoped to `sessions.json` / `groups.json`; the heartbeat
+            // path keeps the full `reload()` so the status-hook config
+            // cache and mouse-capture toggle stay refreshed.
+            let live_idle = self.home.live_send.is_none();
+            let watcher_kick = live_idle
+                && self
+                    .home
+                    .disk_dirty
+                    .swap(false, std::sync::atomic::Ordering::Acquire);
+            let heartbeat_due = last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL && live_idle;
+
+            if watcher_kick || heartbeat_due {
+                if heartbeat_due {
+                    self.home.reload()?;
+                    let profile = self.home.active_profile.as_deref().unwrap_or("default");
+                    let mouse_capture_allowed = crate::session::resolve_config(profile)
+                        .map(|c| crate::tui::mouse_capture_requested(&c.session))
+                        .unwrap_or(self.mouse_capture_allowed);
+                    if mouse_capture_allowed != self.mouse_capture_allowed {
+                        self.mouse_capture_allowed = mouse_capture_allowed;
+                        self.sync_mouse_capture(terminal)?;
+                    }
+                } else {
+                    self.home.reload_storage_only()?;
                 }
                 last_disk_refresh = std::time::Instant::now();
                 refresh_needed = true;

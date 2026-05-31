@@ -93,7 +93,7 @@ fn test_worktree_info_persists_across_save_load() {
     let temp_home = TempDir::new().unwrap();
     std::env::set_var("HOME", temp_home.path());
 
-    let storage = Storage::new("worktree-test-profile").unwrap();
+    let storage = Storage::new_for_test("worktree-test-profile").unwrap();
 
     let mut instance = Instance::new("Worktree Session", "/tmp/test");
     instance.worktree_info = Some(WorktreeInfo {

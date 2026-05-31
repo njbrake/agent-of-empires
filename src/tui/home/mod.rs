@@ -674,12 +674,52 @@ pub struct HomeView {
         crossterm::event::KeyModifiers,
     )>,
     pub(super) tool_picker_dialog: Option<super::dialogs::ToolPickerDialog>,
+
+    /// Process-wide file-watch primitive. Threaded into per-profile
+    /// `Storage` instances so writes from this process surface
+    /// immediately via the in-process Local fast path, and used to
+    /// register per-profile subscriptions on `sessions.json` /
+    /// `groups.json` so peer-process writes propagate within the
+    /// primitive's debounce window.
+    pub(super) file_watch: std::sync::Arc<crate::file_watch::FileWatchService>,
+    /// Set by the per-profile forwarder tasks; swapped to `false` by the
+    /// tick loop when it consumes the kick. Cap-1 fan-in: multiple events
+    /// across multiple profiles between two reloads collapse into one
+    /// reload, regardless of source file.
+    pub(super) disk_dirty: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Per-profile (handle, forwarder-abort) pairs. Drop the handle FIRST
+    /// when removing a profile (per primitive §12 rule 3 + design §7);
+    /// see `rewire_disk_subscriptions`.
+    pub(super) disk_watch_handles: HashMap<String, DiskWatchEntry>,
+    /// Capacity-1 fan-in channel from per-profile forwarders to the single
+    /// adapter task. `try_send` drops on backpressure: if the adapter
+    /// hasn't drained yet, the dirty flag is already set and the kick is
+    /// redundant.
+    pub(super) disk_combined_tx: tokio::sync::mpsc::Sender<()>,
+    /// Adapter task handle. The drain task runs as long as `disk_combined_tx`
+    /// (or any clone in a forwarder) is alive; abort here is the explicit
+    /// teardown signal at HomeView drop. `None` when no tokio runtime is
+    /// available at construction (the unit-test path uses `#[test]`, not
+    /// `#[tokio::test]`); the heartbeat reload is still canonical and
+    /// covers correctness in that case.
+    pub(super) _disk_adapter: Option<tokio::task::AbortHandle>,
+}
+
+/// Per-profile subscription pair. Held in `HomeView::disk_watch_handles`
+/// keyed by profile name. The drop order on remove is canonical: drop the
+/// `SubscriptionHandle` FIRST (closes the source channel so the forwarder
+/// exits naturally), THEN abort the forwarder as a fast-path safeguard
+/// (per primitive §12 rule 3 + design §7).
+pub(super) struct DiskWatchEntry {
+    pub(super) handle: crate::file_watch::SubscriptionHandle,
+    pub(super) forwarder: tokio::task::AbortHandle,
 }
 
 impl HomeView {
     pub fn new(
         active_profile: Option<String>,
         available_tools: AvailableTools,
+        file_watch: std::sync::Arc<crate::file_watch::FileWatchService>,
     ) -> anyhow::Result<Self> {
         use crate::session::list_profiles;
 
@@ -693,7 +733,7 @@ impl HomeView {
         };
 
         for profile_name in &profile_names {
-            let storage = Storage::new(profile_name)?;
+            let storage = Storage::new(profile_name, file_watch.clone())?;
             let (mut instances, groups) = storage.load_with_groups()?;
             for inst in &mut instances {
                 inst.source_profile = profile_name.clone();
@@ -754,6 +794,25 @@ impl HomeView {
             .and_then(|c| c.app_state.group_by)
             .unwrap_or(default_group_by);
         let view_mode = ViewMode::default();
+
+        let disk_dirty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (disk_combined_tx, mut disk_combined_rx) = tokio::sync::mpsc::channel::<()>(1);
+        let disk_adapter = if tokio::runtime::Handle::try_current().is_ok() {
+            let adapter_dirty = std::sync::Arc::clone(&disk_dirty);
+            let adapter_join = tokio::spawn(async move {
+                while disk_combined_rx.recv().await.is_some() {
+                    adapter_dirty.store(true, std::sync::atomic::Ordering::Release);
+                }
+                tracing::warn!(
+                    target: "tui.file_watch",
+                    reason = "channel_closed",
+                    "adapter exiting; falling back to 5s heartbeat"
+                );
+            });
+            Some(adapter_join.abort_handle())
+        } else {
+            None
+        };
 
         let mut view = Self {
             storages,
@@ -886,6 +945,11 @@ impl HomeView {
                 .unwrap_or_default(),
             tool_hotkey_cache: Vec::new(),
             tool_picker_dialog: None,
+            file_watch,
+            disk_dirty,
+            disk_watch_handles: HashMap::new(),
+            disk_combined_tx,
+            _disk_adapter: disk_adapter,
         };
 
         view.tool_hotkey_cache = input::build_tool_hotkey_cache(&view.tool_configs);
@@ -992,25 +1056,51 @@ impl HomeView {
 
         view.flat_items = view.build_flat_items();
         view.update_selected();
+        let initial_profiles: Vec<String> = view.storages.keys().cloned().collect();
+        view.rewire_disk_subscriptions(&initial_profiles)?;
         Ok(view)
     }
 
+    /// Full reload: status-hook config-cache refresh + storage. Used by
+    /// the 5s heartbeat tick and by event-driven sites (attach-return,
+    /// save+reload pairs, profile switch). The watcher path uses
+    /// `reload_storage_only` instead because the watcher only fires on
+    /// `sessions.json` / `groups.json`; status-hook config has its own
+    /// (still-future) subscription path.
     pub fn reload(&mut self) -> anyhow::Result<()> {
+        self.refresh_status_hook_config_cache();
+        self.reload_storage_only()
+    }
+
+    /// Storage-only reload: profile rediscovery + per-profile load + tree
+    /// rebuild + cursor restore. Skips the status-hook config-cache
+    /// refresh, which lives in a different file and is not in this PR's
+    /// migration scope. Used by the watcher-driven tick.
+    pub fn reload_storage_only(&mut self) -> anyhow::Result<()> {
         use crate::session::list_profiles;
 
         let mut all_instances = Vec::new();
 
-        // Re-discover profiles in "all" mode
+        let mut profile_set_changed = false;
         if self.active_profile.is_none() {
             let current_profiles = list_profiles()?;
             for name in &current_profiles {
                 if !self.storages.contains_key(name) {
-                    self.storages.insert(name.clone(), Storage::new(name)?);
+                    self.storages
+                        .insert(name.clone(), Storage::new(name, self.file_watch.clone())?);
+                    profile_set_changed = true;
                 }
             }
+            let before = self.storages.len();
             self.storages.retain(|k, _| current_profiles.contains(k));
+            if self.storages.len() != before {
+                profile_set_changed = true;
+            }
+            if profile_set_changed {
+                let names: Vec<String> = current_profiles.clone();
+                self.rewire_disk_subscriptions(&names)?;
+            }
         }
-        self.refresh_status_hook_config_cache();
 
         for (profile_name, storage) in &self.storages {
             let (mut instances, groups) = storage.load_with_groups()?;
@@ -1114,6 +1204,104 @@ impl HomeView {
         }
 
         self.update_selected();
+        Ok(())
+    }
+
+    /// Reconcile per-profile file-watch subscriptions against the live
+    /// profile set. Drops handles for removed profiles BEFORE aborting the
+    /// matching forwarder task (canonical drop-then-abort order, primitive
+    /// §12 rule 3 + design §7) so the source channel closes naturally and
+    /// no `try_send` races a dropped receiver. Adds new subscriptions on
+    /// `<profile_dir>/{sessions.json,groups.json}` with a 75ms trailing
+    /// debounce.
+    pub(super) fn rewire_disk_subscriptions(&mut self, current: &[String]) -> anyhow::Result<()> {
+        use crate::file_watch::{FileMatcher, WatchSpec};
+        use std::time::Duration;
+
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Ok(());
+        }
+
+        let added: Vec<String> = current
+            .iter()
+            .filter(|p| !self.disk_watch_handles.contains_key(p.as_str()))
+            .cloned()
+            .collect();
+        let removed: Vec<String> = self
+            .disk_watch_handles
+            .keys()
+            .filter(|p| !current.contains(p))
+            .cloned()
+            .collect();
+
+        for name in &removed {
+            if let Some(entry) = self.disk_watch_handles.remove(name) {
+                let DiskWatchEntry { handle, forwarder } = entry;
+                drop(handle);
+                forwarder.abort();
+            }
+        }
+        if !removed.is_empty() {
+            tracing::debug!(
+                target: "tui.file_watch",
+                removed = ?removed,
+                "rewire_disk_subscriptions: removed"
+            );
+        }
+
+        for name in &added {
+            let dir = match crate::session::get_profile_dir(name) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "tui.file_watch",
+                        profile = %name,
+                        error = %e,
+                        "skipping subscribe; profile dir resolution failed"
+                    );
+                    continue;
+                }
+            };
+            let sessions_path = dir.join("sessions.json");
+            let groups_path = dir.join("groups.json");
+            let spec = WatchSpec {
+                dir: dir.clone(),
+                matcher: FileMatcher::AnyOf(vec![sessions_path, groups_path]),
+                debounce: Some(Duration::from_millis(75)),
+            };
+            match self.file_watch.subscribe_channel(spec, 16) {
+                Ok((mut rx, handle)) => {
+                    let tx = self.disk_combined_tx.clone();
+                    let join = tokio::spawn(async move {
+                        while rx.recv().await.is_some() {
+                            let _ = tx.try_send(());
+                        }
+                    });
+                    self.disk_watch_handles.insert(
+                        name.clone(),
+                        DiskWatchEntry {
+                            handle,
+                            forwarder: join.abort_handle(),
+                        },
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        target: "tui.file_watch",
+                        profile = %name,
+                        error = %e,
+                        "subscribe_channel failed; falling back to 5s heartbeat for this profile"
+                    );
+                }
+            }
+        }
+        if !added.is_empty() {
+            tracing::debug!(
+                target: "tui.file_watch",
+                added = ?added,
+                "rewire_disk_subscriptions: added"
+            );
+        }
         Ok(())
     }
 
@@ -1909,7 +2097,7 @@ impl HomeView {
 
                 // Ensure target profile storage exists
                 if !self.storages.contains_key(&target_profile) {
-                    if let Ok(s) = Storage::new(&target_profile) {
+                    if let Ok(s) = Storage::new(&target_profile, self.file_watch.clone()) {
                         self.storages.insert(target_profile.clone(), s);
                     }
                 }
@@ -2546,7 +2734,7 @@ impl HomeView {
         let mut entries: Vec<ProfileEntry> = profiles
             .iter()
             .map(|name| {
-                let session_count = Storage::new(name)
+                let session_count = Storage::new(name, self.file_watch.clone())
                     .and_then(|s| s.load())
                     .map(|instances| instances.len())
                     .unwrap_or(0);
@@ -3266,8 +3454,10 @@ impl HomeView {
         }
 
         if !self.storages.contains_key(target) {
-            self.storages
-                .insert(target.to_string(), Storage::new(target)?);
+            self.storages.insert(
+                target.to_string(),
+                Storage::new(target, self.file_watch.clone())?,
+            );
         }
 
         self.pending_deletions

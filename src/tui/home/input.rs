@@ -1635,6 +1635,15 @@ impl HomeView {
                         self.profile_picker_dialog = None;
                         match crate::session::create_profile(&name) {
                             Ok(()) => {
+                                if let Ok(profiles) = crate::session::list_profiles() {
+                                    if let Err(e) = self.rewire_disk_subscriptions(&profiles) {
+                                        tracing::warn!(
+                                            target: "tui.file_watch",
+                                            error = %e,
+                                            "rewire after create_profile failed"
+                                        );
+                                    }
+                                }
                                 if let Err(e) = self.switch_profile(Some(name)) {
                                     tracing::error!(target: "tui.input", "Failed to switch to new profile: {}", e);
                                 }
@@ -1650,6 +1659,15 @@ impl HomeView {
                     ProfilePickerAction::Deleted(name) => {
                         match crate::session::delete_profile(&name) {
                             Ok(()) => {
+                                if let Ok(profiles) = crate::session::list_profiles() {
+                                    if let Err(e) = self.rewire_disk_subscriptions(&profiles) {
+                                        tracing::warn!(
+                                            target: "tui.file_watch",
+                                            error = %e,
+                                            "rewire after delete_profile failed"
+                                        );
+                                    }
+                                }
                                 self.show_profile_picker();
                             }
                             Err(e) => {
@@ -2098,7 +2116,13 @@ impl HomeView {
         let session_id_owned = inst.id.clone();
         let profile = inst.source_profile.clone();
         let base_override = inst.base_branch_override.clone();
-        match DiffView::new_for_session(repo_path, Some(session_id_owned), profile, base_override) {
+        match DiffView::new_for_session(
+            repo_path,
+            Some(session_id_owned),
+            profile,
+            base_override,
+            self.file_watch.clone(),
+        ) {
             Ok(view) => self.diff_view = Some(view),
             Err(e) => {
                 tracing::error!(target: "tui.input", "Failed to open diff view: {}", e);
