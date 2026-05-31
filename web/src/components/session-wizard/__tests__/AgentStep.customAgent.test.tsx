@@ -122,18 +122,18 @@ describe("AgentStep custom-agent selection (#1252)", () => {
       tool: "remote-helper",
       agents: [builtin, custom],
     });
-    expect(getByText(/Custom agents run in the terminal\./)).toBeTruthy();
+    expect(getByText(/Custom agents run in the terminal unless they define agent_cockpit_cmd/)).toBeTruthy();
   });
 
-  it("renders the cockpit notice for a custom agent that is acp_capable", () => {
+  it("renders the cockpit substrate card for a custom agent that is acp_capable", () => {
     // A custom agent with agent_cockpit_cmd (acp_capable=true) must offer
-    // cockpit, not the terminal fallback. Guards the SubstrateNotice
-    // reorder where acp_capable wins over the custom branch.
-    const { getByText, queryByText } = renderAgentStep({
+    // cockpit, not the terminal fallback.
+    const { getByRole, getByText, queryByText } = renderAgentStep({
       tool: "oc-superpowers",
       agents: [builtin, cockpitCustom],
     });
-    expect(getByText(/Cockpit is enabled/)).toBeTruthy();
+    expect(getByRole("switch", { name: "Use cockpit" })).toBeTruthy();
+    expect(getByText(/Renders the agent's plan, tool calls, and diffs/)).toBeTruthy();
     expect(queryByText(/Custom agents run in the terminal/)).toBeNull();
   });
 
