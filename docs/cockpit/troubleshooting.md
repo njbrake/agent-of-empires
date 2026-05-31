@@ -263,7 +263,7 @@ session usage snapshot, then folds every row above the divider
 behind a disclosure banner: `Show N earlier turns (cleared, not in
 the model's memory)`. Click the banner to expand the older transcript
 for your own reference; the model still won't see those turns. See
-#1101.
+[#1101](https://github.com/agent-of-empires/agent-of-empires/issues/1101).
 
 The slash-command palette and mode picker stay populated across a
 `/clear`. `claude-agent-sdk` caches the supported command surface at
