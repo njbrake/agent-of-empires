@@ -62,6 +62,7 @@ import {
   SPINNER_INTERVAL_MS,
   VERB_INTERVAL_MS,
   chooseVerb,
+  deriveSpinnerState,
 } from "../../lib/cockpitRattle";
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import {
@@ -999,16 +1000,7 @@ export function WorkingSpinner({
     return () => window.clearInterval(t);
   }, [lastActivityRef]);
 
-  // tool is the more specific, I/O-bound signal: a tool in flight means
-  // the agent is blocked waiting on its result, which the user needs to
-  // see over the compute-bound "thinking" state. Prefer it when both are
-  // set (the claude-agent-acp adapter can leave `thinking` latched true
-  // through a tool run by skipping ThinkingEnded). See #1213.
-  const state: "thinking" | "tool" | "working" = tool
-    ? "tool"
-    : thinking
-      ? "thinking"
-      : "working";
+  const state = deriveSpinnerState(thinking, tool);
   // Swap the rattle verb for an explicit "waiting on model" badge
   // with a live elapsed counter once the inactivity gap is clearly
   // longer than normal TTFT. The user can then distinguish "model
