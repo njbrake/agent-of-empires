@@ -1089,7 +1089,7 @@ export function WorkingSpinner({
           onClick={() => {
             void onForceEndTurn();
           }}
-          className="self-start text-xs not-italic px-2 py-1 rounded-md border border-surface-700 bg-surface-800 text-text-secondary hover:bg-surface-700 hover:text-text-primary cursor-pointer"
+          className="self-start h-8 text-xs not-italic px-2 py-1 rounded-md border border-surface-700 bg-surface-800 text-text-secondary hover:bg-surface-700 hover:text-text-primary transition-colors cursor-pointer"
           title="The agent is ignoring the stop request. Force stop restarts the agent now (it resumes from the saved transcript; partial in-flight tool output is lost)."
         >
           Force stop
@@ -1100,7 +1100,7 @@ export function WorkingSpinner({
           onClick={() => {
             void onForceEndTurn();
           }}
-          className="self-start text-xs not-italic px-2 py-1 rounded-md border border-surface-700 bg-surface-800 text-text-secondary hover:bg-surface-700 hover:text-text-primary cursor-pointer"
+          className="self-start h-8 text-xs not-italic px-2 py-1 rounded-md border border-surface-700 bg-surface-800 text-text-secondary hover:bg-surface-700 hover:text-text-primary transition-colors cursor-pointer"
           title={`No streaming activity for ${stalledSecs}s. Clears the spinner and sends a best-effort cancel to the agent.`}
         >
           Force end turn
