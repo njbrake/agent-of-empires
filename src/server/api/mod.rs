@@ -22,10 +22,11 @@ mod system;
 
 #[cfg(feature = "serve")]
 pub use cockpit::{
-    cockpit_cancel, cockpit_context_primer, cockpit_disable, cockpit_enable, cockpit_files,
-    cockpit_force_end_turn, cockpit_prompt, cockpit_replay, cockpit_set_config_option,
-    cockpit_set_mode, cockpit_worker_log, list_cockpit_agents, resolve_approval,
-    set_cockpit_master, shutdown_cockpit, spawn_cockpit, switch_cockpit_agent,
+    cockpit_attachment, cockpit_cancel, cockpit_context_primer, cockpit_disable, cockpit_enable,
+    cockpit_files, cockpit_force_end_turn, cockpit_prompt, cockpit_prompt_diff_comments,
+    cockpit_replay, cockpit_set_config_option, cockpit_set_mode, cockpit_worker_log,
+    list_cockpit_agents, resolve_approval, set_cockpit_master, shutdown_cockpit, spawn_cockpit,
+    switch_cockpit_agent,
 };
 
 #[cfg(feature = "serve")]
@@ -79,6 +80,13 @@ pub(super) const ALLOWED_GLOBAL_SETTINGS_SECTIONS: &[&str] = &[
     // No shell commands, no binary paths. Values are validated against the
     // EnvFilter parser before being written back to disk.
     "logging",
+    // cockpit: bools, numeric tuning knobs, and a queue-drain enum. The one
+    // binary-path field (`node_path`) is stripped via COCKPIT_BLOCKED_FIELDS
+    // below, mirroring the session allowlist+blocklist pattern, so the web
+    // surface carries no shell command or binary override. Without this the
+    // dashboard cockpit settings (durations, queue mode, resume/grace/idle
+    // knobs) silently failed to save. See #1689.
+    "cockpit",
 ];
 
 /// Sections that PATCH /api/settings/profile/:name may write.
@@ -97,8 +105,16 @@ pub(super) const ALLOWED_PROFILE_SETTINGS_SECTIONS: &[&str] = &[
     "worktree",
     "web",
     "logging",
+    "cockpit",
     "description",
 ];
+
+/// Cockpit fields stripped from any web settings PATCH before it is
+/// written, mirroring `SESSION_BLOCKED_FIELDS`. `node_path` overrides the
+/// Node.js binary the cockpit runner launches, an arbitrary-binary / RCE
+/// surface that must stay local-only; the rest of the cockpit section
+/// (bools, numbers, queue-drain enum) is safe to set from the dashboard.
+pub(super) const COCKPIT_BLOCKED_FIELDS: &[&str] = &["node_path"];
 
 pub(super) const SESSION_BLOCKED_FIELDS: &[&str] = &[
     "agent_command_override",
@@ -107,8 +123,10 @@ pub(super) const SESSION_BLOCKED_FIELDS: &[&str] = &[
     // custom_agents maps names to arbitrary shell commands (e.g., "ssh -t host claude").
     // agent_detect_as maps names to detection targets but is part of the agent config
     // surface that should only be editable locally.
+    // agent_cockpit_cmd maps names to ACP launch commands, another command-injection vector.
     "custom_agents",
     "agent_detect_as",
+    "agent_cockpit_cmd",
 ];
 
 /// Top-level settings sections whose presence in a `PATCH
@@ -272,6 +290,7 @@ mod tests {
                     "spawn_cockpit",
                     "shutdown_cockpit",
                     "cockpit_prompt",
+                    "cockpit_prompt_diff_comments",
                     "cockpit_cancel",
                     "cockpit_force_end_turn",
                     "cockpit_enable",
@@ -402,6 +421,7 @@ mod tests {
                     "spawn_cockpit",
                     "shutdown_cockpit",
                     "cockpit_prompt",
+                    "cockpit_prompt_diff_comments",
                     "cockpit_cancel",
                     "cockpit_force_end_turn",
                     "cockpit_enable",
@@ -553,6 +573,10 @@ mod tests {
             // logging: persistent tracing filter. EnvFilter parser
             // validates every value before save_config writes it back.
             "logging",
+            // cockpit: audited for #1689. Safe knobs (bools, numbers, enum);
+            // the binary-path field node_path is stripped via
+            // COCKPIT_BLOCKED_FIELDS before write.
+            "cockpit",
         ];
         assert_eq!(
             ALLOWED_GLOBAL_SETTINGS_SECTIONS.len(),
@@ -599,6 +623,9 @@ mod tests {
             "worktree",
             "web",
             "logging",
+            // cockpit: see global allowlist note; node_path stripped via
+            // COCKPIT_BLOCKED_FIELDS. #1689.
+            "cockpit",
             // description: optional string surfaced in the wizard profile
             // picker (#949). Plain text, no shell metacharacters.
             "description",
@@ -765,6 +792,8 @@ mod tests {
             "custom_agents",
             // agent_detect_as: part of the agent config surface
             "agent_detect_as",
+            // agent_cockpit_cmd: maps agent names to ACP launch commands
+            "agent_cockpit_cmd",
         ];
         assert_eq!(
             SESSION_BLOCKED_FIELDS.len(),
@@ -778,6 +807,29 @@ mod tests {
             assert!(
                 SESSION_BLOCKED_FIELDS.contains(field),
                 "SESSION_BLOCKED_FIELDS lost field {:?}",
+                field
+            );
+        }
+    }
+
+    #[test]
+    fn cockpit_blocked_fields_are_pinned() {
+        // node_path overrides the Node.js binary the cockpit runner launches,
+        // an arbitrary-binary / RCE surface that must stay local-only even
+        // though the rest of the cockpit section is API-writable. Renaming
+        // the Rust field must update this list in the same commit.
+        let expected: &[&str] = &["node_path"];
+        assert_eq!(
+            COCKPIT_BLOCKED_FIELDS.len(),
+            expected.len(),
+            "COCKPIT_BLOCKED_FIELDS size changed — this strips the binary-path \
+             override from incoming web cockpit settings and must be reviewed \
+             as a security change."
+        );
+        for field in expected {
+            assert!(
+                COCKPIT_BLOCKED_FIELDS.contains(field),
+                "COCKPIT_BLOCKED_FIELDS lost field {:?}",
                 field
             );
         }

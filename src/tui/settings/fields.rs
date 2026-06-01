@@ -106,6 +106,7 @@ pub enum FieldKey {
     AgentStatusHooks,
     CustomAgents,
     AgentDetectAs,
+    AgentCockpitCmd,
     HostEnvironment,
     SessionIdPollerMaxThreads,
     LiveSendExitChord,
@@ -158,6 +159,7 @@ pub enum FieldKey {
     CockpitForceEndTurnThresholdSecs,
     CockpitSilentOrphanGraceSecs,
     CockpitSilentOrphanFastGraceSecs,
+    CockpitAutoStopIdleSecs,
     // Logging
     LoggingDefaultLevel,
     /// Per-target override; carries an index into `crate::logging::KNOWN_SUB_TARGETS`
@@ -664,6 +666,11 @@ fn build_cockpit_fields(
         global.cockpit.silent_orphan_fast_grace_secs,
         p.and_then(|c| c.silent_orphan_fast_grace_secs),
     );
+    let (auto_stop_idle_secs, asis_override) = resolve_value(
+        scope,
+        global.cockpit.auto_stop_idle_secs,
+        p.and_then(|c| c.auto_stop_idle_secs),
+    );
 
     vec![
         SettingField {
@@ -796,6 +803,15 @@ fn build_cockpit_fields(
             value: FieldValue::Number(u64::from(silent_orphan_fast_grace_secs)),
             category: SettingsCategory::Cockpit,
             has_override: sofg_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitAutoStopIdleSecs,
+            label: "Auto-stop idle workers (s)",
+            description: "Seconds of inactivity (no cockpit events, no in-flight turn) after which the daemon stops an idle cockpit worker and frees its resources. The session stays stopped until the next prompt, which respawns the worker seamlessly. Default 0 disables the feature; no worker is ever auto-stopped for inactivity. Evaluated roughly once a minute, so the effective stop time can lag the threshold by up to a minute. See #1689.",
+            value: FieldValue::Number(u64::from(auto_stop_idle_secs)),
+            category: SettingsCategory::Cockpit,
+            has_override: asis_override,
             inherited_display: None,
         },
     ]
@@ -1875,6 +1891,30 @@ fn build_agents_fields(
         items
     };
 
+    let (cockpit_cmd_map, cockpit_cmd_override) = resolve_value(
+        scope,
+        global.session.agent_cockpit_cmd.clone(),
+        session.and_then(|s| s.agent_cockpit_cmd.clone()),
+    );
+    let cockpit_cmd_list: Vec<String> = {
+        let mut items: Vec<_> = cockpit_cmd_map
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+    let global_cockpit_cmd_list: Vec<String> = {
+        let mut items: Vec<_> = global
+            .session
+            .agent_cockpit_cmd
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect();
+        items.sort();
+        items
+    };
+
     vec![
         SettingField {
             key: FieldKey::DefaultTool,
@@ -1942,6 +1982,19 @@ fn build_agents_fields(
             inherited_display: inherited_if(
                 detect_as_override,
                 FieldValue::List(global_detect_as_list),
+            ),
+        },
+        SettingField {
+            key: FieldKey::AgentCockpitCmd,
+            label: "Agent Cockpit Command",
+            description:
+                "ACP launch command enabling a custom agent in cockpit: agent=command (e.g. oc-sp=ocp run sp acp)",
+            value: FieldValue::List(cockpit_cmd_list),
+            category: SettingsCategory::Agents,
+            has_override: cockpit_cmd_override,
+            inherited_display: inherited_if(
+                cockpit_cmd_override,
+                FieldValue::List(global_cockpit_cmd_list),
             ),
         },
         SettingField {
@@ -2690,6 +2743,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::AgentDetectAs, FieldValue::List(v)) => {
             config.session.agent_detect_as = parse_key_value_list(v);
         }
+        (FieldKey::AgentCockpitCmd, FieldValue::List(v)) => {
+            config.session.agent_cockpit_cmd = parse_key_value_list(v);
+        }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => config.sound.enabled = *v,
         (FieldKey::SoundMode, FieldValue::Select { selected, .. }) => {
@@ -2816,6 +2872,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             // tight fast grace.
             let raw = (*v).min(u32::MAX as u64) as u32;
             config.cockpit.silent_orphan_fast_grace_secs = if raw == 0 { 0 } else { raw.max(5) };
+        }
+        (FieldKey::CockpitAutoStopIdleSecs, FieldValue::Number(v)) => {
+            config.cockpit.auto_stop_idle_secs = (*v).min(u32::MAX as u64) as u32;
         }
         // Logging
         (FieldKey::LoggingDefaultLevel, FieldValue::Select { selected, options }) => {
@@ -3170,6 +3229,14 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 .get_or_insert_with(SessionConfigOverride::default);
             s.agent_detect_as = Some(map);
         }
+        (FieldKey::AgentCockpitCmd, FieldValue::List(v)) => {
+            let map = parse_key_value_list(v);
+            use crate::session::SessionConfigOverride;
+            let s = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            s.agent_cockpit_cmd = Some(map);
+        }
         // Sound
         (FieldKey::SoundEnabled, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.sound, |s, val| s.enabled = val);
@@ -3349,6 +3416,12 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 s.silent_orphan_fast_grace_secs = val
             });
         }
+        (FieldKey::CockpitAutoStopIdleSecs, FieldValue::Number(v)) => {
+            let clamped = (*v).min(u32::MAX as u64) as u32;
+            set_profile_override(clamped, &mut config.cockpit, |s, val| {
+                s.auto_stop_idle_secs = val
+            });
+        }
         (FieldKey::HostEnvironment, FieldValue::List(v)) => {
             // Empty list clears the override (no env entries); otherwise store
             // the list as the profile-scope replacement of the global list.
@@ -3362,6 +3435,35 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
 mod tests {
     use super::*;
     use crate::session::{Config, ProfileConfig};
+
+    #[test]
+    fn test_cockpit_auto_stop_idle_secs_applies_to_global_and_profile() {
+        let mut global = Config::default();
+        let mut profile = ProfileConfig::default();
+
+        // Pull the real field from the builder so the test tracks the
+        // production definition (label/category), then pin the value.
+        let mut field = build_fields_for_category(
+            SettingsCategory::Cockpit,
+            SettingsScope::Global,
+            &global,
+            &profile,
+        )
+        .into_iter()
+        .find(|f| f.key == FieldKey::CockpitAutoStopIdleSecs)
+        .expect("CockpitAutoStopIdleSecs field must exist in the Cockpit category");
+        field.value = FieldValue::Number(28800);
+
+        apply_field_to_config(&field, SettingsScope::Global, &mut global, &mut profile);
+        assert_eq!(global.cockpit.auto_stop_idle_secs, 28800);
+
+        apply_field_to_config(&field, SettingsScope::Profile, &mut global, &mut profile);
+        assert_eq!(
+            profile.cockpit.as_ref().and_then(|c| c.auto_stop_idle_secs),
+            Some(28800),
+            "profile scope must store the value as an override"
+        );
+    }
 
     #[test]
     fn test_profile_field_has_no_override_after_global_change() {
@@ -3751,6 +3853,7 @@ mod tests {
             FieldKey::CockpitForceEndTurnThresholdSecs,
             FieldKey::CockpitSilentOrphanGraceSecs,
             FieldKey::CockpitSilentOrphanFastGraceSecs,
+            FieldKey::CockpitAutoStopIdleSecs,
         ];
         for k in advanced_keys {
             let pos = fields.iter().position(|f| f.key == k).unwrap();
@@ -3788,6 +3891,7 @@ mod tests {
             FieldKey::AgentCommandOverride,
             FieldKey::CustomAgents,
             FieldKey::AgentDetectAs,
+            FieldKey::AgentCockpitCmd,
             FieldKey::AgentStatusHooks,
         ] {
             assert!(
